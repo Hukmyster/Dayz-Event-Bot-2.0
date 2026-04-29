@@ -7,6 +7,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "basic-ftp": "^5.0.5"
+    "basic-ftp": "^5.0.5",
+    "node-fetch": "^3.3.2"
   }
 }
