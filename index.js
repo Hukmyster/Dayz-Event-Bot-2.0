@@ -3,107 +3,240 @@ const API_BASE = 'https://api.nitrado.net';
 const API_TOKEN = process.env.API_TOKEN;
 const SERVICE_ID = process.env.SERVICE_ID;
 
-const LOOP_TIME = 60 * 1000;
-
-let lastFile = null;
-let lastSize = 0;
-
-const TRIGGERS = {
-    1: { type: "💻 Hacked Crate", location: "NEAF" },
-    2: { type: "💻 Hacked Crate", location: "SWAF" },
-    3: { type: "💻 Hacked Crate", location: "NWAF" },
-
-    10: { type: "🧟 Horde", location: "Novo" },
-    20: { type: "🪂 AirDrop", location: "NWAF" },
-    23: { type: "🪂 AirDrop", location: "Pavlovo" }
-};
-
+/**
+ * BASIC API CALL
+ */
 async function api(path) {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const url = `${API_BASE}${path}`;
+
+    const res = await fetch(url, {
         headers: {
             Authorization: `Bearer ${API_TOKEN}`,
             Accept: 'application/json'
         }
     });
 
-    return await res.json();
-}
+    const text = await res.text();
+    let json;
 
-async function getLogs() {
-    const res = await api(`/services/${SERVICE_ID}/gameservers`);
-    return res.data.gameserver.game_specific.log_files || [];
+    try {
+        json = JSON.parse(text);
+    } catch {
+        json = null;
+    }
+
+    return {
+        status: res.status,
+        ok: res.ok,
+        json,
+        raw: text
+    };
 }
 
 /**
- * 🔥 NEW: direct file read (NO token.url)
+ * =========================
+ * FILE READER (NEW STEP)
+ * =========================
+ * Attempts download endpoint safely
  */
 async function readFile(filePath) {
     const res = await api(
-        `/services/${SERVICE_ID}/gameservers/file_server/read?file=${encodeURIComponent(filePath)}`
+        `/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`
     );
 
-    console.log('📦 READ RESPONSE:', JSON.stringify(res, null, 2));
+    const tokenUrl = res.json?.data?.token?.url;
 
-    return res?.data?.content || null;
+    if (!tokenUrl) {
+        console.log(`⚠️ NO READ ACCESS: ${filePath}`);
+        return null;
+    }
+
+    try {
+        const fileRes = await fetch(tokenUrl);
+
+        if (!fileRes.ok) {
+            console.log(`❌ FETCH FAIL: ${filePath}`);
+            return null;
+        }
+
+        return await fileRes.text();
+    } catch (err) {
+        console.log(`❌ READ ERROR: ${filePath}`);
+        return null;
+    }
 }
 
-function getNewest(files, ext) {
-    return files.filter(f => f.toLowerCase().endsWith(ext)).sort().pop();
+/**
+ * =========================
+ * TRIGGER SCANNERS
+ * =========================
+ */
+function scanRPT(line) {
+    if (line.toLowerCase().includes('lootmax')) {
+        console.log('\n🔥 RPT TRIGGER (LOOTMAX FOUND)');
+        console.log(line);
+    }
 }
 
-function handleTrigger(line) {
-    if (!line.includes('SpawnRandomLoot')) return;
-
-    const match = line.match(/lootmax:\s*(\d+)/i);
-    if (!match) return;
-
-    const lootmax = parseInt(match[1]);
-
-    console.log(`🎯 LOOTMAX → ${lootmax}`);
-
-    const t = TRIGGERS[lootmax];
-
-    if (!t) return;
-
-    console.log(`🚨 ${t.type}`);
-    console.log(`📍 ${t.location}`);
+function scanADM(line) {
+    if (line.toLowerCase().includes('killed by')) {
+        console.log('\n💀 ADM KILL EVENT FOUND');
+        console.log(line);
+    }
 }
 
-async function run() {
+/**
+ * =========================
+ * TEST 1 — GAME SERVER INFO
+ * =========================
+ */
+async function testGameServerLogs() {
     console.log('\n==============================');
-    console.log('🔄 LOOP START (NO DOWNLOAD MODE)');
+    console.log('🔍 TEST 1: game_specific.log_files');
     console.log('==============================');
 
-    const files = await getLogs();
-    const newest = getNewest(files, '.rpt');
+    const res = await api(`/services/${SERVICE_ID}/gameservers`);
 
-    console.log('Latest:', newest);
+    if (!res.ok) {
+        console.log('❌ FAILED:', res.status);
+        return [];
+    }
 
-    if (!newest) return;
+    const logs =
+        res.json?.data?.gameserver?.game_specific?.log_files || [];
 
-    const content = await readFile(newest);
+    if (!logs.length) {
+        console.log('⚠️ NO LOG FILES FOUND');
+        return [];
+    }
 
-    if (!content) {
-        console.log('❌ NO FILE CONTENT RETURNED');
+    console.log('✅ FOUND LOG FILES:');
+    logs.forEach(l => console.log('📄', l));
+
+    return logs;
+}
+
+/**
+ * =========================
+ * PROCESS FILES (NEW STEP)
+ * =========================
+ */
+async function processFiles(files) {
+    const rptFiles = files.filter(f => f.toLowerCase().endsWith('.rpt'));
+    const admFiles = files.filter(f => f.toLowerCase().endsWith('.adm'));
+
+    console.log('\n==============================');
+    console.log('🔍 FILE SCAN START');
+    console.log(`📄 RPT: ${rptFiles.length}`);
+    console.log(`📄 ADM: ${admFiles.length}`);
+    console.log('==============================');
+
+    /**
+     * RPT SCAN
+     */
+    for (const file of rptFiles) {
+        console.log(`\n📥 RPT FILE: ${file}`);
+
+        const content = await readFile(file);
+
+        if (!content) continue;
+
+        const lines = content.split('\n');
+
+        for (const line of lines) {
+            scanRPT(line);
+        }
+    }
+
+    /**
+     * ADM SCAN
+     */
+    for (const file of admFiles) {
+        console.log(`\n📥 ADM FILE: ${file}`);
+
+        const content = await readFile(file);
+
+        if (!content) continue;
+
+        const lines = content.split('\n');
+
+        for (const line of lines) {
+            scanADM(line);
+        }
+    }
+
+    console.log('\n==============================');
+    console.log('🔌 FILE SCAN COMPLETE');
+    console.log('==============================');
+}
+
+/**
+ * TEST 2 — /games/dayz/log endpoint
+ */
+async function testDirectLogEndpoint() {
+    console.log('\n==============================');
+    console.log('🔍 TEST 2: /games/dayz/log');
+    console.log('==============================');
+
+    const res = await api(
+        `/services/${SERVICE_ID}/gameservers/file_server/games/dayz/log`
+    );
+
+    console.log('STATUS:', res.status);
+
+    if (!res.ok) {
+        console.log('❌ FAILED');
         return;
     }
 
-    const lines = content.split('\n');
-
-    const newLines = lines.slice(lastSize);
-
-    console.log(`[RPT] total=${lines.length} new=${newLines.length}`);
-
-    for (const line of newLines) {
-        console.log('🔥', line);
-        handleTrigger(line);
-    }
-
-    lastSize = lines.length;
-
-    console.log('🔌 LOOP END');
+    console.log(res.raw.substring(0, 500));
 }
 
-console.log('Bot starting (READ FILE MODE)');
+/**
+ * TEST 3 — FILE SERVER ROOT
+ */
+async function testFileServerRoot() {
+    console.log('\n==============================');
+    console.log('🔍 TEST 3: file_server/list root');
+    console.log('==============================');
+
+    const res = await api(
+        `/services/${SERVICE_ID}/gameservers/file_server/list?dir=/`
+    );
+
+    console.log('STATUS:', res.status);
+
+    if (!res.ok) {
+        console.log('❌ FAILED');
+        return;
+    }
+
+    const entries = res.json?.data?.entries || [];
+
+    console.log('📂 ENTRIES:', entries.length);
+
+    entries.forEach(e => {
+        console.log(`${e.type === 'dir' ? '📁' : '📄'} ${e.path}`);
+    });
+}
+
+/**
+ * RUN ALL TESTS
+ */
+async function run() {
+    console.log('\n🚀 MULTI-METHOD DETECTOR START');
+
+    const files = await testGameServerLogs();
+
+    await testDirectLogEndpoint();
+    await testFileServerRoot();
+
+    await processFiles(files);
+
+    console.log('\n==============================');
+    console.log('✅ DETECTOR COMPLETE');
+    console.log('==============================');
+}
+
+console.log('Bot starting (DETECTOR + TRIGGER SCANNER MODE)');
 run();
-setInterval(run, LOOP_TIME);
