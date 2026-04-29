@@ -16,15 +16,15 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 // ==============================
-// STATE (line tracking)
+// STATE
 // ==============================
-// remembers how many lines we've already read per file
 const fileLineTracker = new Map();
+let firstRun = true;
 
 // ==============================
 // START LOG
 // ==============================
-console.log("🚀 BOT ONLINE (LINE TRACKING MODE)");
+console.log("🚀 BOT ONLINE (INITIAL SWEEP + LIVE TRACKING)");
 console.log("NODE:", process.version);
 console.log("ENV:", {
     API_TOKEN: !!API_TOKEN,
@@ -36,7 +36,7 @@ console.log("ENV:", {
 console.log("==============================");
 
 // ==============================
-// API CALL
+// API
 // ==============================
 async function api(pathUrl) {
     try {
@@ -46,7 +46,6 @@ async function api(pathUrl) {
                 Accept: "application/json"
             }
         });
-
         return await res.json().catch(() => null);
     } catch {
         return null;
@@ -54,7 +53,7 @@ async function api(pathUrl) {
 }
 
 // ==============================
-// GET FILE LIST
+// FILE LIST
 // ==============================
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
@@ -62,12 +61,10 @@ async function getFiles() {
 }
 
 // ==============================
-// FTP READ FILE
+// FTP READ
 // ==============================
 async function readFileFromFTP(filePath) {
     const client = new Client();
-    client.ftp.verbose = false;
-
     try {
         await client.access({
             host: FTP_HOST,
@@ -81,7 +78,6 @@ async function readFileFromFTP(filePath) {
 
         const content = fs.readFileSync(tmpPath, "utf8");
         client.close();
-
         return content;
     } catch {
         client.close();
@@ -90,46 +86,42 @@ async function readFileFromFTP(filePath) {
 }
 
 // ==============================
-// PROCESS FILE (LINE TRACKING)
+// PROCESS FILE
 // ==============================
 function processFile(file, content) {
     const lines = content.split("\n");
 
-    const lastIndex = fileLineTracker.get(file) || 0;
+    let startIndex = 0;
 
-    // first time → skip old lines
-    if (!fileLineTracker.has(file)) {
-        fileLineTracker.set(file, lines.length);
-        return 0;
+    if (!firstRun) {
+        startIndex = fileLineTracker.get(file) || 0;
     }
 
-    let newHits = 0;
+    let hits = 0;
 
-    for (let i = lastIndex; i < lines.length; i++) {
+    for (let i = startIndex; i < lines.length; i++) {
         const line = lines[i];
         const lower = line.toLowerCase();
 
-        // LOOTMAX
         if (file.endsWith(".RPT") && lower.includes("lootmax")) {
             console.log("\n🔥 LOOT EVENT");
             console.log("📄", file);
             console.log(line);
-            newHits++;
+            hits++;
         }
 
-        // KILL FEED
         if (file.endsWith(".ADM") && lower.includes("killed by")) {
             console.log("\n💀 KILL EVENT");
             console.log("📄", file);
             console.log(line);
-            newHits++;
+            hits++;
         }
     }
 
-    // update tracker
+    // update tracker AFTER processing
     fileLineTracker.set(file, lines.length);
 
-    return newHits;
+    return hits;
 }
 
 // ==============================
@@ -155,9 +147,11 @@ async function run() {
             totalHits += processFile(file, content);
         }
 
-        // QUIET MODE
-        if (totalHits > 0) {
-            console.log(`\n✅ NEW EVENTS FOUND: ${totalHits}`);
+        if (firstRun) {
+            console.log(`\n🧠 INITIAL SWEEP COMPLETE (${totalHits} events)`);
+            firstRun = false;
+        } else if (totalHits > 0) {
+            console.log(`\n✅ NEW EVENTS: ${totalHits}`);
         } else {
             console.log(`💓 heartbeat ${new Date().toISOString()}`);
         }
