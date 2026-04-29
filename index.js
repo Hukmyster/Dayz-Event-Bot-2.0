@@ -1,62 +1,52 @@
 import fs from "fs";
 import path from "path";
+import basicFtp from "basic-ftp";
 
-// ==============================
-// ENV
-// ==============================
-const ENV = process.env || {};
-
-const API_TOKEN = ENV.API_TOKEN;
-const SERVICE_ID = ENV.SERVICE_ID;
-const FTP_HOST = ENV.FTP_HOST;
-const FTP_USER = ENV.FTP_USER;
-const FTP_PASS = ENV.FTP_PASS;
-
-console.log("\n==============================");
-console.log("🚀 BOT STARTING (RAILWAY STABLE ES MODULE MODE)");
-console.log("==============================");
-
-// ==============================
-// DEBUG ENV (MASKED)
-// ==============================
-function mask(val) {
-    if (!val) return "❌ MISSING";
-    if (val.length <= 6) return "***";
-    return val.slice(0, 3) + "..." + val.slice(-3);
-}
-
-console.log("\n🔐 ENV DEBUG:");
-console.log("API_TOKEN:", mask(API_TOKEN));
-console.log("SERVICE_ID:", mask(SERVICE_ID));
-console.log("FTP_HOST:", mask(FTP_HOST));
-console.log("FTP_USER:", mask(FTP_USER));
-console.log("FTP_PASS:", mask(FTP_PASS));
-
-// ==============================
-// API BASE
-// ==============================
 const API_BASE = "https://api.nitrado.net";
 
 // ==============================
-// SAFE API CALL
+// ENV DEBUG (SAFE)
 // ==============================
-async function api(endpoint) {
-    try {
-        console.log("\n🌐 API REQUEST:", endpoint);
+const ENV = process.env;
 
-        const res = await fetch(`${API_BASE}${endpoint}`, {
+function mask(v) {
+    if (!v) return "MISSING";
+    return v.slice(0, 4) + "****" + v.slice(-4);
+}
+
+console.log("\n==============================");
+console.log("🚀 BOT STARTING (STABLE NITRADO API MODE)");
+console.log("==============================");
+
+console.log("🧠 NODE:", process.version);
+
+console.log("\n📦 ENV DEBUG (masked):");
+console.log({
+    API_TOKEN: mask(ENV.API_TOKEN),
+    SERVICE_ID: ENV.SERVICE_ID || "MISSING",
+    FTP_HOST: ENV.FTP_HOST || "MISSING",
+    FTP_USER: mask(ENV.FTP_USER),
+    FTP_PASS: mask(ENV.FTP_PASS)
+});
+
+// ==============================
+// API CALL
+// ==============================
+async function api(pathUrl) {
+    try {
+        const res = await fetch(`${API_BASE}${pathUrl}`, {
             headers: {
-                Authorization: `Bearer ${API_TOKEN}`,
+                Authorization: `Bearer ${ENV.API_TOKEN}`,
                 Accept: "application/json"
             }
         });
 
-        const data = await res.json();
+        const json = await res.json();
 
-        console.log("📡 API STATUS:", res.status);
-        console.log("📦 API SUCCESS:", !!data?.data);
+        console.log("\n🌐 API CALL:", pathUrl);
+        console.log("📡 STATUS OK:", res.ok);
 
-        return data;
+        return json;
 
     } catch (err) {
         console.log("❌ API ERROR:", err.message);
@@ -65,46 +55,83 @@ async function api(endpoint) {
 }
 
 // ==============================
-// GET FILES (FIXED SAFE PATH)
+// GET FILE LIST (API)
 // ==============================
 async function getFiles() {
     console.log("\n🔍 FETCHING FILE LIST...");
 
-    const res = await api(`/services/${SERVICE_ID}/gameservers`);
+    const res = await api(`/services/${ENV.SERVICE_ID}/gameservers`);
 
     const files =
         res?.data?.gameserver?.game_specific?.log_files || [];
 
-    console.log("📂 FILE COUNT:", files.length);
-
-    if (!files.length) {
-        console.log("⚠️ NO FILES RETURNED FROM API");
-    }
-
-    files.slice(0, 10).forEach(f => console.log("📄", f));
+    console.log("📂 FILES FOUND:", files.length);
 
     return files;
 }
 
 // ==============================
-// TRIGGER SYSTEM
+// TRIGGERS
 // ==============================
 function scanLine(file, line) {
     const lower = line.toLowerCase();
 
-    if (file.endsWith(".rpt") && lower.includes("lootmax")) {
+    if (lower.includes("lootmax")) {
         console.log("\n🔥 LOOTMAX HIT:");
+        console.log("📄 FILE:", file);
         console.log(line);
     }
 
-    if (file.endsWith(".adm") && lower.includes("killed by")) {
+    if (lower.includes("killed by")) {
         console.log("\n💀 KILL EVENT:");
+        console.log("📄 FILE:", file);
         console.log(line);
     }
 }
 
 // ==============================
-// FILE PROCESSING (API ONLY MODE)
+// FTP READ (ROBUST VERSION)
+// ==============================
+async function ftpRead(filePath) {
+    const client = new basicFtp.Client();
+    client.ftp.verbose = false;
+
+    try {
+        await client.access({
+            host: ENV.FTP_HOST,
+            user: ENV.FTP_USER,
+            password: ENV.FTP_PASS,
+            secure: false
+        });
+
+        const tmp = path.join("/tmp", `log_${Date.now()}.txt`);
+
+        console.log("📥 FTP READ:", filePath);
+
+        await client.downloadTo(tmp, filePath);
+
+        const data = fs.readFileSync(tmp, "utf8");
+
+        client.close();
+
+        return data;
+
+    } catch (err) {
+        client.close();
+
+        // ✔ IMPORTANT: ignore missing file errors
+        if (err.message.includes("550")) {
+            console.log("⚠️ FILE NOT FOUND (SKIP):", filePath);
+            return null;
+        }
+
+        console.log("❌ FTP ERROR:", err.message);
+        return null;
+    }
+}
+
+// ==============================
+// PROCESS FILE
 // ==============================
 function processFile(file, content) {
     const lines = content.split("\n");
@@ -112,19 +139,6 @@ function processFile(file, content) {
     for (const line of lines) {
         scanLine(file, line);
     }
-}
-
-// ==============================
-// SIMULATED FILE READ (API MODE SAFE)
-// ==============================
-// NOTE: We are NOT using FTP here anymore (avoids your crash)
-async function readFileViaApi(file) {
-    console.log("\n📥 REQUEST FILE (API MODE):", file);
-
-    // Nitrado does NOT reliably expose raw logs via API
-    // so we log structure for now (safe stable mode)
-
-    return null;
 }
 
 // ==============================
@@ -137,8 +151,8 @@ async function run() {
 
     const files = await getFiles();
 
-    if (!files || !files.length) {
-        console.log("⚠️ NO FILES FOUND - API LIMIT OR WRONG ENDPOINT");
+    if (!files.length) {
+        console.log("⚠️ NO FILES FOUND");
         return;
     }
 
@@ -147,21 +161,14 @@ async function run() {
 
         if (!lower.endsWith(".rpt") && !lower.endsWith(".adm")) continue;
 
-        console.log("\n📄 PROCESS FILE:", file);
+        const content = await ftpRead(file);
 
-        const content = await readFileViaApi(file);
-
-        if (!content) {
-            console.log("⚠️ SKIP (API MODE - NO DIRECT FILE ACCESS):", file);
-            continue;
-        }
+        if (!content) continue;
 
         processFile(file, content);
     }
 
-    console.log("\n==============================");
-    console.log("🔌 LOOP COMPLETE");
-    console.log("==============================");
+    console.log("\n🔌 LOOP END");
 }
 
 // ==============================
