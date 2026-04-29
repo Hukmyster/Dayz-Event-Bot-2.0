@@ -8,46 +8,16 @@ const LOOP_TIME = 60 * 1000;
 let lastFile = null;
 let lastSize = 0;
 
-/**
- * =========================
- * LOOTMAX TRIGGERS
- * =========================
- */
 const TRIGGERS = {
     1: { type: "💻 Hacked Crate", location: "NEAF" },
     2: { type: "💻 Hacked Crate", location: "SWAF" },
     3: { type: "💻 Hacked Crate", location: "NWAF" },
 
-    4: { type: "🧟 Horde", location: "Cherno West" },
-    5: { type: "🧟 Horde", location: "Cherno East" },
-    6: { type: "🧟 Horde", location: "Berezino West" },
-    7: { type: "🧟 Horde", location: "Berezino East" },
-    8: { type: "🧟 Horde", location: "Electro" },
-    9: { type: "🧟 Horde", location: "Svet" },
-    10:{ type: "🧟 Horde", location: "Novo" },
-    11:{ type: "🧟 Horde", location: "Severograd" },
-    12:{ type: "🧟 Horde", location: "Novaya" },
-    13:{ type: "🧟 Horde", location: "Lopatino" },
-    14:{ type: "🧟 Horde", location: "Pustoshka" },
-    15:{ type: "🧟 Horde", location: "Pavlovo" },
-
-    16:{ type: "🪂 AirDrop", location: "VMC" },
-    17:{ type: "🪂 AirDrop", location: "Altar" },
-    18:{ type: "🪂 AirDrop", location: "Kamensk" },
-    19:{ type: "🪂 AirDrop", location: "Tisy" },
-    20:{ type: "🪂 AirDrop", location: "NWAF" },
-    21:{ type: "🪂 AirDrop", location: "NEAF" },
-    22:{ type: "🪂 AirDrop", location: "Balota" },
-    23:{ type: "🪂 AirDrop", location: "Pavlovo" },
-    24:{ type: "🪂 AirDrop", location: "Green Mountain" },
-    25:{ type: "🪂 AirDrop", location: "Myshkino" }
+    10: { type: "🧟 Horde", location: "Novo" },
+    20: { type: "🪂 AirDrop", location: "NWAF" },
+    23: { type: "🪂 AirDrop", location: "Pavlovo" }
 };
 
-/**
- * =========================
- * API CALL
- * =========================
- */
 async function api(path) {
     const res = await fetch(`${API_BASE}${path}`, {
         headers: {
@@ -59,62 +29,28 @@ async function api(path) {
     return await res.json();
 }
 
-/**
- * =========================
- * GET LOG FILES
- * =========================
- */
 async function getLogs() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
     return res.data.gameserver.game_specific.log_files || [];
 }
 
 /**
- * =========================
- * GET NEWEST FILE
- * =========================
+ * 🔥 NEW: direct file read (NO token.url)
  */
-function getNewest(files, ext) {
-    return files
-        .filter(f => f.toLowerCase().endsWith(ext))
-        .sort()
-        .pop();
-}
-
-/**
- * =========================
- * SAFE DOWNLOAD (FIXED)
- * =========================
- */
-async function download(filePath) {
+async function readFile(filePath) {
     const res = await api(
-        `/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`
+        `/services/${SERVICE_ID}/gameservers/file_server/read?file=${encodeURIComponent(filePath)}`
     );
 
-    console.log('📦 DOWNLOAD RESPONSE:', res);
+    console.log('📦 READ RESPONSE:', JSON.stringify(res, null, 2));
 
-    const tokenUrl = res?.data?.token?.url;
-
-    if (!tokenUrl) {
-        console.log('❌ DOWNLOAD FAILED - no token.url');
-        return null;
-    }
-
-    const fileRes = await fetch(tokenUrl);
-
-    if (!fileRes.ok) {
-        console.log('❌ TOKEN URL FAILED:', fileRes.status);
-        return null;
-    }
-
-    return await fileRes.text();
+    return res?.data?.content || null;
 }
 
-/**
- * =========================
- * TRIGGER ENGINE
- * =========================
- */
+function getNewest(files, ext) {
+    return files.filter(f => f.toLowerCase().endsWith(ext)).sort().pop();
+}
+
 function handleTrigger(line) {
     if (!line.includes('SpawnRandomLoot')) return;
 
@@ -125,55 +61,40 @@ function handleTrigger(line) {
 
     console.log(`🎯 LOOTMAX → ${lootmax}`);
 
-    const trigger = TRIGGERS[lootmax];
+    const t = TRIGGERS[lootmax];
 
-    if (!trigger) {
-        console.log(`⚠️ UNKNOWN LOOTMAX → ${lootmax}`);
-        return;
-    }
+    if (!t) return;
 
-    console.log(`🚨 EVENT → ${trigger.type}`);
-    console.log(`📍 LOCATION → ${trigger.location}`);
+    console.log(`🚨 ${t.type}`);
+    console.log(`📍 ${t.location}`);
 }
 
-/**
- * =========================
- * MAIN LOOP (FTP STYLE LOGIC)
- * =========================
- */
 async function run() {
     console.log('\n==============================');
-    console.log('🔄 LOOP START');
+    console.log('🔄 LOOP START (NO DOWNLOAD MODE)');
     console.log('==============================');
 
     const files = await getLogs();
     const newest = getNewest(files, '.rpt');
 
-    console.log('Latest file:', newest);
+    console.log('Latest:', newest);
 
     if (!newest) return;
 
-    if (newest !== lastFile) {
-        console.log('🆕 NEW FILE DETECTED');
-        lastFile = newest;
-        lastSize = 0;
-    }
-
-    const content = await download(newest);
+    const content = await readFile(newest);
 
     if (!content) {
-        console.log('❌ SKIPPING LOOP (no content)');
+        console.log('❌ NO FILE CONTENT RETURNED');
         return;
     }
 
     const lines = content.split('\n');
+
     const newLines = lines.slice(lastSize);
 
     console.log(`[RPT] total=${lines.length} new=${newLines.length}`);
 
     for (const line of newLines) {
-        if (!line.trim()) continue;
-
         console.log('🔥', line);
         handleTrigger(line);
     }
@@ -183,11 +104,6 @@ async function run() {
     console.log('🔌 LOOP END');
 }
 
-/**
- * =========================
- * START
- * =========================
- */
-console.log('Bot starting (STABLE FTP-STYLE MODE)');
+console.log('Bot starting (READ FILE MODE)');
 run();
 setInterval(run, LOOP_TIME);
