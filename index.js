@@ -12,96 +12,131 @@ const FTP_HOST = ENV.FTP_HOST;
 const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
-console.log("🚀 BOT BOOTING (DEBUG MODE)");
-console.log("==============================");
-console.log("ENV CHECK:", {
-  API_TOKEN: !!API_TOKEN,
-  SERVICE_ID: !!SERVICE_ID,
-  FTP_HOST: !!FTP_HOST,
-  FTP_USER: !!FTP_USER,
-  FTP_PASS: !!FTP_PASS
-});
-console.log("==============================");
-
-if (!API_TOKEN || !SERVICE_ID) {
-  console.log("❌ Missing API ENV — stopping");
+if (!API_TOKEN || !SERVICE_ID || !FTP_HOST || !FTP_USER || !FTP_PASS) {
+  console.log("❌ Missing ENV - stopping");
   process.exit(1);
 }
 
 // ==============================
-// API CALL (NOW LOUD)
+// STATE (NO DUPLICATES)
 // ==============================
-async function api(pathUrl) {
-  console.log("🌐 API CALL:", pathUrl);
+const lastLineIndex = {};
+
+// ==============================
+// API
+// ==============================
+async function api(path) {
+  const res = await fetch(`https://api.nitrado.net${path}`, {
+    headers: {
+      Authorization: `Bearer ${API_TOKEN}`,
+      Accept: "application/json"
+    }
+  });
+
+  return res.json();
+}
+
+// ==============================
+// FILE LIST
+// ==============================
+async function getFiles() {
+  const res = await api(`/services/${SERVICE_ID}/gameservers`);
+
+  return res?.data?.gameserver?.game_specific?.log_files || [];
+}
+
+// ==============================
+// FTP READ
+// ==============================
+async function readFile(filePath) {
+  const client = new Client();
 
   try {
-    const res = await fetch(`${API_BASE}${pathUrl}`, {
-      headers: {
-        Authorization: `Bearer ${API_TOKEN}`,
-        Accept: "application/json"
-      }
+    await client.access({
+      host: FTP_HOST,
+      user: FTP_USER,
+      password: FTP_PASS,
+      secure: false
     });
 
-    const json = await res.json();
+    const tmp = `/tmp/${Date.now()}.log`;
 
-    console.log("📡 API STATUS:", res.status);
+    await client.downloadTo(tmp, filePath);
 
-    return json;
+    client.close();
+
+    return fs.readFileSync(tmp, "utf8");
 
   } catch (err) {
-    console.log("❌ API FAIL:", err.message);
+    client.close();
     return null;
   }
 }
 
 // ==============================
-// GET FILES (DEBUGGED HARD)
+// PROCESS (ONLY NEW LINES)
 // ==============================
-async function getFiles() {
-  const res = await api(`/services/${SERVICE_ID}/gameservers`);
+function process(file, content) {
+  const lines = content.split("\n");
 
-  console.log("📦 RAW API RESPONSE EXISTS:", !!res);
+  const start = lastLineIndex[file] || 0;
 
-  const files =
-    res?.data?.gameserver?.game_specific?.log_files;
+  let newHits = 0;
 
-  console.log("📂 FILES RAW:", files);
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
 
-  if (!files) {
-    console.log("❌ FILES PATH FAILED (API STRUCTURE ISSUE)");
-    return [];
+    if (!line) continue;
+
+    const lower = line.toLowerCase();
+
+    if (lower.includes("lootmax")) {
+      console.log("\n🔥 LOOT EVENT");
+      console.log(file);
+      console.log(line.trim());
+      newHits++;
+    }
+
+    if (lower.includes("killed by")) {
+      console.log("\n💀 KILL EVENT");
+      console.log(file);
+      console.log(line.trim());
+      newHits++;
+    }
   }
 
-  console.log("📂 FILE COUNT:", files.length);
+  lastLineIndex[file] = lines.length;
 
-  return files;
+  return newHits;
 }
 
 // ==============================
 // LOOP
 // ==============================
 async function run() {
-  console.log("\n🔄 LOOP START");
-
   const files = await getFiles();
 
-  if (!files.length) {
-    console.log("⚠️ NO FILES RETURNED");
-    return;
+  let total = 0;
+
+  for (const file of files) {
+    if (!file.endsWith(".RPT") && !file.endsWith(".ADM")) continue;
+
+    const content = await readFile(file);
+    if (!content) continue;
+
+    total += process(file, content);
   }
 
-  console.log("📥 FILE LIST:");
-  for (const f of files) console.log(" -", f);
-
-  console.log("🔄 LOOP END");
+  if (total > 0) {
+    console.log(`⚡ NEW EVENTS: ${total}`);
+  }
 }
 
 // ==============================
 // START
 // ==============================
+console.log("🚀 BOT ONLINE (FULL EVENT MODE)");
+console.log("==============================");
+
 run();
 setInterval(run, 120000);
-
-setInterval(() => {
-  console.log("💓 heartbeat", new Date().toISOString());
-}, 120000);
