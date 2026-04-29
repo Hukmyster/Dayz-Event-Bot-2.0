@@ -1,242 +1,171 @@
-const API_BASE = 'https://api.nitrado.net';
+import ftp from "basic-ftp";
+
+const API_BASE = "https://api.nitrado.net";
 
 const API_TOKEN = process.env.API_TOKEN;
 const SERVICE_ID = process.env.SERVICE_ID;
 
+// FTP CREDENTIALS (ADD IN RAILWAY ENV)
+const FTP_HOST = process.env.FTP_HOST;
+const FTP_USER = process.env.FTP_USER;
+const FTP_PASS = process.env.FTP_PASS;
+
+const LOOP_TIME = 60 * 1000;
+
+let lastRPT = "";
+let lastADM = "";
+
 /**
- * BASIC API CALL
+ * =========================
+ * API CALL (FILE DISCOVERY)
+ * =========================
  */
 async function api(path) {
-    const url = `${API_BASE}${path}`;
-
-    const res = await fetch(url, {
+    const res = await fetch(`${API_BASE}${path}`, {
         headers: {
             Authorization: `Bearer ${API_TOKEN}`,
-            Accept: 'application/json'
+            Accept: "application/json"
         }
     });
 
-    const text = await res.text();
-    let json;
-
-    try {
-        json = JSON.parse(text);
-    } catch {
-        json = null;
-    }
-
-    return {
-        status: res.status,
-        ok: res.ok,
-        json,
-        raw: text
-    };
+    return await res.json();
 }
 
 /**
  * =========================
- * FILE READER (NEW STEP)
+ * GET FILE LIST
  * =========================
- * Attempts download endpoint safely
  */
-async function readFile(filePath) {
-    const res = await api(
-        `/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`
-    );
+async function getFiles() {
+    const res = await api(`/services/${SERVICE_ID}/gameservers`);
 
-    const tokenUrl = res.json?.data?.token?.url;
+    return res?.data?.gameserver?.game_specific?.log_files || [];
+}
 
-    if (!tokenUrl) {
-        console.log(`⚠️ NO READ ACCESS: ${filePath}`);
-        return null;
-    }
+/**
+ * =========================
+ * FTP READ FILE
+ * =========================
+ */
+async function readFTPFile(filePath) {
+    const client = new ftp.Client();
+    client.ftp.verbose = false;
 
     try {
-        const fileRes = await fetch(tokenUrl);
+        await client.access({
+            host: FTP_HOST,
+            user: FTP_USER,
+            password: FTP_PASS,
+            secure: false
+        });
 
-        if (!fileRes.ok) {
-            console.log(`❌ FETCH FAIL: ${filePath}`);
-            return null;
-        }
+        let content = "";
+        await client.downloadTo(
+            {
+                write: (data) => {
+                    content += data.toString();
+                }
+            },
+            filePath
+        );
 
-        return await fileRes.text();
+        client.close();
+        return content;
+
     } catch (err) {
-        console.log(`❌ READ ERROR: ${filePath}`);
+        console.log(`❌ FTP READ ERROR: ${filePath}`);
+        client.close();
         return null;
     }
 }
 
 /**
  * =========================
- * TRIGGER SCANNERS
+ * TRIGGERS
  * =========================
  */
 function scanRPT(line) {
-    if (line.toLowerCase().includes('lootmax')) {
-        console.log('\n🔥 RPT TRIGGER (LOOTMAX FOUND)');
+    if (line.toLowerCase().includes("lootmax")) {
+        console.log("\n🔥 LOOTMAX HIT (RPT)");
         console.log(line);
     }
 }
 
 function scanADM(line) {
-    if (line.toLowerCase().includes('killed by')) {
-        console.log('\n💀 ADM KILL EVENT FOUND');
+    if (line.toLowerCase().includes("killed by")) {
+        console.log("\n💀 KILL EVENT (ADM)");
         console.log(line);
     }
 }
 
 /**
  * =========================
- * TEST 1 — GAME SERVER INFO
+ * FIND NEWEST FILES
  * =========================
  */
-async function testGameServerLogs() {
-    console.log('\n==============================');
-    console.log('🔍 TEST 1: game_specific.log_files');
-    console.log('==============================');
-
-    const res = await api(`/services/${SERVICE_ID}/gameservers`);
-
-    if (!res.ok) {
-        console.log('❌ FAILED:', res.status);
-        return [];
-    }
-
-    const logs =
-        res.json?.data?.gameserver?.game_specific?.log_files || [];
-
-    if (!logs.length) {
-        console.log('⚠️ NO LOG FILES FOUND');
-        return [];
-    }
-
-    console.log('✅ FOUND LOG FILES:');
-    logs.forEach(l => console.log('📄', l));
-
-    return logs;
+function getLatest(files, ext) {
+    const filtered = files.filter(f => f.toLowerCase().endsWith(ext));
+    return filtered.length ? filtered[filtered.length - 1] : null;
 }
 
 /**
  * =========================
- * PROCESS FILES (NEW STEP)
+ * MAIN LOOP
  * =========================
- */
-async function processFiles(files) {
-    const rptFiles = files.filter(f => f.toLowerCase().endsWith('.rpt'));
-    const admFiles = files.filter(f => f.toLowerCase().endsWith('.adm'));
-
-    console.log('\n==============================');
-    console.log('🔍 FILE SCAN START');
-    console.log(`📄 RPT: ${rptFiles.length}`);
-    console.log(`📄 ADM: ${admFiles.length}`);
-    console.log('==============================');
-
-    /**
-     * RPT SCAN
-     */
-    for (const file of rptFiles) {
-        console.log(`\n📥 RPT FILE: ${file}`);
-
-        const content = await readFile(file);
-
-        if (!content) continue;
-
-        const lines = content.split('\n');
-
-        for (const line of lines) {
-            scanRPT(line);
-        }
-    }
-
-    /**
-     * ADM SCAN
-     */
-    for (const file of admFiles) {
-        console.log(`\n📥 ADM FILE: ${file}`);
-
-        const content = await readFile(file);
-
-        if (!content) continue;
-
-        const lines = content.split('\n');
-
-        for (const line of lines) {
-            scanADM(line);
-        }
-    }
-
-    console.log('\n==============================');
-    console.log('🔌 FILE SCAN COMPLETE');
-    console.log('==============================');
-}
-
-/**
- * TEST 2 — /games/dayz/log endpoint
- */
-async function testDirectLogEndpoint() {
-    console.log('\n==============================');
-    console.log('🔍 TEST 2: /games/dayz/log');
-    console.log('==============================');
-
-    const res = await api(
-        `/services/${SERVICE_ID}/gameservers/file_server/games/dayz/log`
-    );
-
-    console.log('STATUS:', res.status);
-
-    if (!res.ok) {
-        console.log('❌ FAILED');
-        return;
-    }
-
-    console.log(res.raw.substring(0, 500));
-}
-
-/**
- * TEST 3 — FILE SERVER ROOT
- */
-async function testFileServerRoot() {
-    console.log('\n==============================');
-    console.log('🔍 TEST 3: file_server/list root');
-    console.log('==============================');
-
-    const res = await api(
-        `/services/${SERVICE_ID}/gameservers/file_server/list?dir=/`
-    );
-
-    console.log('STATUS:', res.status);
-
-    if (!res.ok) {
-        console.log('❌ FAILED');
-        return;
-    }
-
-    const entries = res.json?.data?.entries || [];
-
-    console.log('📂 ENTRIES:', entries.length);
-
-    entries.forEach(e => {
-        console.log(`${e.type === 'dir' ? '📁' : '📄'} ${e.path}`);
-    });
-}
-
-/**
- * RUN ALL TESTS
  */
 async function run() {
-    console.log('\n🚀 MULTI-METHOD DETECTOR START');
+    console.log("\n==============================");
+    console.log("🔄 FTP HYBRID LOOP");
+    console.log("==============================");
 
-    const files = await testGameServerLogs();
+    const files = await getFiles();
 
-    await testDirectLogEndpoint();
-    await testFileServerRoot();
+    const latestRPT = getLatest(files, ".rpt");
+    const latestADM = getLatest(files, ".adm");
 
-    await processFiles(files);
+    console.log("📄 Latest RPT:", latestRPT);
+    console.log("📄 Latest ADM:", latestADM);
 
-    console.log('\n==============================');
-    console.log('✅ DETECTOR COMPLETE');
-    console.log('==============================');
+    /**
+     * =========================
+     * RPT PROCESS
+     * =========================
+     */
+    if (latestRPT && latestRPT !== lastRPT) {
+        console.log(`🆕 NEW RPT: ${latestRPT}`);
+        lastRPT = latestRPT;
+
+        const content = await readFTPFile(latestRPT);
+
+        if (content) {
+            const lines = content.split("\n");
+            for (const line of lines) scanRPT(line);
+        }
+    }
+
+    /**
+     * =========================
+     * ADM PROCESS
+     * =========================
+     */
+    if (latestADM && latestADM !== lastADM) {
+        console.log(`🆕 NEW ADM: ${latestADM}`);
+        lastADM = latestADM;
+
+        const content = await readFTPFile(latestADM);
+
+        if (content) {
+            const lines = content.split("\n");
+            for (const line of lines) scanADM(line);
+        }
+    }
+
+    console.log("\n🔌 LOOP COMPLETE");
 }
 
-console.log('Bot starting (DETECTOR + TRIGGER SCANNER MODE)');
+/**
+ * START
+ */
+console.log("Bot starting (FTP HYBRID MODE)");
 run();
+setInterval(run, LOOP_TIME);
