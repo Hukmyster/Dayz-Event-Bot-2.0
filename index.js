@@ -1,7 +1,7 @@
 const API_BASE = "https://api.nitrado.net";
 
 // ==============================
-// SAFE ENV LOADING
+// ENV
 // ==============================
 const ENV = process.env || {};
 
@@ -12,22 +12,21 @@ const FTP_HOST = ENV.FTP_HOST;
 const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
-function logEnv() {
-    console.log("\n==============================");
-    console.log("🚀 BOT STARTING (HYBRID SCANNER)");
-    console.log("==============================");
-    console.log("ENV CHECK:");
-    console.log({
-        API_TOKEN: !!API_TOKEN,
-        SERVICE_ID: !!SERVICE_ID,
-        FTP_HOST: !!FTP_HOST,
-        FTP_USER: !!FTP_USER,
-        FTP_PASS: !!FTP_PASS
-    });
-}
+console.log("\n==============================");
+console.log("🚀 BOT STARTING (HYBRID SCANNER V2)");
+console.log("==============================");
+
+console.log("🧠 NODE:", process.version);
+console.log("📦 ENV CHECK:", {
+    API_TOKEN: !!API_TOKEN,
+    SERVICE_ID: !!SERVICE_ID,
+    FTP_HOST: !!FTP_HOST,
+    FTP_USER: !!FTP_USER,
+    FTP_PASS: !!FTP_PASS
+});
 
 // ==============================
-// SAFE FETCH WRAPPER
+// API CALL
 // ==============================
 async function api(path) {
     try {
@@ -38,30 +37,22 @@ async function api(path) {
             }
         });
 
-        const text = await res.text();
-
-        let json;
-        try {
-            json = JSON.parse(text);
-        } catch {
-            json = null;
-        }
-
-        return { ok: res.ok, status: res.status, json, raw: text };
+        const json = await res.json().catch(() => null);
+        return json;
     } catch (err) {
         console.log("❌ API ERROR:", err.message);
-        return { ok: false };
+        return null;
     }
 }
 
 // ==============================
-// FILE DETECTION (WORKING PART)
+// GET FILES
 // ==============================
-async function getFileList() {
+async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
 
     const files =
-        res.json?.data?.gameserver?.game_specific?.log_files || [];
+        res?.data?.gameserver?.game_specific?.log_files || [];
 
     console.log("\n📂 FILES DETECTED:");
     files.forEach(f => console.log("📄", f));
@@ -70,59 +61,77 @@ async function getFileList() {
 }
 
 // ==============================
-// TRIGGER SCANNER
+// TRIGGERS
 // ==============================
-function scanFileContent(filePath, content) {
-    const lines = content.split("\n");
+function scanLine(file, line) {
+    const lower = line.toLowerCase();
 
-    const isRPT = filePath.toLowerCase().endsWith(".rpt");
-    const isADM = filePath.toLowerCase().endsWith(".adm");
-
-    const triggers = [];
-
-    for (const line of lines) {
-        const lower = line.toLowerCase();
-
-        if (isRPT && lower.includes("lootmax")) {
-            triggers.push({ type: "RPT", line });
-        }
-
-        if (isADM && lower.includes("killed by")) {
-            triggers.push({ type: "ADM", line });
-        }
+    if (file.toLowerCase().endsWith(".rpt") && lower.includes("lootmax")) {
+        console.log("\n🔥 RPT TRIGGER (LOOTMAX)");
+        console.log(line);
     }
 
-    return triggers;
+    if (file.toLowerCase().endsWith(".adm") && lower.includes("killed by")) {
+        console.log("\n💀 ADM TRIGGER (KILLED BY)");
+        console.log(line);
+    }
 }
 
 // ==============================
-// FTP FALLBACK (OPTIONAL HYBRID)
+// FTP DEBUG + FIXED READ
 // ==============================
 async function ftpRead(filePath) {
     try {
-        const ftp = (await import("basic-ftp")).Client;
-        const client = new ftp();
+        const { Client } = await import("basic-ftp");
+        const client = new Client();
+
+        client.ftp.verbose = true;
+
+        console.log("\n🔌 FTP DEBUG:");
+        console.log({
+            host: FTP_HOST,
+            user: FTP_USER,
+            pass: FTP_PASS ? "SET" : "MISSING"
+        });
 
         await client.access({
             host: FTP_HOST,
             user: FTP_USER,
             password: FTP_PASS,
-            secure: false
+            secure: false,
+            passive: true
         });
 
         let data = "";
+
         await client.downloadTo(
             {
-                write: chunk => (data += chunk.toString())
+                write: (chunk) => {
+                    data += chunk.toString("utf8");
+                }
             },
             filePath
         );
 
         client.close();
         return data;
+
     } catch (err) {
-        console.log("⚠️ FTP READ FAILED:", filePath);
+        console.log("\n⚠️ FTP FAILED:");
+        console.log("FILE:", filePath);
+        console.log("ERROR:", err.message);
         return null;
+    }
+}
+
+// ==============================
+// PROCESS FILE
+// ==============================
+function processFile(file, content) {
+    const lines = content.split("\n");
+
+    for (const line of lines) {
+        scanLine(file, line);
     }
 }
 
@@ -130,16 +139,16 @@ async function ftpRead(filePath) {
 // MAIN LOOP
 // ==============================
 async function run() {
-    logEnv();
+    console.log("\n==============================");
+    console.log("🔄 LOOP START");
+    console.log("==============================");
 
-    if (!API_TOKEN || !SERVICE_ID) {
-        console.log("\n❌ MISSING API VARIABLES - STOPPING SAFELY");
+    const files = await getFiles();
+
+    if (!files.length) {
+        console.log("⚠️ NO FILES FOUND");
         return;
     }
-
-    console.log("\n🔄 LOOP START");
-
-    const files = await getFileList();
 
     for (const file of files) {
         const lower = file.toLowerCase();
@@ -148,24 +157,14 @@ async function run() {
 
         console.log("\n📥 READING:", file);
 
-        // NOTE: API file reading often blocked → FTP fallback used
-        let content = await ftpRead(file);
+        const content = await ftpRead(file);
 
         if (!content) {
-            console.log("⚠️ NO CONTENT (FTP FAILED):", file);
+            console.log("⚠️ NO CONTENT:", file);
             continue;
         }
 
-        const hits = scanFileContent(file, content);
-
-        if (hits.length > 0) {
-            console.log("\n🚨 TRIGGER HITS:", file);
-            hits.forEach(h =>
-                console.log(`[${h.type}]`, h.line)
-            );
-        } else {
-            console.log("✅ NO TRIGGERS:", file);
-        }
+        processFile(file, content);
     }
 
     console.log("\n==============================");
@@ -173,5 +172,8 @@ async function run() {
     console.log("==============================");
 }
 
-console.log("Bot starting...");
+// ==============================
+// START
+// ==============================
 run();
+setInterval(run, 60000);
