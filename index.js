@@ -6,7 +6,6 @@ const SERVICE_ID = process.env.SERVICE_ID;
 const LOOP_TIME = 60 * 1000;
 
 let visited = new Set();
-let lastSeen = new Set();
 
 /**
  * API CALL
@@ -24,17 +23,18 @@ async function api(dir) {
     const json = await res.json().catch(() => null);
 
     if (!res.ok || json?.status !== 'success') {
-        throw new Error(`API error: ${res.status}`);
+        console.log('❌ API FAIL:', dir, '| STATUS:', res.status);
+        return [];
     }
 
     return json.data?.entries ?? [];
 }
 
 /**
- * RECURSIVE SCAN
+ * RECURSIVE PATH FINDER
  */
-async function scan(dir, found = []) {
-    if (visited.has(dir)) return found;
+async function scan(dir, depth = 0) {
+    if (visited.has(dir)) return;
     visited.add(dir);
 
     let entries = [];
@@ -42,30 +42,35 @@ async function scan(dir, found = []) {
     try {
         entries = await api(dir);
     } catch (err) {
-        console.log('❌ Failed dir:', dir);
-        return found;
+        console.log('❌ ERROR DIR:', dir);
+        return;
     }
 
+    const indent = '  '.repeat(depth);
+
+    console.log(`\n📂 DIR: ${dir}`);
+    console.log(`   Entries: ${entries.length}`);
+
     for (const entry of entries) {
-        const name = (entry.name || '').toLowerCase();
+        const name = entry.name || '';
         const path = entry.path || '';
         const type = entry.type;
 
-        // FILE MATCH
+        if (type === 'dir') {
+            console.log(`${indent}📁 ${path}`);
+            await scan(path, depth + 1);
+        }
+
         if (type === 'file') {
-            if (name.endsWith('.adm') || name.endsWith('.rpt')) {
-                found.push(path);
-                console.log('🔥 FOUND:', path);
+            console.log(`${indent}📄 ${path}`);
+
+            const lower = name.toLowerCase();
+
+            if (lower.endsWith('.adm') || lower.endsWith('.rpt')) {
+                console.log(`${indent}🔥 LOG FILE FOUND → ${path}`);
             }
         }
-
-        // FOLDER RECURSION
-        if (type === 'dir') {
-            await scan(path, found);
-        }
     }
-
-    return found;
 }
 
 /**
@@ -73,31 +78,23 @@ async function scan(dir, found = []) {
  */
 async function run() {
     console.log('\n==============================');
-    console.log('🔄 NEW LOOP → SCANNING FILES');
+    console.log('🔍 FULL API PATH SCAN');
     console.log('==============================');
 
     visited = new Set();
 
-    const logs = await scan('/');
+    await scan('/');
 
-    console.log('\n📊 TOTAL LOGS:', logs.length);
-
-    const newFiles = logs.filter(f => !lastSeen.has(f));
-
-    console.log('🆕 NEW FILES:', newFiles.length);
-
-    for (const f of newFiles) {
-        console.log('🆕', f);
-    }
-
-    lastSeen = new Set(logs);
-
-    console.log('🔌 LOOP END');
+    console.log('\n==============================');
+    console.log('✅ SCAN COMPLETE');
+    console.log('==============================');
 }
 
 /**
- * START BOT
+ * START
  */
-console.log('Bot starting (NODE FILE SCANNER)');
+console.log('Bot starting (API PATH FINDER MODE)');
 run();
+
+// Only run once per minute (like you wanted)
 setInterval(run, LOOP_TIME);
