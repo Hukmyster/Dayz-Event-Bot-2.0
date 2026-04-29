@@ -1,179 +1,130 @@
-const ftpLib = require("basic-ftp");
+require("dotenv").config();
+const axios = require("axios");
 
-const {
-    API_TOKEN,
-    FTP_HOST,
-    FTP_USER,
-    FTP_PASS,
-    SERVICE_ID
-} = process.env;
+const API_TOKEN = process.env.API_TOKEN;
+const SERVICE_ID = process.env.SERVICE_ID;
 
-console.log("🚀 BOT STARTING (FTP FIXED MODE)");
-console.log("==============================");
+const BASE_URL = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server`;
 
-if (!API_TOKEN || !FTP_HOST || !FTP_USER || !FTP_PASS) {
-    console.log("❌ ENV MISSING:");
-    console.log({
-        API_TOKEN: !!API_TOKEN,
-        FTP_HOST: !!FTP_HOST,
-        FTP_USER: !!FTP_USER,
-        FTP_PASS: !!FTP_PASS
-    });
-    process.exit?.(1);
-}
+let seenLines = new Set();
 
-let seen = new Set();
-let loopCount = 0;
+const headers = {
+    Authorization: `Bearer ${API_TOKEN}`,
+    "Content-Type": "application/json"
+};
 
-// -----------------------------
-// FTP CONNECT
-// -----------------------------
-async function connectFTP() {
-    const client = new ftpLib.Client();
-    client.ftp.verbose = true;
-
+// ------------------------------
+// FETCH FILE LIST (NO FTP)
+// ------------------------------
+async function listFiles(path = "dayzps/config") {
     try {
-        console.log("🔌 CONNECTING FTP...");
-        await client.access({
-            host: FTP_HOST,
-            user: FTP_USER,
-            password: FTP_PASS,
-            secure: false
-        });
+        console.log("🔍 API LIST FILES:", path);
 
-        console.log("✅ FTP CONNECTED");
-        return client;
+        const res = await axios.get(
+            `${BASE_URL}/listing?dir=${encodeURIComponent(path)}`,
+            { headers }
+        );
 
+        return res.data.data.entries || [];
     } catch (err) {
-        console.log("❌ FTP CONNECT ERROR:", err.message);
-        return null;
-    }
-}
-
-// -----------------------------
-// FIXED FILE READ (CRITICAL FIX HERE)
-// -----------------------------
-async function readFile(client, filePath) {
-    console.log("📥 TRY READ:", filePath);
-
-    try {
-        let data = "";
-
-        // 🔥 FIX: correct usage of downloadTo
-        const stream = {
-            write(chunk) {
-                data += chunk.toString();
-            },
-            end() {},
-            once() {},   // <-- prevents your crash (important workaround)
-            emit() {}
-        };
-
-        await client.downloadTo(stream, filePath);
-
-        if (!data) {
-            console.log("⚠️ EMPTY FILE:", filePath);
-            return null;
-        }
-
-        return data;
-
-    } catch (err) {
-        console.log("❌ FTP READ ERROR:");
-        console.log("FILE:", filePath);
-        console.log("MESSAGE:", err.message);
-        console.log("STACK:", err.stack);
-        return null;
-    }
-}
-
-// -----------------------------
-// LIST FILES DYNAMICALLY
-// -----------------------------
-async function listFiles(client) {
-    try {
-        console.log("🔍 LISTING FILES...");
-
-        const list = await client.list("/dayzps/config");
-
-        const files = list
-            .filter(f => f.name.endsWith(".RPT") || f.name.endsWith(".ADM"))
-            .map(f => `/dayzps/config/${f.name}`);
-
-        console.log("📂 FILES FOUND:", files.length);
-        return files;
-
-    } catch (err) {
-        console.log("❌ FILE LIST ERROR:", err.message);
+        console.error("❌ LIST ERROR:", err.response?.data || err.message);
         return [];
     }
 }
 
-// -----------------------------
-// PROCESS LINE (DELTA MODE)
-// -----------------------------
-function processLine(line) {
-    if (seen.has(line)) return false;
-    seen.add(line);
+// ------------------------------
+// READ FILE CONTENT (API STREAM SAFE)
+// ------------------------------
+async function readFile(filePath) {
+    try {
+        console.log(`📥 API READ: ${filePath}`);
 
-    if (line.includes("lootmax")) {
-        console.log("🔥 LOOTMAX:");
-        console.log(line);
-        return true;
+        const res = await axios.get(
+            `${BASE_URL}/download?file=${encodeURIComponent(filePath)}`,
+            {
+                headers,
+                responseType: "text"
+            }
+        );
+
+        return res.data;
+    } catch (err) {
+        console.error("❌ READ ERROR:", filePath);
+        console.error("DETAIL:", err.response?.data || err.message);
+        return "";
     }
-
-    if (line.includes("killed by")) {
-        console.log("💀 KILL:");
-        console.log(line);
-        return true;
-    }
-
-    return false;
 }
 
-// -----------------------------
-// LOOP
-// -----------------------------
+// ------------------------------
+// TRIGGER PARSER
+// ------------------------------
+function parseTriggers(text, file) {
+    const lines = text.split("\n");
+
+    for (const line of lines) {
+        if (!line.includes("[CE][SpawnRandomLoot]") &&
+            !line.includes("killed by") &&
+            !line.includes("Static")) continue;
+
+        if (seenLines.has(line)) continue;
+        seenLines.add(line);
+
+        console.log("\n🔥 NEW TRIGGER:");
+        console.log("FILE:", file);
+        console.log(line);
+
+        if (line.includes("lootmax")) {
+            console.log("🎯 TYPE: LOOTMAX EVENT");
+        }
+
+        if (line.includes("killed by")) {
+            console.log("💀 TYPE: PLAYER KILL");
+        }
+    }
+}
+
+// ------------------------------
+// MAIN LOOP
+// ------------------------------
 async function loop() {
-    loopCount++;
+    console.log("\n==============================");
+    console.log("🔄 LOOP START (API MODE)");
     console.log("==============================");
-    console.log(`🔄 LOOP #${loopCount}`);
 
-    const client = await connectFTP();
-    if (!client) return;
+    const files = await listFiles("dayzps/config");
 
-    const files = await listFiles(client);
+    console.log(`📂 FILES FOUND: ${files.length}`);
 
-    for (const file of files) {
-        console.log("🔍 FILE:", file);
+    for (const f of files) {
+        if (!f.name) continue;
 
-        const data = await readFile(client, file);
+        const name = f.name;
 
-        if (!data) {
-            console.log("⚠️ SKIP EMPTY:", file);
+        if (!name.includes("DayZServer_PS4")) continue;
+        if (!name.endsWith(".RPT") && !name.endsWith(".ADM")) continue;
+
+        const fullPath = `dayzps/config/${name}`;
+
+        console.log("🔍 PROCESS:", fullPath);
+
+        const content = await readFile(fullPath);
+
+        if (!content || content.length < 10) {
+            console.log("⚠️ EMPTY FILE:", fullPath);
             continue;
         }
 
-        const lines = data.split("\n");
-
-        let hits = 0;
-
-        for (const line of lines) {
-            if (processLine(line)) hits++;
-        }
-
-        console.log(`📊 HITS: ${hits}`);
+        parseTriggers(content, name);
     }
-
-    try {
-        client.close();
-    } catch {}
 
     console.log("🔌 LOOP END");
 }
 
-// -----------------------------
-// RUN EVERY 60 SECONDS
-// -----------------------------
-setInterval(loop, 60000);
+// ------------------------------
+// STARTUP
+// ------------------------------
+console.log("🚀 BOT STARTING (STABLE NITRADO API MODE)");
+console.log("==============================");
+
 loop();
+setInterval(loop, 60000);
