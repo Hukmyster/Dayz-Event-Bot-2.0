@@ -5,8 +5,5 @@
   "type": "commonjs",
   "scripts": {
     "start": "node index.js"
-  },
-  "dependencies": {
-    "basic-ftp": "^5.0.5"
   }
 }
