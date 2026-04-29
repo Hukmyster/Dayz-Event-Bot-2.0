@@ -1,7 +1,9 @@
 const API_BASE = "https://api.nitrado.net";
+const fs = require("fs");
+const path = require("path");
 
 // ==============================
-// ENV SAFE LOAD
+// ENV
 // ==============================
 const ENV = process.env || {};
 
@@ -13,11 +15,10 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 console.log("\n==============================");
-console.log("🚀 BOT STARTING (HYBRID FINAL STABLE)");
+console.log("🚀 BOT STARTING (FINAL FTP HYBRID STABLE)");
 console.log("==============================");
 
 console.log("🧠 NODE:", process.version);
-
 console.log("📦 ENV CHECK:", {
     API_TOKEN: !!API_TOKEN,
     SERVICE_ID: !!SERVICE_ID,
@@ -29,9 +30,9 @@ console.log("📦 ENV CHECK:", {
 // ==============================
 // API CALL
 // ==============================
-async function api(path) {
+async function api(pathUrl) {
     try {
-        const res = await fetch(`${API_BASE}${path}`, {
+        const res = await fetch(`${API_BASE}${pathUrl}`, {
             headers: {
                 Authorization: `Bearer ${API_TOKEN}`,
                 Accept: "application/json"
@@ -46,7 +47,7 @@ async function api(path) {
 }
 
 // ==============================
-// GET FILE LIST
+// GET FILES
 // ==============================
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
@@ -61,7 +62,7 @@ async function getFiles() {
 }
 
 // ==============================
-// TRIGGER SCANNER
+// TRIGGER SYSTEM
 // ==============================
 function scanLine(file, line) {
     const lower = line.toLowerCase();
@@ -78,21 +79,16 @@ function scanLine(file, line) {
 }
 
 // ==============================
-// FIXED FTP READ (REAL WORKING VERSION)
+// FTP READ (FINAL STABLE VERSION)
 // ==============================
 async function ftpRead(filePath) {
     try {
         const { Client } = await import("basic-ftp");
         const client = new Client();
 
-        client.ftp.verbose = true;
+        client.ftp.verbose = false;
 
-        console.log("\n🔌 FTP CONNECTING...");
-        console.log({
-            host: FTP_HOST,
-            user: FTP_USER,
-            pass: FTP_PASS ? "SET" : "MISSING"
-        });
+        console.log("\n🔌 FTP CONNECTING:", filePath);
 
         await client.access({
             host: FTP_HOST,
@@ -102,18 +98,15 @@ async function ftpRead(filePath) {
             passive: true
         });
 
-        let data = "";
+        // ✔ SAFE TEMP FILE METHOD (NO STREAM ISSUES)
+        const tmpFile = path.join("/tmp", `log_${Date.now()}.txt`);
 
-        // ✔ CORRECT STREAM HANDLING FOR basic-ftp
-        const writable = {
-            write(chunk) {
-                data += chunk.toString("utf8");
-            }
-        };
-
-        await client.downloadTo(writable, filePath);
+        await client.downloadTo(tmpFile, filePath);
 
         client.close();
+
+        const data = fs.readFileSync(tmpFile, "utf8");
+
         return data;
 
     } catch (err) {
@@ -125,7 +118,7 @@ async function ftpRead(filePath) {
 }
 
 // ==============================
-// PROCESS FILE CONTENT
+// PROCESS FILE
 // ==============================
 function processFile(file, content) {
     const lines = content.split("\n");
@@ -173,9 +166,7 @@ async function run() {
 }
 
 // ==============================
-// START BOT
+// START
 // ==============================
 run();
-
-// repeat every 60 seconds
 setInterval(run, 60000);
