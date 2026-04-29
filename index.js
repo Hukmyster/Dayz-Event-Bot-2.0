@@ -7,31 +7,24 @@ const API_BASE = "https://api.nitrado.net";
 // ==============================
 // ENV
 // ==============================
-const {
-    API_TOKEN,
-    SERVICE_ID,
-    FTP_HOST,
-    FTP_USER,
-    FTP_PASS
-} = process.env;
+const ENV = process.env;
+
+const API_TOKEN = ENV.API_TOKEN;
+const SERVICE_ID = ENV.SERVICE_ID;
+const FTP_HOST = ENV.FTP_HOST;
+const FTP_USER = ENV.FTP_USER;
+const FTP_PASS = ENV.FTP_PASS;
 
 // ==============================
-// SETTINGS
+// STATE (line tracking)
 // ==============================
-const LOOP_INTERVAL = 120000; // 2 minutes
-const DEBUG = false;
-
-// ==============================
-// STATE (prevents spam)
-// ==============================
-const seenLines = new Set();
+// remembers how many lines we've already read per file
+const fileLineTracker = new Map();
 
 // ==============================
 // START LOG
 // ==============================
-console.log("==============================");
-console.log("🚀 BOT ONLINE (STABLE HYBRID)");
-console.log("==============================");
+console.log("🚀 BOT ONLINE (LINE TRACKING MODE)");
 console.log("NODE:", process.version);
 console.log("ENV:", {
     API_TOKEN: !!API_TOKEN,
@@ -54,37 +47,26 @@ async function api(pathUrl) {
             }
         });
 
-        const data = await res.json().catch(() => null);
-
-        if (DEBUG) console.log("API:", pathUrl);
-
-        return data;
-
-    } catch (err) {
-        console.log("❌ API ERROR:", err.message);
+        return await res.json().catch(() => null);
+    } catch {
         return null;
     }
 }
 
 // ==============================
-// GET FILES
+// GET FILE LIST
 // ==============================
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
-
-    const files =
-        res?.data?.gameserver?.game_specific?.log_files || [];
-
-    if (DEBUG) console.log("FILES:", files);
-
-    return files;
+    return res?.data?.gameserver?.game_specific?.log_files || [];
 }
 
 // ==============================
-// FTP READ (WORKING METHOD)
+// FTP READ FILE
 // ==============================
-async function ftpRead(filePath) {
+async function readFileFromFTP(filePath) {
     const client = new Client();
+    client.ftp.verbose = false;
 
     try {
         await client.access({
@@ -94,103 +76,99 @@ async function ftpRead(filePath) {
             secure: false
         });
 
-        const tmpFile = path.join(
-            process.cwd(),
-            `tmp_${Date.now()}.txt`
-        );
+        const tmpPath = `/tmp/${Date.now()}_${path.basename(filePath)}`;
+        await client.downloadTo(tmpPath, filePath);
 
-        await client.downloadTo(tmpFile, filePath);
+        const content = fs.readFileSync(tmpPath, "utf8");
         client.close();
 
-        const data = fs.readFileSync(tmpFile, "utf8");
-        fs.unlinkSync(tmpFile);
-
-        return data;
-
-    } catch (err) {
-        try { client.close(); } catch {}
-
-        if (DEBUG) console.log("FTP FAIL:", filePath, err.message);
-
+        return content;
+    } catch {
+        client.close();
         return null;
     }
 }
 
 // ==============================
-// SCAN LINE (NO DUPLICATES)
-// ==============================
-function scanLine(file, line) {
-    const key = file + line;
-
-    if (seenLines.has(key)) return;
-    seenLines.add(key);
-
-    const lower = line.toLowerCase();
-
-    // LOOTMAX
-    if (file.endsWith(".RPT") && lower.includes("lootmax")) {
-        console.log("\n🔥 LOOT EVENT");
-        console.log("📄", file);
-        console.log(line);
-    }
-
-    // KILL
-    if (file.endsWith(".ADM") && lower.includes("killed by")) {
-        console.log("\n💀 KILL EVENT");
-        console.log("📄", file);
-        console.log(line);
-    }
-}
-
-// ==============================
-// PROCESS FILE
+// PROCESS FILE (LINE TRACKING)
 // ==============================
 function processFile(file, content) {
     const lines = content.split("\n");
 
-    for (const line of lines) {
-        scanLine(file, line);
+    const lastIndex = fileLineTracker.get(file) || 0;
+
+    // first time → skip old lines
+    if (!fileLineTracker.has(file)) {
+        fileLineTracker.set(file, lines.length);
+        return 0;
     }
+
+    let newHits = 0;
+
+    for (let i = lastIndex; i < lines.length; i++) {
+        const line = lines[i];
+        const lower = line.toLowerCase();
+
+        // LOOTMAX
+        if (file.endsWith(".RPT") && lower.includes("lootmax")) {
+            console.log("\n🔥 LOOT EVENT");
+            console.log("📄", file);
+            console.log(line);
+            newHits++;
+        }
+
+        // KILL FEED
+        if (file.endsWith(".ADM") && lower.includes("killed by")) {
+            console.log("\n💀 KILL EVENT");
+            console.log("📄", file);
+            console.log(line);
+            newHits++;
+        }
+    }
+
+    // update tracker
+    fileLineTracker.set(file, lines.length);
+
+    return newHits;
 }
 
 // ==============================
 // MAIN LOOP
 // ==============================
 async function run() {
-    const files = await getFiles();
+    try {
+        const files = await getFiles();
 
-    if (!files.length) {
-        console.log("💓 heartbeat (no files)");
-        return;
-    }
-
-    let foundSomething = false;
-
-    // only scan newest few files (faster + cleaner)
-    const recentFiles = files.slice(0, 3);
-
-    for (const file of recentFiles) {
-        if (!file.endsWith(".RPT") && !file.endsWith(".ADM")) continue;
-
-        const content = await ftpRead(file);
-        if (!content) continue;
-
-        const beforeSize = seenLines.size;
-
-        processFile(file, content);
-
-        if (seenLines.size > beforeSize) {
-            foundSomething = true;
+        if (!files.length) {
+            console.log("⚠️ No files found");
+            return;
         }
-    }
 
-    if (!foundSomething) {
-        console.log("💓 heartbeat", new Date().toISOString());
+        let totalHits = 0;
+
+        for (const file of files) {
+            if (!file.endsWith(".RPT") && !file.endsWith(".ADM")) continue;
+
+            const content = await readFileFromFTP(file);
+            if (!content) continue;
+
+            totalHits += processFile(file, content);
+        }
+
+        // QUIET MODE
+        if (totalHits > 0) {
+            console.log(`\n✅ NEW EVENTS FOUND: ${totalHits}`);
+        } else {
+            console.log(`💓 heartbeat ${new Date().toISOString()}`);
+        }
+
+    } catch (err) {
+        console.log("❌ LOOP ERROR:", err.message);
     }
 }
 
 // ==============================
-// START LOOP
+// START LOOP (2 MIN)
 // ==============================
 run();
-setInterval(run, LOOP_INTERVAL);
+setInterval(run, 120000);
