@@ -1,6 +1,6 @@
-import fs from "fs";
-import path from "path";
-import { Client } from "basic-ftp";
+const fs = require("fs");
+const path = require("path");
+const { Client } = require("basic-ftp");
 
 const API_BASE = "https://api.nitrado.net";
 
@@ -16,27 +16,13 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 // ==============================
-// STATE
+// STATE TRACKING
 // ==============================
-const fileLineTracker = new Map();
+const seenLines = new Set();
 let firstRun = true;
 
 // ==============================
-// START LOG
-// ==============================
-console.log("🚀 BOT ONLINE (INITIAL SWEEP + LIVE TRACKING)");
-console.log("NODE:", process.version);
-console.log("ENV:", {
-    API_TOKEN: !!API_TOKEN,
-    SERVICE_ID: !!SERVICE_ID,
-    FTP_HOST: !!FTP_HOST,
-    FTP_USER: !!FTP_USER,
-    FTP_PASS: !!FTP_PASS
-});
-console.log("==============================");
-
-// ==============================
-// API
+// API CALL
 // ==============================
 async function api(pathUrl) {
     try {
@@ -46,6 +32,7 @@ async function api(pathUrl) {
                 Accept: "application/json"
             }
         });
+
         return await res.json().catch(() => null);
     } catch {
         return null;
@@ -53,18 +40,20 @@ async function api(pathUrl) {
 }
 
 // ==============================
-// FILE LIST
+// GET FILES
 // ==============================
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
+
     return res?.data?.gameserver?.game_specific?.log_files || [];
 }
 
 // ==============================
 // FTP READ
 // ==============================
-async function readFileFromFTP(filePath) {
+async function ftpRead(filePath) {
     const client = new Client();
+
     try {
         await client.access({
             host: FTP_HOST,
@@ -73,12 +62,13 @@ async function readFileFromFTP(filePath) {
             secure: false
         });
 
-        const tmpPath = `/tmp/${Date.now()}_${path.basename(filePath)}`;
-        await client.downloadTo(tmpPath, filePath);
+        const tmpFile = `/tmp/${Date.now()}.txt`;
 
-        const content = fs.readFileSync(tmpPath, "utf8");
+        await client.downloadTo(tmpFile, filePath);
         client.close();
-        return content;
+
+        return fs.readFileSync(tmpFile, "utf8");
+
     } catch {
         client.close();
         return null;
@@ -89,80 +79,91 @@ async function readFileFromFTP(filePath) {
 // PROCESS FILE
 // ==============================
 function processFile(file, content) {
+    const lowerFile = file.toLowerCase();
     const lines = content.split("\n");
 
-    let startIndex = 0;
+    let newHits = 0;
 
-    if (!firstRun) {
-        startIndex = fileLineTracker.get(file) || 0;
-    }
-
-    let hits = 0;
-
-    for (let i = startIndex; i < lines.length; i++) {
-        const line = lines[i];
+    for (const line of lines) {
         const lower = line.toLowerCase();
+        const key = file + line;
 
-        if (file.endsWith(".RPT") && lower.includes("lootmax")) {
-            console.log("\n🔥 LOOT EVENT");
-            console.log("📄", file);
-            console.log(line);
-            hits++;
+        if (seenLines.has(key)) continue;
+        seenLines.add(key);
+
+        // =========================
+        // LOOT EVENTS
+        // =========================
+        if (lowerFile.endsWith(".rpt") && lower.includes("lootmax")) {
+            if (!firstRun) {
+                console.log("\n🔥 LOOT EVENT");
+                console.log("📄", file);
+                console.log(line);
+            }
+            newHits++;
         }
 
-        if (file.endsWith(".ADM") && lower.includes("killed by")) {
-            console.log("\n💀 KILL EVENT");
-            console.log("📄", file);
-            console.log(line);
-            hits++;
+        // =========================
+        // KILL EVENTS
+        // =========================
+        if (lowerFile.endsWith(".adm") && lower.includes("killed by")) {
+            if (!firstRun) {
+                console.log("\n💀 KILL EVENT");
+                console.log("📄", file);
+                console.log(line);
+            }
+            newHits++;
         }
     }
 
-    // update tracker AFTER processing
-    fileLineTracker.set(file, lines.length);
-
-    return hits;
+    return newHits;
 }
 
 // ==============================
 // MAIN LOOP
 // ==============================
 async function run() {
-    try {
-        const files = await getFiles();
+    let totalHits = 0;
 
-        if (!files.length) {
-            console.log("⚠️ No files found");
-            return;
-        }
+    const files = await getFiles();
 
-        let totalHits = 0;
+    for (const file of files) {
+        const lowerFile = file.toLowerCase();
 
-        for (const file of files) {
-            if (!file.endsWith(".RPT") && !file.endsWith(".ADM")) continue;
+        if (!lowerFile.endsWith(".rpt") && !lowerFile.endsWith(".adm")) continue;
 
-            const content = await readFileFromFTP(file);
-            if (!content) continue;
+        const content = await ftpRead(file);
+        if (!content) continue;
 
-            totalHits += processFile(file, content);
-        }
+        totalHits += processFile(file, content);
+    }
 
-        if (firstRun) {
-            console.log(`\n🧠 INITIAL SWEEP COMPLETE (${totalHits} events)`);
-            firstRun = false;
-        } else if (totalHits > 0) {
-            console.log(`\n✅ NEW EVENTS: ${totalHits}`);
-        } else {
-            console.log(`💓 heartbeat ${new Date().toISOString()}`);
-        }
+    // ==========================
+    // FIRST RUN SUMMARY
+    // ==========================
+    if (firstRun) {
+        console.log(`🧠 INITIAL SWEEP COMPLETE (${totalHits} events)`);
+        firstRun = false;
+        return;
+    }
 
-    } catch (err) {
-        console.log("❌ LOOP ERROR:", err.message);
+    // ==========================
+    // QUIET MODE
+    // ==========================
+    if (totalHits > 0) {
+        console.log(`\n⚡ ${totalHits} NEW EVENTS`);
     }
 }
 
 // ==============================
-// START LOOP (2 MIN)
+// START
 // ==============================
+console.log("🚀 BOT STARTED (CLEAN 2 MIN MODE)");
+
 run();
 setInterval(run, 120000);
+
+// heartbeat so Railway stays alive
+setInterval(() => {
+    console.log("💓 heartbeat", new Date().toISOString());
+}, 120000);
