@@ -1,3 +1,5 @@
+const ftp = require("basic-ftp");
+
 const API_BASE = "https://api.nitrado.net";
 
 const API_TOKEN = process.env.API_TOKEN;
@@ -7,43 +9,24 @@ const FTP_HOST = process.env.FTP_HOST;
 const FTP_USER = process.env.FTP_USER;
 const FTP_PASS = process.env.FTP_PASS;
 
+let lastRPT = null;
+let lastADM = null;
+
 /**
  * =========================
- * SAFE API CALL
+ * API CALL
  * =========================
  */
 async function api(path) {
-    try {
-        console.log(`🔌 API CALL: ${path}`);
-
-        const res = await fetch(`${API_BASE}${path}`, {
-            headers: {
-                Authorization: `Bearer ${API_TOKEN}`,
-                Accept: "application/json"
-            }
-        });
-
-        const text = await res.text();
-
-        console.log(`📡 STATUS: ${res.status}`);
-
-        let json;
-        try {
-            json = JSON.parse(text);
-        } catch {
-            json = null;
+    const res = await fetch(`${API_BASE}${path}`, {
+        headers: {
+            Authorization: `Bearer ${API_TOKEN}`,
+            Accept: "application/json"
         }
+    });
 
-        console.log(`📦 RAW RESPONSE:`);
-        console.log(text.slice(0, 500));
-
-        return json;
-
-    } catch (err) {
-        console.log("❌ API ERROR:");
-        console.log(err);
-        return null;
-    }
+    const json = await res.json().catch(() => null);
+    return json;
 }
 
 /**
@@ -54,22 +37,91 @@ async function api(path) {
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
 
-    console.log("\n==============================");
-    console.log("🔍 PARSING FILE STRUCTURE");
-    console.log("==============================");
+    return res?.data?.gameserver?.game_specific?.log_files || [];
+}
 
-    const files =
-        res?.data?.gameserver?.game_specific?.log_files;
+/**
+ * =========================
+ * FTP READ
+ * =========================
+ */
+async function readFile(filePath) {
+    const client = new ftp.Client();
+    client.ftp.verbose = false;
 
-    console.log("📂 EXTRACTED FILES:");
-    console.log(files);
+    let content = "";
 
-    if (!files) {
-        console.log("❌ log_files PATH DOES NOT EXIST");
-        return [];
+    try {
+        await client.access({
+            host: FTP_HOST,
+            user: FTP_USER,
+            password: FTP_PASS,
+            secure: false
+        });
+
+        await client.downloadTo(
+            {
+                write: (data) => {
+                    content += data.toString();
+                }
+            },
+            filePath
+        );
+
+        client.close();
+        return content;
+
+    } catch (err) {
+        console.log(`❌ FTP FAIL: ${filePath}`);
+        client.close();
+        return null;
     }
+}
 
-    return files;
+/**
+ * =========================
+ * TRIGGERS
+ * =========================
+ */
+function scanRPT(line) {
+    if (line.toLowerCase().includes("lootmax")) {
+        console.log("\n🔥 LOOTMAX HIT");
+        console.log(line);
+    }
+}
+
+function scanADM(line) {
+    if (line.toLowerCase().includes("killed by")) {
+        console.log("\n💀 KILL HIT");
+        console.log(line);
+    }
+}
+
+/**
+ * =========================
+ * PROCESS FILE
+ * =========================
+ */
+function process(content, type) {
+    const lines = content.split("\n");
+
+    for (const line of lines) {
+        if (type === "RPT") scanRPT(line);
+        if (type === "ADM") scanADM(line);
+    }
+}
+
+/**
+ * =========================
+ * GET LATEST FILE
+ * =========================
+ */
+function latest(files, ext) {
+    const filtered = files.filter(f =>
+        f.toLowerCase().endsWith(ext)
+    );
+
+    return filtered.length ? filtered[filtered.length - 1] : null;
 }
 
 /**
@@ -78,30 +130,44 @@ async function getFiles() {
  * =========================
  */
 async function run() {
-    console.log("\n🚀 BOT LOOP START");
+    console.log("\n==============================");
+    console.log("🔄 LOOP START");
     console.log("==============================");
-
-    if (!API_TOKEN || !SERVICE_ID) {
-        console.log("❌ MISSING ENV VARIABLES");
-        return;
-    }
-
-    console.log("✅ ENV OK");
 
     const files = await getFiles();
 
-    console.log("\n==============================");
-    console.log("📊 FILE RESULT SUMMARY");
-    console.log("==============================");
-    console.log("COUNT:", files?.length || 0);
-
-    if (!Array.isArray(files) || files.length === 0) {
-        console.log("⚠️ NO FILES FOUND OR INVALID RESPONSE");
+    if (!files.length) {
+        console.log("⚠️ NO FILES FOUND");
         return;
     }
 
-    console.log("\n📄 FILES:");
-    files.forEach(f => console.log(" -", f));
+    const rpt = latest(files, ".rpt");
+    const adm = latest(files, ".adm");
+
+    console.log("📄 RPT:", rpt);
+    console.log("📄 ADM:", adm);
+
+    /**
+     * RPT HANDLING
+     */
+    if (rpt && rpt !== lastRPT) {
+        console.log(`🆕 NEW RPT: ${rpt}`);
+        lastRPT = rpt;
+
+        const content = await readFile(rpt);
+        if (content) process(content, "RPT");
+    }
+
+    /**
+     * ADM HANDLING
+     */
+    if (adm && adm !== lastADM) {
+        console.log(`🆕 NEW ADM: ${adm}`);
+        lastADM = adm;
+
+        const content = await readFile(adm);
+        if (content) process(content, "ADM");
+    }
 
     console.log("==============================");
     console.log("🔌 LOOP END");
@@ -109,10 +175,10 @@ async function run() {
 
 /**
  * =========================
- * STARTUP
+ * START
  * =========================
  */
-console.log("Bot starting (FULL DEBUG MODE)");
+console.log("Bot starting (FINAL TRIGGER MODE)");
 
 run();
 setInterval(run, 60000);
