@@ -1,32 +1,53 @@
-const ftp = require("basic-ftp");
-
 const API_BASE = "https://api.nitrado.net";
-
-const API_TOKEN = process.env.API_TOKEN;
-const SERVICE_ID = process.env.SERVICE_ID;
-
-const FTP_HOST = process.env.FTP_HOST;
-const FTP_USER = process.env.FTP_USER;
-const FTP_PASS = process.env.FTP_PASS;
-
-let lastRPT = null;
-let lastADM = null;
 
 /**
  * =========================
- * API CALL
+ * ENV SAFETY (RAILWAY FIX)
+ * =========================
+ */
+const API_TOKEN = process.env.API_TOKEN || "";
+const SERVICE_ID = process.env.SERVICE_ID || "";
+
+const FTP_HOST = process.env.FTP_HOST || "";
+const FTP_USER = process.env.FTP_USER || "";
+const FTP_PASS = process.env.FTP_PASS || "";
+
+console.log("\n🔐 ENV CHECK:");
+console.log("API_TOKEN:", API_TOKEN ? "OK" : "MISSING");
+console.log("SERVICE_ID:", SERVICE_ID ? "OK" : "MISSING");
+console.log("FTP_HOST:", FTP_HOST ? "OK" : "MISSING");
+console.log("FTP_USER:", FTP_USER ? "OK" : "MISSING");
+console.log("FTP_PASS:", FTP_PASS ? "OK" : "MISSING");
+
+/**
+ * =========================
+ * SAFE API CALL
  * =========================
  */
 async function api(path) {
-    const res = await fetch(`${API_BASE}${path}`, {
-        headers: {
-            Authorization: `Bearer ${API_TOKEN}`,
-            Accept: "application/json"
-        }
-    });
+    try {
+        const res = await fetch(`${API_BASE}${path}`, {
+            headers: {
+                Authorization: `Bearer ${API_TOKEN}`,
+                Accept: "application/json"
+            }
+        });
 
-    const json = await res.json().catch(() => null);
-    return json;
+        const text = await res.text();
+
+        let json;
+        try {
+            json = JSON.parse(text);
+        } catch {
+            json = null;
+        }
+
+        return json;
+
+    } catch (err) {
+        console.log("❌ API ERROR:", err);
+        return null;
+    }
 }
 
 /**
@@ -37,15 +58,39 @@ async function api(path) {
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
 
-    return res?.data?.gameserver?.game_specific?.log_files || [];
+    const files =
+        res?.data?.gameserver?.game_specific?.log_files || [];
+
+    return files;
 }
 
 /**
  * =========================
- * FTP READ
+ * TRIGGERS
+ * =========================
+ */
+function scanRPT(line) {
+    if (line.toLowerCase().includes("lootmax")) {
+        console.log("\n🔥 LOOTMAX HIT");
+        console.log(line);
+    }
+}
+
+function scanADM(line) {
+    if (line.toLowerCase().includes("killed by")) {
+        console.log("\n💀 KILL HIT");
+        console.log(line);
+    }
+}
+
+/**
+ * =========================
+ * READ FILE VIA FTP
  * =========================
  */
 async function readFile(filePath) {
+    const ftp = require("basic-ftp");
+
     const client = new ftp.Client();
     client.ftp.verbose = false;
 
@@ -72,7 +117,7 @@ async function readFile(filePath) {
         return content;
 
     } catch (err) {
-        console.log(`❌ FTP FAIL: ${filePath}`);
+        console.log("❌ FTP FAIL:", filePath);
         client.close();
         return null;
     }
@@ -80,26 +125,7 @@ async function readFile(filePath) {
 
 /**
  * =========================
- * TRIGGERS
- * =========================
- */
-function scanRPT(line) {
-    if (line.toLowerCase().includes("lootmax")) {
-        console.log("\n🔥 LOOTMAX HIT");
-        console.log(line);
-    }
-}
-
-function scanADM(line) {
-    if (line.toLowerCase().includes("killed by")) {
-        console.log("\n💀 KILL HIT");
-        console.log(line);
-    }
-}
-
-/**
- * =========================
- * PROCESS FILE
+ * PROCESS FILE CONTENT
  * =========================
  */
 function process(content, type) {
@@ -117,11 +143,11 @@ function process(content, type) {
  * =========================
  */
 function latest(files, ext) {
-    const filtered = files.filter(f =>
+    const list = files.filter(f =>
         f.toLowerCase().endsWith(ext)
     );
 
-    return filtered.length ? filtered[filtered.length - 1] : null;
+    return list.length ? list[list.length - 1] : null;
 }
 
 /**
@@ -134,10 +160,17 @@ async function run() {
     console.log("🔄 LOOP START");
     console.log("==============================");
 
+    if (!API_TOKEN || !SERVICE_ID) {
+        console.log("❌ MISSING API_TOKEN OR SERVICE_ID");
+        return;
+    }
+
     const files = await getFiles();
 
+    console.log("📂 FILES FOUND:", files.length);
+
     if (!files.length) {
-        console.log("⚠️ NO FILES FOUND");
+        console.log("⚠️ NO FILES RETURNED");
         return;
     }
 
@@ -148,25 +181,25 @@ async function run() {
     console.log("📄 ADM:", adm);
 
     /**
-     * RPT HANDLING
+     * RPT PROCESSING
      */
-    if (rpt && rpt !== lastRPT) {
-        console.log(`🆕 NEW RPT: ${rpt}`);
-        lastRPT = rpt;
-
+    if (rpt) {
+        console.log("\n📥 READING RPT:", rpt);
         const content = await readFile(rpt);
+
         if (content) process(content, "RPT");
+        else console.log("❌ NO RPT CONTENT");
     }
 
     /**
-     * ADM HANDLING
+     * ADM PROCESSING
      */
-    if (adm && adm !== lastADM) {
-        console.log(`🆕 NEW ADM: ${adm}`);
-        lastADM = adm;
-
+    if (adm) {
+        console.log("\n📥 READING ADM:", adm);
         const content = await readFile(adm);
+
         if (content) process(content, "ADM");
+        else console.log("❌ NO ADM CONTENT");
     }
 
     console.log("==============================");
@@ -175,10 +208,10 @@ async function run() {
 
 /**
  * =========================
- * START
+ * START BOT
  * =========================
  */
-console.log("Bot starting (FINAL TRIGGER MODE)");
+console.log("🚀 Bot starting (LOOTMAX + KILLFEED MODE)");
 
 run();
 setInterval(run, 60000);
