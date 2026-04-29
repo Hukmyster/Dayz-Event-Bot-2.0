@@ -1,13 +1,12 @@
 {
   "name": "nitrado-log-bot",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "dotenv": "^16.4.0"
+    "basic-ftp": "^5.0.5"
   }
 }
