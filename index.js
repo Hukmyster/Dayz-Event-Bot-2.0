@@ -1,53 +1,63 @@
 import fs from "fs";
 import path from "path";
-import basicFtp from "basic-ftp";
+import { Client } from "basic-ftp";
 
 const API_BASE = "https://api.nitrado.net";
 
 // ==============================
-// ENV DEBUG (SAFE)
+// ENV
 // ==============================
-const ENV = process.env;
+const API_TOKEN = process.env.API_TOKEN;
+const SERVICE_ID = process.env.SERVICE_ID;
 
-function mask(v) {
-    if (!v) return "MISSING";
-    return v.slice(0, 4) + "****" + v.slice(-4);
-}
+const FTP_HOST = process.env.FTP_HOST;
+const FTP_USER = process.env.FTP_USER;
+const FTP_PASS = process.env.FTP_PASS;
 
+// ==============================
+// DEBUG ENV (masked)
+// ==============================
 console.log("\n==============================");
-console.log("🚀 BOT STARTING (STABLE NITRADO API MODE)");
+console.log("🚀 BOT STARTING (6 MIN STABLE LOOP MODE)");
 console.log("==============================");
 
 console.log("🧠 NODE:", process.version);
 
-console.log("\n📦 ENV DEBUG (masked):");
-console.log({
-    API_TOKEN: mask(ENV.API_TOKEN),
-    SERVICE_ID: ENV.SERVICE_ID || "MISSING",
-    FTP_HOST: ENV.FTP_HOST || "MISSING",
-    FTP_USER: mask(ENV.FTP_USER),
-    FTP_PASS: mask(ENV.FTP_PASS)
+console.log("📦 ENV CHECK:", {
+    API_TOKEN: !!API_TOKEN,
+    SERVICE_ID: !!SERVICE_ID,
+    FTP_HOST: !!FTP_HOST,
+    FTP_USER: !!FTP_USER,
+    FTP_PASS: !!FTP_PASS
 });
+
+console.log("==============================\n");
+
+// ==============================
+// MEMORY (CRITICAL)
+// prevents duplicate hits
+// ==============================
+const seenLines = new Set();
 
 // ==============================
 // API CALL
 // ==============================
-async function api(pathUrl) {
+async function api(endpoint) {
     try {
-        const res = await fetch(`${API_BASE}${pathUrl}`, {
+        console.log("🌐 API CALL:", endpoint);
+
+        const res = await fetch(`${API_BASE}${endpoint}`, {
             headers: {
-                Authorization: `Bearer ${ENV.API_TOKEN}`,
+                Authorization: `Bearer ${API_TOKEN}`,
                 Accept: "application/json"
             }
         });
 
         const json = await res.json();
 
-        console.log("\n🌐 API CALL:", pathUrl);
-        console.log("📡 STATUS OK:", res.ok);
+        console.log("📡 STATUS:", json?.meta?.status || "unknown");
 
         return json;
-
     } catch (err) {
         console.log("❌ API ERROR:", err.message);
         return null;
@@ -55,12 +65,10 @@ async function api(pathUrl) {
 }
 
 // ==============================
-// GET FILE LIST (API)
+// GET FILE LIST
 // ==============================
 async function getFiles() {
-    console.log("\n🔍 FETCHING FILE LIST...");
-
-    const res = await api(`/services/${ENV.SERVICE_ID}/gameservers`);
+    const res = await api(`/services/${SERVICE_ID}/gameservers`);
 
     const files =
         res?.data?.gameserver?.game_specific?.log_files || [];
@@ -71,18 +79,27 @@ async function getFiles() {
 }
 
 // ==============================
-// TRIGGERS
+// TRIGGER SCANNER
 // ==============================
 function scanLine(file, line) {
+    if (!line) return;
+
+    const key = file + ":" + line;
+
+    if (seenLines.has(key)) return;
+    seenLines.add(key);
+
     const lower = line.toLowerCase();
 
-    if (lower.includes("lootmax")) {
+    // ================= LOOTMAX =================
+    if (file.endsWith(".RPT") && lower.includes("lootmax")) {
         console.log("\n🔥 LOOTMAX HIT:");
         console.log("📄 FILE:", file);
         console.log(line);
     }
 
-    if (lower.includes("killed by")) {
+    // ================= KILLFEED =================
+    if (file.endsWith(".ADM") && lower.includes("killed by")) {
         console.log("\n💀 KILL EVENT:");
         console.log("📄 FILE:", file);
         console.log(line);
@@ -90,43 +107,36 @@ function scanLine(file, line) {
 }
 
 // ==============================
-// FTP READ (ROBUST VERSION)
+// FTP READ SAFE
 // ==============================
 async function ftpRead(filePath) {
-    const client = new basicFtp.Client();
+    const client = new Client();
     client.ftp.verbose = false;
 
     try {
-        await client.access({
-            host: ENV.FTP_HOST,
-            user: ENV.FTP_USER,
-            password: ENV.FTP_PASS,
-            secure: false
-        });
-
-        const tmp = path.join("/tmp", `log_${Date.now()}.txt`);
-
         console.log("📥 FTP READ:", filePath);
 
-        await client.downloadTo(tmp, filePath);
+        await client.access({
+            host: FTP_HOST,
+            user: FTP_USER,
+            password: FTP_PASS,
+            secure: false,
+            passive: true
+        });
 
-        const data = fs.readFileSync(tmp, "utf8");
+        const tmpFile = path.join("/tmp", `log_${Date.now()}.txt`);
 
-        client.close();
+        await client.downloadTo(tmpFile, filePath);
+
+        const data = fs.readFileSync(tmpFile, "utf8");
 
         return data;
 
     } catch (err) {
-        client.close();
-
-        // ✔ IMPORTANT: ignore missing file errors
-        if (err.message.includes("550")) {
-            console.log("⚠️ FILE NOT FOUND (SKIP):", filePath);
-            return null;
-        }
-
         console.log("❌ FTP ERROR:", err.message);
         return null;
+    } finally {
+        client.close();
     }
 }
 
@@ -142,7 +152,7 @@ function processFile(file, content) {
 }
 
 // ==============================
-// MAIN LOOP
+// LOOP
 // ==============================
 async function run() {
     console.log("\n==============================");
@@ -168,11 +178,11 @@ async function run() {
         processFile(file, content);
     }
 
-    console.log("\n🔌 LOOP END");
+    console.log("🔌 LOOP END");
 }
 
 // ==============================
-// START
+// START (6 MIN LOOP)
 // ==============================
 run();
-setInterval(run, 60000);
+setInterval(run, 6 * 60 * 1000);
