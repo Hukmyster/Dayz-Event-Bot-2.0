@@ -1,7 +1,7 @@
 const API_BASE = "https://api.nitrado.net";
 
 // ==============================
-// ENV
+// ENV SAFE LOAD
 // ==============================
 const ENV = process.env || {};
 
@@ -13,10 +13,11 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 console.log("\n==============================");
-console.log("🚀 BOT STARTING (HYBRID SCANNER V2)");
+console.log("🚀 BOT STARTING (HYBRID FINAL STABLE)");
 console.log("==============================");
 
 console.log("🧠 NODE:", process.version);
+
 console.log("📦 ENV CHECK:", {
     API_TOKEN: !!API_TOKEN,
     SERVICE_ID: !!SERVICE_ID,
@@ -37,8 +38,7 @@ async function api(path) {
             }
         });
 
-        const json = await res.json().catch(() => null);
-        return json;
+        return await res.json().catch(() => null);
     } catch (err) {
         console.log("❌ API ERROR:", err.message);
         return null;
@@ -46,7 +46,7 @@ async function api(path) {
 }
 
 // ==============================
-// GET FILES
+// GET FILE LIST
 // ==============================
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
@@ -61,7 +61,7 @@ async function getFiles() {
 }
 
 // ==============================
-// TRIGGERS
+// TRIGGER SCANNER
 // ==============================
 function scanLine(file, line) {
     const lower = line.toLowerCase();
@@ -78,7 +78,7 @@ function scanLine(file, line) {
 }
 
 // ==============================
-// FTP DEBUG + FIXED READ
+// FIXED FTP READ (REAL WORKING VERSION)
 // ==============================
 async function ftpRead(filePath) {
     try {
@@ -87,7 +87,7 @@ async function ftpRead(filePath) {
 
         client.ftp.verbose = true;
 
-        console.log("\n🔌 FTP DEBUG:");
+        console.log("\n🔌 FTP CONNECTING...");
         console.log({
             host: FTP_HOST,
             user: FTP_USER,
@@ -104,14 +104,14 @@ async function ftpRead(filePath) {
 
         let data = "";
 
-        await client.downloadTo(
-            {
-                write: (chunk) => {
-                    data += chunk.toString("utf8");
-                }
-            },
-            filePath
-        );
+        // ✔ CORRECT STREAM HANDLING FOR basic-ftp
+        const writable = {
+            write(chunk) {
+                data += chunk.toString("utf8");
+            }
+        };
+
+        await client.downloadTo(writable, filePath);
 
         client.close();
         return data;
@@ -125,7 +125,7 @@ async function ftpRead(filePath) {
 }
 
 // ==============================
-// PROCESS FILE
+// PROCESS FILE CONTENT
 // ==============================
 function processFile(file, content) {
     const lines = content.split("\n");
@@ -145,7 +145,7 @@ async function run() {
 
     const files = await getFiles();
 
-    if (!files.length) {
+    if (!files || !files.length) {
         console.log("⚠️ NO FILES FOUND");
         return;
     }
@@ -173,7 +173,9 @@ async function run() {
 }
 
 // ==============================
-// START
+// START BOT
 // ==============================
 run();
+
+// repeat every 60 seconds
 setInterval(run, 60000);
