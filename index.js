@@ -2,17 +2,39 @@ const API_BASE = "https://api.nitrado.net";
 
 /**
  * =========================
- * ENV SAFETY (RAILWAY FIX)
+ * SAFE ENV HANDLING (RAILWAY FIX)
  * =========================
  */
-const API_TOKEN = process.env.API_TOKEN || "";
-const SERVICE_ID = process.env.SERVICE_ID || "";
+const API_TOKEN = (typeof process !== "undefined" && process.env)
+    ? process.env.API_TOKEN
+    : undefined;
 
-const FTP_HOST = process.env.FTP_HOST || "";
-const FTP_USER = process.env.FTP_USER || "";
-const FTP_PASS = process.env.FTP_PASS || "";
+const SERVICE_ID = (typeof process !== "undefined" && process.env)
+    ? process.env.SERVICE_ID
+    : undefined;
 
-console.log("\n🔐 ENV CHECK:");
+const FTP_HOST = (typeof process !== "undefined" && process.env)
+    ? process.env.FTP_HOST
+    : undefined;
+
+const FTP_USER = (typeof process !== "undefined" && process.env)
+    ? process.env.FTP_USER
+    : undefined;
+
+const FTP_PASS = (typeof process !== "undefined" && process.env)
+    ? process.env.FTP_PASS
+    : undefined;
+
+/**
+ * =========================
+ * STARTUP DEBUG (CRITICAL)
+ * =========================
+ */
+console.log("\n==============================");
+console.log("🚀 BOT STARTING (HYBRID MODE)");
+console.log("==============================");
+
+console.log("🔐 ENV CHECK:");
 console.log("API_TOKEN:", API_TOKEN ? "OK" : "MISSING");
 console.log("SERVICE_ID:", SERVICE_ID ? "OK" : "MISSING");
 console.log("FTP_HOST:", FTP_HOST ? "OK" : "MISSING");
@@ -25,6 +47,11 @@ console.log("FTP_PASS:", FTP_PASS ? "OK" : "MISSING");
  * =========================
  */
 async function api(path) {
+    if (!API_TOKEN) {
+        console.log("❌ NO API TOKEN - skipping API call");
+        return null;
+    }
+
     try {
         const res = await fetch(`${API_BASE}${path}`, {
             headers: {
@@ -33,19 +60,11 @@ async function api(path) {
             }
         });
 
-        const text = await res.text();
-
-        let json;
-        try {
-            json = JSON.parse(text);
-        } catch {
-            json = null;
-        }
-
+        const json = await res.json().catch(() => null);
         return json;
 
     } catch (err) {
-        console.log("❌ API ERROR:", err);
+        console.log("❌ API ERROR:", err.message);
         return null;
     }
 }
@@ -58,10 +77,7 @@ async function api(path) {
 async function getFiles() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
 
-    const files =
-        res?.data?.gameserver?.game_specific?.log_files || [];
-
-    return files;
+    return res?.data?.gameserver?.game_specific?.log_files || [];
 }
 
 /**
@@ -85,11 +101,17 @@ function scanADM(line) {
 
 /**
  * =========================
- * READ FILE VIA FTP
+ * FTP READ (HYBRID)
  * =========================
  */
 async function readFile(filePath) {
-    const ftp = require("basic-ftp");
+    let ftp;
+    try {
+        ftp = require("basic-ftp");
+    } catch {
+        console.log("❌ FTP MODULE NOT INSTALLED");
+        return null;
+    }
 
     const client = new ftp.Client();
     client.ftp.verbose = false;
@@ -160,46 +182,49 @@ async function run() {
     console.log("🔄 LOOP START");
     console.log("==============================");
 
-    if (!API_TOKEN || !SERVICE_ID) {
-        console.log("❌ MISSING API_TOKEN OR SERVICE_ID");
-        return;
-    }
-
     const files = await getFiles();
 
-    console.log("📂 FILES FOUND:", files.length);
-
     if (!files.length) {
-        console.log("⚠️ NO FILES RETURNED");
+        console.log("⚠️ NO FILES FOUND");
         return;
     }
+
+    console.log("📂 FILE COUNT:", files.length);
 
     const rpt = latest(files, ".rpt");
     const adm = latest(files, ".adm");
 
-    console.log("📄 RPT:", rpt);
-    console.log("📄 ADM:", adm);
+    console.log("📄 RPT:", rpt || "NONE");
+    console.log("📄 ADM:", adm || "NONE");
 
     /**
-     * RPT PROCESSING
+     * RPT PROCESS
      */
     if (rpt) {
-        console.log("\n📥 READING RPT:", rpt);
+        console.log("\n📥 READING RPT");
         const content = await readFile(rpt);
 
-        if (content) process(content, "RPT");
-        else console.log("❌ NO RPT CONTENT");
+        if (content) {
+            console.log("✅ RPT READ OK");
+            process(content, "RPT");
+        } else {
+            console.log("❌ RPT EMPTY");
+        }
     }
 
     /**
-     * ADM PROCESSING
+     * ADM PROCESS
      */
     if (adm) {
-        console.log("\n📥 READING ADM:", adm);
+        console.log("\n📥 READING ADM");
         const content = await readFile(adm);
 
-        if (content) process(content, "ADM");
-        else console.log("❌ NO ADM CONTENT");
+        if (content) {
+            console.log("✅ ADM READ OK");
+            process(content, "ADM");
+        } else {
+            console.log("❌ ADM EMPTY");
+        }
     }
 
     console.log("==============================");
@@ -211,7 +236,5 @@ async function run() {
  * START BOT
  * =========================
  */
-console.log("🚀 Bot starting (LOOTMAX + KILLFEED MODE)");
-
 run();
 setInterval(run, 60000);
