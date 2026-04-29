@@ -4,12 +4,12 @@ const { Client } = require("basic-ftp");
 const API_BASE = "https://api.nitrado.net";
 
 // ==============================
-// ENV (SAFE + DEBUG ALWAYS ON)
+// ENV + DEBUG (PERSISTENT)
 // ==============================
 const ENV = process.env || {};
 
 console.log("================================");
-console.log("🧪 ENV DEBUG (RAW STATE)");
+console.log("🧪 ENV DEBUG (RAILWAY)");
 console.log({
   API_TOKEN: !!ENV.API_TOKEN,
   SERVICE_ID: !!ENV.SERVICE_ID,
@@ -27,20 +27,20 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 if (!API_TOKEN || !SERVICE_ID || !FTP_HOST || !FTP_USER || !FTP_PASS) {
-  console.log("❌ FATAL: Missing ENV variables - stopping bot");
+  console.log("❌ MISSING ENV VARS — STOPPING");
   process.exit(1);
 }
 
 // ==============================
-// STATE TRACKING (NO DUPLICATES)
+// STATE (NO DUPLICATE EVENTS)
 // ==============================
 const lastLineIndex = {};
 
 // ==============================
-// API CALL (DEBUG ENABLED)
+// API CALL (DEBUG ALWAYS ON)
 // ==============================
 async function api(path) {
-  console.log("🌐 API REQUEST:", path);
+  console.log("🌐 API CALL:", path);
 
   try {
     const res = await fetch(`${API_BASE}${path}`, {
@@ -50,14 +50,13 @@ async function api(path) {
       }
     });
 
-    console.log("📡 API STATUS:", res.status);
+    console.log("📡 STATUS:", res.status);
 
     const json = await res.json();
 
-    console.log("📦 API RESPONSE RECEIVED:", !!json);
+    console.log("📦 RESPONSE OK:", !!json);
 
     return json;
-
   } catch (err) {
     console.log("❌ API ERROR:", err.message);
     return null;
@@ -65,7 +64,7 @@ async function api(path) {
 }
 
 // ==============================
-// GET FILES (DEBUG ALWAYS ON)
+// FILE LIST
 // ==============================
 async function getFiles() {
   const res = await api(`/services/${SERVICE_ID}/gameservers`);
@@ -73,18 +72,18 @@ async function getFiles() {
   const files =
     res?.data?.gameserver?.game_specific?.log_files || [];
 
-  console.log("📂 FILES COUNT:", files.length);
-  console.log("📂 FILE LIST:");
+  console.log("📂 FILE COUNT:", files.length);
+
   files.forEach(f => console.log(" -", f));
 
   return files;
 }
 
 // ==============================
-// FTP READ (DEBUG ENABLED)
+// FTP READ (SAFE + DEBUG)
 // ==============================
 async function readFile(filePath) {
-  console.log("📥 FTP READ ATTEMPT:", filePath);
+  console.log("📥 FTP READ:", filePath);
 
   const client = new Client();
 
@@ -102,14 +101,14 @@ async function readFile(filePath) {
 
     client.close();
 
-    const content = fs.readFileSync(tmp, "utf8");
+    const data = fs.readFileSync(tmp, "utf8");
 
-    console.log("📄 FILE SIZE:", content.length);
+    console.log("📄 SIZE:", data.length);
 
-    return content;
+    return data;
 
   } catch (err) {
-    console.log("❌ FTP ERROR:", filePath);
+    console.log("❌ FTP FAIL:", filePath);
     console.log("   ↳", err.message);
 
     client.close();
@@ -118,15 +117,15 @@ async function readFile(filePath) {
 }
 
 // ==============================
-// LINE PROCESSING (DEBUG SAFE)
+// EVENT DETECTION (FIXED LOGIC)
 // ==============================
 function processFile(file, content) {
   const lines = content.split("\n");
 
   const start = lastLineIndex[file] || 0;
 
-  console.log(`🧠 PROCESSING: ${file}`);
-  console.log(`   ↳ New lines since last run: ${lines.length - start}`);
+  console.log("🧠 PROCESS:", file);
+  console.log("   ↳ New lines:", lines.length - start);
 
   let hits = 0;
 
@@ -136,15 +135,31 @@ function processFile(file, content) {
 
     const lower = line.toLowerCase();
 
-    if (lower.includes("lootmax")) {
-      console.log("\n🔥 LOOT EVENT DETECTED");
+    // ======================
+    // LOOT DETECTION (FIXED)
+    // ======================
+    if (
+      lower.includes("lootmax") ||
+      lower.includes("loot max") ||
+      (lower.includes("loot") && lower.includes("max")) ||
+      lower.includes("containermaxsum")
+    ) {
+      console.log("\n🔥 LOOT EVENT");
       console.log("📄 FILE:", file);
       console.log("LINE:", line.trim());
       hits++;
     }
 
-    if (lower.includes("killed by")) {
-      console.log("\n💀 KILL EVENT DETECTED");
+    // ======================
+    // KILL DETECTION (EXPANDED)
+    // ======================
+    if (
+      lower.includes("killed by") ||
+      lower.includes("was killed") ||
+      lower.includes("died") ||
+      lower.includes("player") && lower.includes("dead")
+    ) {
+      console.log("\n💀 KILL EVENT");
       console.log("📄 FILE:", file);
       console.log("LINE:", line.trim());
       hits++;
@@ -157,7 +172,7 @@ function processFile(file, content) {
 }
 
 // ==============================
-// MAIN LOOP (DEBUG ALWAYS ON)
+// MAIN LOOP (2 MIN SAFE)
 // ==============================
 async function run() {
   console.log("\n==============================");
@@ -178,19 +193,19 @@ async function run() {
   }
 
   if (total === 0) {
-    console.log("🟡 NO NEW EVENTS THIS CYCLE");
+    console.log("🟡 NO NEW EVENTS");
   } else {
-    console.log(`⚡ TOTAL NEW EVENTS: ${total}`);
+    console.log("⚡ TOTAL EVENTS:", total);
   }
 
   console.log("🔌 LOOP END");
 }
 
 // ==============================
-// START (2 MIN LOOP)
+// START
 // ==============================
-console.log("🚀 BOT ONLINE (DEBUG PERSIST MODE)");
-console.log("==============================");
+console.log("🚀 BOT STARTED (LOOT + KILL FIX MODE)");
+console.log("⏱ LOOP: 120s");
 
 run();
 setInterval(run, 120000);
