@@ -1,178 +1,183 @@
-const ftp = require("basic-ftp");
+import ftp from "basic-ftp";
+import fs from "fs";
+import path from "path";
 
-const API_BASE = "https://api.nitrado.net";
+console.log("🚀 BOT STARTING (FINAL FTP HYBRID + DELTA MODE)");
 
-const API_TOKEN = process.env.API_TOKEN;
-const SERVICE_ID = process.env.SERVICE_ID;
+/* =========================
+   ENV SAFE LOAD
+========================= */
+const ENV = process.env || {};
 
-const seen = new Set();
+const API_TOKEN = ENV.API_TOKEN || null;
+const FTP_HOST = ENV.FTP_HOST || null;
+const FTP_USER = ENV.FTP_USER || null;
+const FTP_PASS = ENV.FTP_PASS || null;
+const SERVICE_ID = ENV.SERVICE_ID || null;
 
-const POLL_MS = 60000;
+console.log("🔐 ENV CHECK:", {
+  API_TOKEN: !!API_TOKEN,
+  FTP_HOST: !!FTP_HOST,
+  FTP_USER: !!FTP_USER,
+  FTP_PASS: !!FTP_PASS,
+  SERVICE_ID: !!SERVICE_ID
+});
 
-// =======================
-// API CALL
-// =======================
-async function api(path) {
-    const res = await fetch(`${API_BASE}${path}`, {
-        headers: {
-            Authorization: `Bearer ${API_TOKEN}`,
-            Accept: "application/json",
-        },
-    });
-
-    const json = await res.json().catch((e) => {
-        console.log("❌ API JSON PARSE FAIL:", e.message);
-        return null;
-    });
-
-    return json;
+if (!FTP_HOST || !FTP_USER || !FTP_PASS) {
+  console.log("❌ Missing FTP credentials");
+  process.exit(1);
 }
 
-// =======================
-// GET FILES (DYNAMIC)
-// =======================
-async function getFiles() {
-    const res = await api(`/services/${SERVICE_ID}/gameservers`);
+/* =========================
+   STATE (DELTA MODE)
+========================= */
+const seenLines = new Set();
 
-    const files =
-        res?.data?.gameserver?.game_specific?.log_files || [];
-
-    console.log("📂 FILES FROM API:", files.length);
-    return files;
-}
-
-// =======================
-// FTP CONNECT (DEBUG MODE)
-// =======================
+/* =========================
+   FTP CONNECT
+========================= */
 async function connectFTP() {
-    const client = new ftp.Client();
+  const client = new ftp.Client();
+  client.ftp.verbose = true;
 
-    client.ftp.verbose = true; // 🔥 FULL DEBUG ENABLED
+  await client.access({
+    host: FTP_HOST,
+    user: FTP_USER,
+    password: FTP_PASS,
+    secure: false
+  });
 
-    try {
-        await client.access({
-            host: process.env.FTP_HOST,
-            user: process.env.FTP_USER,
-            password: process.env.FTP_PASS,
-            secure: false,
-            passive: true, // 🔥 IMPORTANT FIX
-        });
+  console.log("✅ FTP CONNECTED");
+  return client;
+}
 
-        console.log("✅ FTP CONNECTED");
-        return client;
-    } catch (err) {
-        console.log("❌ FTP CONNECT FAILED");
-        console.log(err);
-        return null;
+/* =========================
+   SAFE DOWNLOAD
+========================= */
+async function downloadFile(client, remotePath) {
+  try {
+    console.log("📥 TRY READ:", remotePath);
+
+    const chunks = [];
+    const stream = {
+      write: (data) => chunks.push(data.toString()),
+      end: () => {},
+      once: () => {} // 🔥 fixes your crash edge case
+    };
+
+    await client.downloadTo(stream, remotePath);
+
+    const data = chunks.join("");
+    if (!data) {
+      console.log("⚠️ EMPTY FILE:", remotePath);
     }
+
+    return data;
+
+  } catch (err) {
+    console.log("❌ FTP READ ERROR:", {
+      file: remotePath,
+      message: err.message,
+      stack: err.stack
+    });
+    return "";
+  }
 }
 
-// =======================
-// FIX PATH
-// =======================
-function fixPath(p) {
-    // FORCE ROOT SLASH (CRITICAL FIX)
-    if (!p.startsWith("/")) return `/${p}`;
-    return p;
-}
+/* =========================
+   PARSERS
+========================= */
+function parseRPT(text) {
+  const lines = text.split("\n");
+  const triggers = [];
 
-// =======================
-// READ FILE SAFELY
-// =======================
-async function readFile(client, file) {
-    const path = fixPath(file);
-
-    console.log("📥 TRY READ:", path);
-
-    try {
-        let data = "";
-
-        await client.downloadTo(
-            {
-                write: (chunk) => {
-                    data += chunk.toString();
-                },
-            },
-            path
-        );
-
-        console.log("✅ READ OK:", path, "bytes:", data.length);
-        return data;
-    } catch (err) {
-        console.log("❌ FTP READ ERROR:");
-        console.log("FILE:", path);
-        console.log("MESSAGE:", err.message);
-        console.log("STACK:", err.stack);
-        return null;
+  for (const line of lines) {
+    if (line.includes("lootmax")) {
+      triggers.push(line.trim());
     }
+  }
+
+  return triggers;
 }
 
-// =======================
-// PROCESS LINES
-// =======================
-function processLines(text, file) {
-    if (!text) return;
+function parseADM(text) {
+  const lines = text.split("\n");
+  const kills = [];
 
-    const lines = text.split("\n");
-
-    for (const line of lines) {
-        if (!line) continue;
-
-        const id = `${file}:${line}`;
-
-        if (seen.has(id)) continue;
-        seen.add(id);
-
-        // RPT
-        if (file.endsWith(".RPT") && line.includes("lootmax")) {
-            console.log("🔥 RPT TRIGGER (LOOTMAX)");
-            console.log(line);
-        }
-
-        // ADM
-        if (file.endsWith(".ADM") && line.includes("killed by")) {
-            console.log("💀 ADM TRIGGER (KILLED BY)");
-            console.log(line);
-        }
+  for (const line of lines) {
+    if (line.includes("killed by")) {
+      kills.push(line.trim());
     }
+  }
+
+  return kills;
 }
 
-// =======================
-// LOOP
-// =======================
+/* =========================
+   DELTA FILTER
+========================= */
+function deltaFilter(items) {
+  const fresh = [];
+
+  for (const item of items) {
+    if (!seenLines.has(item)) {
+      seenLines.add(item);
+      fresh.push(item);
+    }
+  }
+
+  return fresh;
+}
+
+/* =========================
+   LOOP
+========================= */
 async function loop() {
-    console.log("\n==============================");
-    console.log("🔄 LOOP START");
+  console.log("==============================");
+  console.log("🔄 LOOP START");
 
-    const files = await getFiles();
+  try {
+    const client = await connectFTP();
 
-    let client = await connectFTP();
-    if (!client) {
-        console.log("❌ NO FTP CLIENT - SKIPPING LOOP");
-        return;
-    }
+    const fileList = await client.list("dayzps/config");
+    const files = fileList.map(f => `dayzps/config/${f.name}`);
+
+    console.log("📂 FILES FOUND:", files.length);
 
     for (const file of files) {
-        console.log("🔍 PROCESS FILE:", file);
+      const content = await downloadFile(client, file);
 
-        const data = await readFile(client, file);
+      if (!content) continue;
 
-        if (!data) {
-            console.log("⚠️ EMPTY OR FAILED:", file);
-            continue;
+      if (file.endsWith(".RPT")) {
+        const hits = parseRPT(content);
+        const newHits = deltaFilter(hits);
+
+        for (const h of newHits) {
+          console.log("🔥 NEW RPT TRIGGER:", h);
         }
+      }
 
-        processLines(data, file);
+      if (file.endsWith(".ADM")) {
+        const hits = parseADM(content);
+        const newHits = deltaFilter(hits);
+
+        for (const h of newHits) {
+          console.log("💀 NEW ADM EVENT:", h);
+        }
+      }
     }
 
     client.close();
-    console.log("🔌 LOOP END");
+    console.log("🔌 LOOP COMPLETE");
+
+  } catch (err) {
+    console.log("❌ LOOP ERROR:", err.message);
+  }
 }
 
-// =======================
-// START
-// =======================
-console.log("🚀 BOT STARTING (FULL FTP DEBUG MODE)");
-
+/* =========================
+   INTERVAL LOOP (60s)
+========================= */
 loop();
-setInterval(loop, POLL_MS);
+setInterval(loop, 60_000);
