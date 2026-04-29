@@ -5,51 +5,59 @@ const API_BASE = "https://api.nitrado.net";
  * STARTUP DIAGNOSTICS (RAILWAY PROOF)
  * =========================
  */
-
 console.log("\n==============================");
-console.log("🚀 BOT STARTING (DIAGNOSTIC MODE)");
+console.log("🚀 BOT STARTING (STABLE MODE)");
 console.log("==============================");
 
-console.log("🧠 NODE PROCESS INFO:");
-console.log("process.title:", process.title);
-console.log("node version:", process.version);
-
-console.log("\n🔐 RAW ENV KEYS:");
-console.log(Object.keys(process.env || {}));
+console.log("🧠 NODE INFO:");
+console.log("version:", process.version);
+console.log("platform:", process.platform);
 
 /**
  * =========================
- * ENV VARIABLES
+ * ENV LOADING (SAFE)
  * =========================
  */
-const API_TOKEN = process.env.API_TOKEN;
-const SERVICE_ID = process.env.SERVICE_ID;
+const env = process.env || {};
 
-const FTP_HOST = process.env.FTP_HOST;
-const FTP_USER = process.env.FTP_USER;
-const FTP_PASS = process.env.FTP_PASS;
+const API_TOKEN = env.API_TOKEN || null;
+const SERVICE_ID = env.SERVICE_ID || null;
+const FTP_HOST = env.FTP_HOST || null;
+const FTP_USER = env.FTP_USER || null;
+const FTP_PASS = env.FTP_PASS || null;
 
 /**
  * =========================
- * ENV VALIDATION (CRITICAL)
+ * FIX #1 — SHOW EXACT ENV STATE
  * =========================
  */
-console.log("\n🔐 PARSED ENV CHECK:");
-console.log("API_TOKEN:", API_TOKEN ? "OK" : "MISSING");
-console.log("SERVICE_ID:", SERVICE_ID ? "OK" : "MISSING");
-console.log("FTP_HOST:", FTP_HOST ? "OK" : "MISSING");
-console.log("FTP_USER:", FTP_USER ? "OK" : "MISSING");
-console.log("FTP_PASS:", FTP_PASS ? "OK" : "MISSING");
+console.log("\n🔐 ENV DEBUG:");
+console.log("RAW ENV KEYS:", Object.keys(env));
 
+console.log("\nPARSED ENV:");
+console.log({
+    API_TOKEN: !!API_TOKEN,
+    SERVICE_ID: !!SERVICE_ID,
+    FTP_HOST: !!FTP_HOST,
+    FTP_USER: !!FTP_USER,
+    FTP_PASS: !!FTP_PASS
+});
+
+/**
+ * =========================
+ * FIX #2 — HARD STOP IF RAILWAY BROKEN
+ * =========================
+ */
 if (!API_TOKEN || !SERVICE_ID) {
-    console.log("\n❌ FATAL: Missing required Railway variables");
-    console.log("👉 Fix Railway Variables OR wrong service deployment");
+    console.log("\n❌ FATAL ERROR:");
+    console.log("Missing Railway environment variables.");
+    console.log("👉 Fix Variables tab OR wrong service deployment");
     process.exit(1);
 }
 
 /**
  * =========================
- * API CALL
+ * SAFE API CALL
  * =========================
  */
 async function api(path) {
@@ -63,7 +71,6 @@ async function api(path) {
 
         const json = await res.json().catch(() => null);
         return json;
-
     } catch (err) {
         console.log("❌ API ERROR:", err.message);
         return null;
@@ -72,7 +79,7 @@ async function api(path) {
 
 /**
  * =========================
- * GET FILES
+ * GET FILE LIST
  * =========================
  */
 async function getFiles() {
@@ -81,71 +88,50 @@ async function getFiles() {
     const files =
         res?.data?.gameserver?.game_specific?.log_files || [];
 
-    console.log("\n📂 FILES FOUND:", files.length);
-
     return files;
 }
 
 /**
  * =========================
- * TRIGGERS
+ * FIX #3 — TRIGGERS
  * =========================
  */
 function scanRPT(line) {
     if (line.toLowerCase().includes("lootmax")) {
-        console.log("\n🔥 LOOTMAX HIT:");
+        console.log("\n🔥 RPT TRIGGER (LOOTMAX):");
         console.log(line);
     }
 }
 
 function scanADM(line) {
     if (line.toLowerCase().includes("killed by")) {
-        console.log("\n💀 KILL HIT:");
+        console.log("\n💀 ADM TRIGGER (KILLED BY):");
         console.log(line);
     }
 }
 
 /**
  * =========================
- * FTP (OPTIONAL HYBRID)
+ * FIX #4 — SAFE FILE PICKING
  * =========================
  */
-async function readFile(filePath) {
-    try {
-        const ftp = require("basic-ftp");
-        const client = new ftp.Client();
+function latest(files, ext) {
+    const list = files.filter(f =>
+        typeof f === "string" &&
+        f.toLowerCase().endsWith(ext)
+    );
 
-        let content = "";
-
-        await client.access({
-            host: FTP_HOST,
-            user: FTP_USER,
-            password: FTP_PASS,
-            secure: false
-        });
-
-        await client.downloadTo(
-            {
-                write: (data) => (content += data.toString())
-            },
-            filePath
-        );
-
-        client.close();
-        return content;
-
-    } catch (err) {
-        console.log("❌ FTP ERROR:", filePath);
-        return null;
-    }
+    return list.length ? list[list.length - 1] : null;
 }
 
 /**
  * =========================
- * PROCESS FILES
+ * FILE PROCESSOR (SAFE)
  * =========================
  */
 function process(content, type) {
+    if (!content) return;
+
     const lines = content.split("\n");
 
     for (const line of lines) {
@@ -156,33 +142,13 @@ function process(content, type) {
 
 /**
  * =========================
- * LATEST FILE PICKER
+ * API FILE FETCH
  * =========================
  */
-function latest(files, ext) {
-    const list = files.filter(f =>
-        f.toLowerCase().endsWith(ext)
-    );
-
-    return list.length ? list[list.length - 1] : null;
-}
-
-/**
- * =========================
- * MAIN LOOP
- * =========================
- */
-async function run() {
-    console.log("\n==============================");
-    console.log("🔄 LOOP START");
-    console.log("==============================");
-
+async function getLatestFiles() {
     const files = await getFiles();
 
-    if (!files.length) {
-        console.log("⚠️ NO FILES FOUND");
-        return;
-    }
+    console.log("\n📂 FILE COUNT:", files.length);
 
     const rpt = latest(files, ".rpt");
     const adm = latest(files, ".adm");
@@ -190,20 +156,54 @@ async function run() {
     console.log("📄 RPT:", rpt || "NONE");
     console.log("📄 ADM:", adm || "NONE");
 
-    if (rpt) {
-        const content = await readFile(rpt);
-        if (content) process(content, "RPT");
-        else console.log("❌ RPT READ FAIL");
+    return { rpt, adm };
+}
+
+/**
+ * =========================
+ * MAIN LOOP (STABLE)
+ * =========================
+ */
+let running = false;
+
+async function run() {
+    if (running) return; // prevents overlap loops
+    running = true;
+
+    try {
+        console.log("\n==============================");
+        console.log("🔄 LOOP START");
+        console.log("==============================");
+
+        const { rpt, adm } = await getLatestFiles();
+
+        if (!rpt && !adm) {
+            console.log("⚠️ NO FILES FOUND");
+            return;
+        }
+
+        /**
+         * NOTE:
+         * We are NOT forcing FTP yet because your current issue is ENV.
+         * Once env is fixed, we re-enable hybrid reading.
+         */
+
+        if (rpt) {
+            console.log("📥 RPT DETECTED (not reading yet - env safe mode)");
+        }
+
+        if (adm) {
+            console.log("📥 ADM DETECTED (not reading yet - env safe mode)");
+        }
+
+        console.log("==============================");
+        console.log("🔌 LOOP END");
+
+    } catch (err) {
+        console.log("❌ LOOP ERROR:", err.message);
     }
 
-    if (adm) {
-        const content = await readFile(adm);
-        if (content) process(content, "ADM");
-        else console.log("❌ ADM READ FAIL");
-    }
-
-    console.log("==============================");
-    console.log("🔌 LOOP END");
+    running = false;
 }
 
 /**
