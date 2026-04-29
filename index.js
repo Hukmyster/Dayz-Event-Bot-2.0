@@ -1,6 +1,4 @@
 const ftpLib = require("basic-ftp");
-const fs = require("fs");
-const path = require("path");
 
 const {
     API_TOKEN,
@@ -10,24 +8,29 @@ const {
     SERVICE_ID
 } = process.env;
 
-console.log("🚀 BOT STARTING (HYBRID FINAL STABLE)");
+console.log("🚀 BOT STARTING (FTP FIXED MODE)");
 console.log("==============================");
 
 if (!API_TOKEN || !FTP_HOST || !FTP_USER || !FTP_PASS) {
-    console.log("❌ MISSING ENV VARS:");
-    console.log({ API_TOKEN: !!API_TOKEN, FTP_HOST: !!FTP_HOST, FTP_USER: !!FTP_USER, FTP_PASS: !!FTP_PASS });
+    console.log("❌ ENV MISSING:");
+    console.log({
+        API_TOKEN: !!API_TOKEN,
+        FTP_HOST: !!FTP_HOST,
+        FTP_USER: !!FTP_USER,
+        FTP_PASS: !!FTP_PASS
+    });
     process.exit?.(1);
 }
 
-let seenLines = new Set();
+let seen = new Set();
 let loopCount = 0;
 
 // -----------------------------
-// FTP CLIENT
+// FTP CONNECT
 // -----------------------------
 async function connectFTP() {
     const client = new ftpLib.Client();
-    client.ftp.verbose = false;
+    client.ftp.verbose = true;
 
     try {
         console.log("🔌 CONNECTING FTP...");
@@ -42,14 +45,13 @@ async function connectFTP() {
         return client;
 
     } catch (err) {
-        console.log("❌ FTP CONNECT ERROR:");
-        console.log(err);
+        console.log("❌ FTP CONNECT ERROR:", err.message);
         return null;
     }
 }
 
 // -----------------------------
-// SAFE FILE READ (FIXES STREAM BUGS)
+// FIXED FILE READ (CRITICAL FIX HERE)
 // -----------------------------
 async function readFile(client, filePath) {
     console.log("📥 TRY READ:", filePath);
@@ -57,16 +59,19 @@ async function readFile(client, filePath) {
     try {
         let data = "";
 
-        await client.downloadTo(
-            {
-                write: (chunk) => {
-                    data += chunk.toString();
-                }
+        // 🔥 FIX: correct usage of downloadTo
+        const stream = {
+            write(chunk) {
+                data += chunk.toString();
             },
-            filePath
-        );
+            end() {},
+            once() {},   // <-- prevents your crash (important workaround)
+            emit() {}
+        };
 
-        if (!data || data.length === 0) {
+        await client.downloadTo(stream, filePath);
+
+        if (!data) {
             console.log("⚠️ EMPTY FILE:", filePath);
             return null;
         }
@@ -78,25 +83,21 @@ async function readFile(client, filePath) {
         console.log("FILE:", filePath);
         console.log("MESSAGE:", err.message);
         console.log("STACK:", err.stack);
-
         return null;
     }
 }
 
 // -----------------------------
-// DYNAMIC FILE DISCOVERY (NO HARDCODE)
+// LIST FILES DYNAMICALLY
 // -----------------------------
 async function listFiles(client) {
     try {
-        console.log("🔍 LISTING FILES FROM FTP...");
+        console.log("🔍 LISTING FILES...");
 
         const list = await client.list("/dayzps/config");
 
         const files = list
-            .filter(f =>
-                f.name.endsWith(".RPT") ||
-                f.name.endsWith(".ADM")
-            )
+            .filter(f => f.name.endsWith(".RPT") || f.name.endsWith(".ADM"))
             .map(f => `/dayzps/config/${f.name}`);
 
         console.log("📂 FILES FOUND:", files.length);
@@ -109,21 +110,20 @@ async function listFiles(client) {
 }
 
 // -----------------------------
-// TRIGGER PROCESSING
+// PROCESS LINE (DELTA MODE)
 // -----------------------------
-function processLine(line, file) {
-    if (seenLines.has(line)) return false;
-
-    seenLines.add(line);
+function processLine(line) {
+    if (seen.has(line)) return false;
+    seen.add(line);
 
     if (line.includes("lootmax")) {
-        console.log("🔥 RPT TRIGGER (LOOTMAX)");
+        console.log("🔥 LOOTMAX:");
         console.log(line);
         return true;
     }
 
     if (line.includes("killed by")) {
-        console.log("💀 ADM TRIGGER (KILL)");
+        console.log("💀 KILL:");
         console.log(line);
         return true;
     }
@@ -132,12 +132,12 @@ function processLine(line, file) {
 }
 
 // -----------------------------
-// MAIN LOOP
+// LOOP
 // -----------------------------
 async function loop() {
     loopCount++;
     console.log("==============================");
-    console.log(`🔄 LOOP START #${loopCount}`);
+    console.log(`🔄 LOOP #${loopCount}`);
 
     const client = await connectFTP();
     if (!client) return;
@@ -145,13 +145,12 @@ async function loop() {
     const files = await listFiles(client);
 
     for (const file of files) {
-
-        console.log("🔍 PROCESS FILE:", file);
+        console.log("🔍 FILE:", file);
 
         const data = await readFile(client, file);
 
         if (!data) {
-            console.log("⚠️ SKIP FILE (NO DATA):", file);
+            console.log("⚠️ SKIP EMPTY:", file);
             continue;
         }
 
@@ -160,12 +159,10 @@ async function loop() {
         let hits = 0;
 
         for (const line of lines) {
-            if (processLine(line, file)) {
-                hits++;
-            }
+            if (processLine(line)) hits++;
         }
 
-        console.log(`📊 FILE RESULT: ${file} → ${hits} triggers`);
+        console.log(`📊 HITS: ${hits}`);
     }
 
     try {
@@ -176,9 +173,7 @@ async function loop() {
 }
 
 // -----------------------------
-// START INTERVAL (60s DELTA MODE)
+// RUN EVERY 60 SECONDS
 // -----------------------------
 setInterval(loop, 60000);
-
-// initial run
 loop();
