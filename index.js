@@ -185,4 +185,4 @@ async function run() {
 // START (6 MIN LOOP)
 // ==============================
 run();
-setInterval(run, 6 * 60 * 1000);
+setInterval(run, 2 * 60 * 1000);
