@@ -10,17 +10,14 @@ let lastSize = 0;
 
 /**
  * =========================
- * 🔥 EXACT LOOTMAX MAPPING
+ * LOOTMAX TRIGGERS
  * =========================
  */
-
 const TRIGGERS = {
-    // HACKED CRATES
-    1: { type: "💻 Hacked Crate", location: "NEAF", coords: "12326 12445" },
-    2: { type: "💻 Hacked Crate", location: "SWAF", coords: "5049 2440" },
-    3: { type: "💻 Hacked Crate", location: "NWAF", coords: "4704 9823" },
+    1: { type: "💻 Hacked Crate", location: "NEAF" },
+    2: { type: "💻 Hacked Crate", location: "SWAF" },
+    3: { type: "💻 Hacked Crate", location: "NWAF" },
 
-    // HORDES
     4: { type: "🧟 Horde", location: "Cherno West" },
     5: { type: "🧟 Horde", location: "Cherno East" },
     6: { type: "🧟 Horde", location: "Berezino West" },
@@ -34,7 +31,6 @@ const TRIGGERS = {
     14:{ type: "🧟 Horde", location: "Pustoshka" },
     15:{ type: "🧟 Horde", location: "Pavlovo" },
 
-    // AIRDROPS
     16:{ type: "🪂 AirDrop", location: "VMC" },
     17:{ type: "🪂 AirDrop", location: "Altar" },
     18:{ type: "🪂 AirDrop", location: "Kamensk" },
@@ -49,7 +45,7 @@ const TRIGGERS = {
 
 /**
  * =========================
- * API
+ * API CALL
  * =========================
  */
 async function api(path) {
@@ -63,11 +59,21 @@ async function api(path) {
     return await res.json();
 }
 
+/**
+ * =========================
+ * GET LOG FILES
+ * =========================
+ */
 async function getLogs() {
     const res = await api(`/services/${SERVICE_ID}/gameservers`);
     return res.data.gameserver.game_specific.log_files || [];
 }
 
+/**
+ * =========================
+ * GET NEWEST FILE
+ * =========================
+ */
 function getNewest(files, ext) {
     return files
         .filter(f => f.toLowerCase().endsWith(ext))
@@ -75,13 +81,32 @@ function getNewest(files, ext) {
         .pop();
 }
 
+/**
+ * =========================
+ * SAFE DOWNLOAD (FIXED)
+ * =========================
+ */
 async function download(filePath) {
     const res = await api(
         `/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`
     );
 
-    const url = res.data.token.url;
-    const fileRes = await fetch(url);
+    console.log('📦 DOWNLOAD RESPONSE:', res);
+
+    const tokenUrl = res?.data?.token?.url;
+
+    if (!tokenUrl) {
+        console.log('❌ DOWNLOAD FAILED - no token.url');
+        return null;
+    }
+
+    const fileRes = await fetch(tokenUrl);
+
+    if (!fileRes.ok) {
+        console.log('❌ TOKEN URL FAILED:', fileRes.status);
+        return null;
+    }
+
     return await fileRes.text();
 }
 
@@ -103,47 +128,48 @@ function handleTrigger(line) {
     const trigger = TRIGGERS[lootmax];
 
     if (!trigger) {
-        console.log(`⚠️ UNKNOWN LOOTMAX: ${lootmax}`);
+        console.log(`⚠️ UNKNOWN LOOTMAX → ${lootmax}`);
         return;
     }
 
-    console.log(`🚨 EVENT: ${trigger.type}`);
-    console.log(`📍 LOCATION: ${trigger.location}`);
-
-    if (trigger.coords) {
-        console.log(`🧭 COORDS: ${trigger.coords}`);
-    }
+    console.log(`🚨 EVENT → ${trigger.type}`);
+    console.log(`📍 LOCATION → ${trigger.location}`);
 }
 
 /**
  * =========================
- * MAIN LOOP
+ * MAIN LOOP (FTP STYLE LOGIC)
  * =========================
  */
 async function run() {
     console.log('\n==============================');
-    console.log('🔄 NEW LOOP');
+    console.log('🔄 LOOP START');
     console.log('==============================');
 
     const files = await getLogs();
     const newest = getNewest(files, '.rpt');
 
-    console.log('Latest:', newest);
+    console.log('Latest file:', newest);
 
     if (!newest) return;
 
     if (newest !== lastFile) {
-        console.log('🆕 NEW FILE:', newest);
+        console.log('🆕 NEW FILE DETECTED');
         lastFile = newest;
         lastSize = 0;
     }
 
     const content = await download(newest);
-    const lines = content.split('\n');
 
+    if (!content) {
+        console.log('❌ SKIPPING LOOP (no content)');
+        return;
+    }
+
+    const lines = content.split('\n');
     const newLines = lines.slice(lastSize);
 
-    console.log(`[RPT] total: ${lines.length} | new: ${newLines.length}`);
+    console.log(`[RPT] total=${lines.length} new=${newLines.length}`);
 
     for (const line of newLines) {
         if (!line.trim()) continue;
@@ -162,6 +188,6 @@ async function run() {
  * START
  * =========================
  */
-console.log('Bot starting (EXACT LOOTMAX SYSTEM)');
+console.log('Bot starting (STABLE FTP-STYLE MODE)');
 run();
 setInterval(run, LOOP_TIME);
