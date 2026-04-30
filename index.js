@@ -7,13 +7,15 @@ const {
     ModalBuilder,
     TextInputBuilder,
     TextInputStyle,
-    ActionRowBuilder,
-    InteractionResponseFlags
+    ActionRowBuilder
 } = require("discord.js");
 
 const fs = require("fs");
 require("dotenv").config();
 
+// -----------------------------
+// CLIENT
+// -----------------------------
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
@@ -26,7 +28,18 @@ const EVENTS_PATH = "./custom/shopevents.xml";
 const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
 
 // -----------------------------
-// ORDER DB
+// SAFETY (RAILWAY STABILITY)
+// -----------------------------
+process.on("unhandledRejection", (err) => {
+    console.error("Unhandled Rejection:", err);
+});
+
+process.on("uncaughtException", (err) => {
+    console.error("Uncaught Exception:", err);
+});
+
+// -----------------------------
+// DATABASE
 // -----------------------------
 function loadOrders() {
     try {
@@ -36,7 +49,7 @@ function loadOrders() {
         }
         return JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
     } catch (err) {
-        console.error(err);
+        console.error("DB LOAD ERROR:", err);
         return [];
     }
 }
@@ -46,14 +59,14 @@ function saveOrders(data) {
 }
 
 // -----------------------------
-// EVENT NAME GENERATOR (OPTION A)
+// EVENT NAME (OPTION A)
 // -----------------------------
 function makeEventName() {
     return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 }
 
 // -----------------------------
-// XML BUILD SYSTEM
+// XML BUILDER
 // -----------------------------
 function buildXMLFiles() {
 
@@ -66,9 +79,7 @@ function buildXMLFiles() {
 
         const eventName = makeEventName();
 
-        // -------------------------
-        // EVENTS.XML ENTRY
-        // -------------------------
+        // EVENTS.XML
         eventsXML += `
     <event name="${eventName}">
         <nominal>1</nominal>
@@ -88,15 +99,12 @@ function buildXMLFiles() {
         </children>
     </event>\n`;
 
-        // -------------------------
-        // CFG EVENT SPAWN ENTRY
-        // -------------------------
+        // CFG EVENT SPAWNS
         spawnsXML += `
     <event name="${eventName}">
         <pos x="${o.x}" z="${o.z}" a="0" />
     </event>\n`;
 
-        // mark as processed (important for later automation)
         o.status = "built";
         o.eventName = eventName;
     }
@@ -120,7 +128,7 @@ function buildXMLFiles() {
 const commands = [
     new SlashCommandBuilder()
         .setName("buy")
-        .setDescription("Purchase item")
+        .setDescription("Purchase an item")
         .toJSON(),
 
     new SlashCommandBuilder()
@@ -129,6 +137,9 @@ const commands = [
         .toJSON()
 ];
 
+// -----------------------------
+// REGISTER COMMANDS
+// -----------------------------
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 async function registerCommands() {
@@ -166,7 +177,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const item = new TextInputBuilder()
                 .setCustomId("item")
-                .setLabel("Item (M4, AK, DMR etc)")
+                .setLabel("Item")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -196,13 +207,13 @@ client.on("interactionCreate", async (interaction) => {
             buildXMLFiles();
 
             await interaction.reply({
-                content: "🧠 XML files generated successfully.",
-                flags: InteractionResponseFlags.Ephemeral
+                content: "🧠 XML generated successfully.",
+                flags: 64
             });
         }
     }
 
-    // MODAL
+    // MODAL SUBMIT
     if (interaction.isModalSubmit()) {
 
         if (interaction.customId === "buyModal") {
@@ -227,14 +238,14 @@ client.on("interactionCreate", async (interaction) => {
 
             await interaction.reply({
                 content: `✅ Order saved: ${item}`,
-                flags: InteractionResponseFlags.Ephemeral
+                flags: 64
             });
         }
     }
 });
 
 // -----------------------------
-// START
+// START BOT
 // -----------------------------
 registerCommands().then(() => {
     client.login(process.env.DISCORD_TOKEN);
