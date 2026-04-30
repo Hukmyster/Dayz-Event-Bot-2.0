@@ -28,7 +28,7 @@ const EVENTS_PATH = "./custom/shopevents.xml";
 const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
 
 // -----------------------------
-// SAFETY (RAILWAY STABILITY)
+// SAFETY NETS (RAILWAY STABILITY)
 // -----------------------------
 process.on("unhandledRejection", (err) => {
     console.error("Unhandled Rejection:", err);
@@ -59,7 +59,7 @@ function saveOrders(data) {
 }
 
 // -----------------------------
-// EVENT NAME (OPTION A)
+// EVENT NAME GENERATOR (OPTION A)
 // -----------------------------
 function makeEventName() {
     return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
@@ -79,7 +79,8 @@ function buildXMLFiles() {
 
         const eventName = makeEventName();
 
-        // EVENTS.XML
+        console.log(`[BUILD] Creating event ${eventName} for ${o.item}`);
+
         eventsXML += `
     <event name="${eventName}">
         <nominal>1</nominal>
@@ -99,7 +100,6 @@ function buildXMLFiles() {
         </children>
     </event>\n`;
 
-        // CFG EVENT SPAWNS
         spawnsXML += `
     <event name="${eventName}">
         <pos x="${o.x}" z="${o.z}" a="0" />
@@ -133,7 +133,12 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("build")
-        .setDescription("Generate DayZ XML files")
+        .setDescription("Generate XML files")
+        .toJSON(),
+
+    new SlashCommandBuilder()
+        .setName("viewxml")
+        .setDescription("View generated XML files")
         .toJSON()
 ];
 
@@ -166,9 +171,9 @@ client.once("clientReady", () => {
 // -----------------------------
 client.on("interactionCreate", async (interaction) => {
 
-    // COMMANDS
     if (interaction.isChatInputCommand()) {
 
+        // BUY
         if (interaction.commandName === "buy") {
 
             const modal = new ModalBuilder()
@@ -202,18 +207,46 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.showModal(modal);
         }
 
+        // BUILD
         if (interaction.commandName === "build") {
 
             buildXMLFiles();
 
             await interaction.reply({
-                content: "🧠 XML generated successfully.",
+                content: "🧠 XML files generated successfully.",
                 flags: 64
             });
         }
+
+        // VIEW XML (DEBUG TOOL)
+        if (interaction.commandName === "viewxml") {
+
+            try {
+                const events = fs.readFileSync(EVENTS_PATH, "utf-8");
+                const spawns = fs.readFileSync(SPAWNS_PATH, "utf-8");
+
+                await interaction.reply({
+                    content:
+                        "```xml\n--- SHOPEVENTS ---\n" +
+                        events.slice(0, 1500) +
+                        "\n\n--- SPAWNS ---\n" +
+                        spawns.slice(0, 1500) +
+                        "\n```",
+                    flags: 64
+                });
+
+            } catch (err) {
+                console.error(err);
+
+                await interaction.reply({
+                    content: "❌ No XML files found. Run /build first.",
+                    flags: 64
+                });
+            }
+        }
     }
 
-    // MODAL SUBMIT
+    // MODAL
     if (interaction.isModalSubmit()) {
 
         if (interaction.customId === "buyModal") {
@@ -224,7 +257,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const orders = loadOrders();
 
-            orders.push({
+            const order = {
                 id: Date.now(),
                 user: interaction.user.id,
                 item,
@@ -232,12 +265,15 @@ client.on("interactionCreate", async (interaction) => {
                 z,
                 status: "pending",
                 createdAt: new Date().toISOString()
-            });
+            };
 
+            orders.push(order);
             saveOrders(orders);
 
+            console.log(`[BUY] ${interaction.user.username} -> ${item} @ ${x},${z}`);
+
             await interaction.reply({
-                content: `✅ Order saved: ${item}`,
+                content: `✅ Order saved: **${item}** at X:${x} Z:${z}`,
                 flags: 64
             });
         }
