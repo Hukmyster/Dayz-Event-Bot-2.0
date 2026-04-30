@@ -1,8 +1,8 @@
 {
-  "name": "nitrado-live-bot",
-  "version": "2.0.0",
+  "name": "nitrado-ftp-uploader",
+  "version": "1.0.0",
+  "description": "Simple FTP test uploader for Nitrado via Railway",
   "main": "index.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
