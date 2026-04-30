@@ -10,6 +10,7 @@ const {
     ActionRowBuilder,
 } = require("discord.js");
 
+const fs = require("fs");
 require("dotenv").config();
 
 const client = new Client({
@@ -17,9 +18,30 @@ const client = new Client({
 });
 
 // -----------------------------
-// SIMPLE IN-MEMORY ORDER QUEUE
+// DATABASE SETUP
 // -----------------------------
-const orderQueue = [];
+const DB_PATH = "./database/orders.json";
+
+function loadOrders() {
+    try {
+        if (!fs.existsSync(DB_PATH)) {
+            fs.mkdirSync("./database", { recursive: true });
+            fs.writeFileSync(DB_PATH, "[]");
+        }
+        return JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
+    } catch (err) {
+        console.error("DB LOAD ERROR:", err);
+        return [];
+    }
+}
+
+function saveOrders(data) {
+    try {
+        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    } catch (err) {
+        console.error("DB SAVE ERROR:", err);
+    }
+}
 
 // -----------------------------
 // SLASH COMMAND SETUP
@@ -31,7 +53,6 @@ const commands = [
         .toJSON()
 ];
 
-// Register commands (guild = instant updates)
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 async function registerCommands() {
@@ -53,14 +74,14 @@ async function registerCommands() {
 }
 
 // -----------------------------
-// BOT READY
+// READY EVENT
 // -----------------------------
 client.once("clientReady", () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
 // -----------------------------
-// INTERACTION HANDLER
+// INTERACTIONS
 // -----------------------------
 client.on("interactionCreate", async (interaction) => {
 
@@ -73,11 +94,11 @@ client.on("interactionCreate", async (interaction) => {
 
             const modal = new ModalBuilder()
                 .setCustomId("buyModal")
-                .setTitle("DayZ Purchase Form");
+                .setTitle("DayZ Purchase System");
 
             const item = new TextInputBuilder()
                 .setCustomId("item")
-                .setLabel("Item (e.g. M4, AK, Glock)")
+                .setLabel("Item (M4, AK, Glock, etc)")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -104,7 +125,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // -------------------------
-    // MODAL SUBMIT (ORDER CREATION)
+    // MODAL SUBMIT (SAVE ORDER)
     // -------------------------
     if (interaction.isModalSubmit()) {
 
@@ -114,21 +135,25 @@ client.on("interactionCreate", async (interaction) => {
             const x = interaction.fields.getTextInputValue("x");
             const z = interaction.fields.getTextInputValue("z");
 
+            const orders = loadOrders();
+
             const order = {
                 id: Date.now(),
                 user: interaction.user.id,
                 item,
                 x,
                 z,
-                status: "pending"
+                status: "pending",
+                createdAt: new Date().toISOString()
             };
 
-            orderQueue.push(order);
+            orders.push(order);
+            saveOrders(orders);
 
-            console.log("NEW ORDER ADDED:", order);
+            console.log("ORDER SAVED:", order);
 
             await interaction.reply({
-                content: `✅ Order received: **${item}** at (${x}, ${z}) added to queue.`,
+                content: `✅ Order saved: **${item}** at (${x}, ${z})`,
                 ephemeral: true
             });
         }
@@ -136,7 +161,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // -----------------------------
-// START BOT
+// START BOT + REGISTER COMMANDS
 // -----------------------------
 registerCommands().then(() => {
     client.login(process.env.DISCORD_TOKEN);
