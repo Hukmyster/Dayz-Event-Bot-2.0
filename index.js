@@ -1,12 +1,10 @@
 const ftp = require("basic-ftp");
 
-async function uploadTestFile() {
+async function run() {
     const client = new ftp.Client();
-    client.ftp.verbose = true; // useful in Railway logs
+    client.ftp.verbose = true;
 
     try {
-        console.log("Starting FTP connection...");
-
         await client.access({
             host: process.env.FTP_HOST,
             user: process.env.FTP_USER,
@@ -14,30 +12,35 @@ async function uploadTestFile() {
             secure: false
         });
 
-        console.log("Connected to FTP.");
+        console.log("Connected");
 
-        const fileContent = "test1";
-        const buffer = Buffer.from(fileContent, "utf-8");
+        // STEP 1: go to mission root FIRST
+        await client.cd("/dayzps_missions/dayzOffline.chernarusplus");
 
-        console.log("Ensuring /custom/ directory exists...");
-        await client.ensureDir("/custom/");
+        console.log("In mission directory");
 
-        console.log("Uploading test.xml...");
-        await client.uploadFrom(buffer, "/custom/test.xml");
+        // STEP 2: ensure custom folder exists here
+        await client.ensureDir("custom");
 
-        console.log("Upload complete.");
+        console.log("Custom folder ready");
 
-        const list = await client.list("/custom/");
-        console.log("Directory contents:", list.map(f => f.name));
+        // STEP 3: create file content
+        const buffer = Buffer.from("test1", "utf-8");
 
-        console.log("SUCCESS: File uploaded and verified.");
+        // STEP 4: upload file INTO that folder
+        await client.uploadFrom(buffer, "custom/test.xml");
+
+        console.log("File uploaded");
+
+        // VERIFY
+        const list = await client.list("custom");
+        console.log("Custom folder contents:", list.map(f => f.name));
 
     } catch (err) {
-        console.error("FTP UPLOAD FAILED:", err);
+        console.error("FAILED:", err);
     }
 
     client.close();
 }
 
-// Run immediately on start (Railway-friendly)
-uploadTestFile();
+run();
