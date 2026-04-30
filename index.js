@@ -5,6 +5,7 @@ const { Client } = require("basic-ftp");
 // CONFIG
 // ==============================
 const LOOP_INTERVAL = 5 * 60 * 1000; // 5 min
+const STALL_THRESHOLD = 40 * 60 * 1000; // 40 min
 
 // ==============================
 // ENV
@@ -24,11 +25,19 @@ const FTP_PASS = ENV.FTP_PASS;
 const state = {
   knownFiles: new Set(),
   fileOffsets: {},
-  retryCount: {},   // NEW: controlled retries
+  retryQueue: new Map(), // file -> timestamp added
+  lastSuccessTime: Date.now(),
+  lastProcessedFile: null,
+  lastProcessedAt: Date.now(),
 };
 
 // ==============================
-// API FETCH
+// LOG HELPERS
+// ==============================
+const log = (msg) => console.log(msg);
+
+// ==============================
+// API FETCH (ALWAYS FRESH)
 // ==============================
 async function fetchFiles() {
   try {
@@ -39,8 +48,8 @@ async function fetchFiles() {
       {
         headers: {
           Authorization: `Bearer ${API_TOKEN}`,
-          Accept: "application/json"
-        }
+          Accept: "application/json",
+        },
       }
     );
 
@@ -49,10 +58,9 @@ async function fetchFiles() {
     const files =
       data?.data?.gameserver?.game_specific?.log_files || [];
 
-    console.log(`📂 FILE COUNT: ${files.length}`);
+    console.log(`📂 FILES FROM API: ${files.length}`);
 
     return files;
-
   } catch (err) {
     console.log("❌ API ERROR:", err.message);
     return [];
@@ -62,18 +70,19 @@ async function fetchFiles() {
 // ==============================
 // FTP SESSION
 // ==============================
-async function ftpBatch(files) {
+async function ftpBatch(files, mode = "normal") {
   const client = new Client();
   const sessionId = Math.random().toString(36).slice(2, 8);
 
-  console.log(`\n🔌 FTP SESSION START ${sessionId}`);
+  console.log(`\n🔌 FTP SESSION START ${sessionId} (${mode})`);
+  console.log(`REMOTE HOST: ${FTP_HOST}`);
 
   try {
     await client.access({
       host: FTP_HOST,
       user: FTP_USER,
       password: FTP_PASS,
-      secure: false
+      secure: false,
     });
 
     for (const file of files) {
@@ -81,14 +90,15 @@ async function ftpBatch(files) {
     }
 
   } catch (err) {
-    console.log("❌ FTP SESSION ERROR:", err.message);
+    console.log(`❌ FTP SESSION ERROR [${sessionId}]`);
+    console.log(err?.message || err);
   }
 
   client.close();
 }
 
 // ==============================
-// FILE HANDLER (FIXED LOGIC)
+// FILE HANDLER
 // ==============================
 async function handleFile(client, file, sessionId) {
   try {
@@ -103,38 +113,28 @@ async function handleFile(client, file, sessionId) {
       state.knownFiles.add(file);
     }
 
-    // reset retry counter on success
-    state.retryCount[file] = 0;
+    state.lastProcessedFile = file;
+    state.lastProcessedAt = Date.now();
+    state.lastSuccessTime = Date.now();
 
     processFile(file, content);
 
   } catch (err) {
+    const msg = err?.message || String(err);
 
-    if (err.message.includes("550")) {
+    console.log(`❌ FTP FAIL: ${file}`);
+    console.log(`   ↳ ${msg}`);
 
-      state.retryCount[file] = (state.retryCount[file] || 0) + 1;
+    // store retry WITH timestamp (so it expires)
+    state.retryQueue.set(file, Date.now());
 
-      console.log(`❌ FTP 550: ${file}`);
-      console.log(`⏳ RETRY COUNT: ${state.retryCount[file]}/3`);
-
-      // HARD LIMIT retries (prevents infinite loop bug)
-      if (state.retryCount[file] <= 3) {
-        setTimeout(() => {
-          console.log(`🔁 RETRYING FILE: ${file}`);
-          handleFile(client, file, sessionId);
-        }, 15000); // 15s retry delay
-      } else {
-        console.log(`⛔ DROPPED FILE (unavailable): ${file}`);
-      }
-
-    } else {
-      console.log(`❌ FILE ERROR: ${file}`);
-    }
+    // keep raw error for debug visibility
+    console.log(`⚠️ FTP RAW ERROR STORED FOR ANALYSIS`);
   }
 }
 
 // ==============================
-// PARSER (UNCHANGED LOGIC)
+// PARSER (UNCHANGED RULES)
 // ==============================
 function processFile(file, content) {
   const lines = content.split("\n");
@@ -144,13 +144,13 @@ function processFile(file, content) {
   for (let i = last; i < lines.length; i++) {
     const line = lines[i];
 
-    // ADM KILL TRIGGER (UNCHANGED)
+    // ADM ONLY "killed by"
     if (file.endsWith(".ADM") && line.includes("killed by")) {
-      console.log("💀 ADM TRIGGER");
+      console.log("\n💀 ADM TRIGGER");
       console.log(line.trim());
     }
 
-    // RPT LOOTMAX 1–25 ONLY (UNCHANGED)
+    // RPT ONLY lootmax 1–25
     if (file.endsWith(".RPT") && line.includes("lootmax")) {
       const match = line.match(/lootmax\s*:\s*(\d+)/i);
 
@@ -158,7 +158,7 @@ function processFile(file, content) {
         const val = parseInt(match[1]);
 
         if (val >= 1 && val <= 25) {
-          console.log(`🔥 RPT TRIGGER ${val}`);
+          console.log(`\n🔥 RPT TRIGGER ${val}`);
           console.log(line.trim());
         }
       }
@@ -169,7 +169,34 @@ function processFile(file, content) {
 }
 
 // ==============================
-// LOOP (FIXED: API ALWAYS TRUTH)
+// STALL RECOVERY LOGIC
+// ==============================
+async function stallCheckAndRecover() {
+  const now = Date.now();
+  const stallTime = now - state.lastSuccessTime;
+
+  if (stallTime < STALL_THRESHOLD) return;
+
+  console.log("\n⚠️ STALL DETECTED (40+ min no successful file processing)");
+  console.log(`Last success: ${new Date(state.lastSuccessTime).toISOString()}`);
+
+  const retryFiles = Array.from(state.retryQueue.keys());
+
+  if (retryFiles.length === 0) {
+    console.log("🧪 RECOVERY SWEEP: forcing API + FTP refresh");
+    const files = await fetchFiles();
+    await ftpBatch(files, "STALL_RECOVERY");
+    return;
+  }
+
+  console.log(`🧪 RETRY QUEUE SIZE: ${retryFiles.length}`);
+  await ftpBatch(retryFiles, "STALL_RETRY");
+
+  console.log("✅ RECOVERY ATTEMPT COMPLETE");
+}
+
+// ==============================
+// LOOP
 // ==============================
 async function loop() {
   console.log("\n==============================");
@@ -178,16 +205,26 @@ async function loop() {
 
   const apiFiles = await fetchFiles();
 
-  if (!apiFiles.length) {
-    console.log("🟡 NO FILES FROM API");
+  // expire old retry entries (prevents infinite stuck files)
+  const now = Date.now();
+  for (const [file, ts] of state.retryQueue.entries()) {
+    if (now - ts > 60 * 60 * 1000) {
+      state.retryQueue.delete(file);
+    }
+  }
+
+  const retryFiles = Array.from(state.retryQueue.keys());
+
+  const allFiles = [...apiFiles, ...retryFiles];
+
+  if (allFiles.length === 0) {
+    console.log("🟡 NO FILES THIS CYCLE");
     return;
   }
 
-  // IMPORTANT FIX:
-  // API is the ONLY source of file list
-  const filesToProcess = apiFiles;
+  await ftpBatch(allFiles);
 
-  await ftpBatch(filesToProcess);
+  await stallCheckAndRecover();
 
   console.log("🔌 LOOP END");
 }
@@ -195,6 +232,6 @@ async function loop() {
 // ==============================
 // START
 // ==============================
-console.log("🚀 BOT ONLINE (STABLE FIXED PIPELINE V3)");
+console.log("🚀 BOT STARTED (STABLE + SELF HEAL MODE)");
 loop();
 setInterval(loop, LOOP_INTERVAL);
