@@ -1,43 +1,31 @@
-const ftp = require("basic-ftp");
-const { Readable } = require("stream");
+const { Client, GatewayIntentBits, Collection } = require("discord.js");
+require("dotenv").config();
 
-async function run() {
-    const client = new ftp.Client();
-    client.ftp.verbose = true;
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds]
+});
+
+client.commands = new Collection();
+
+client.once("ready", () => {
+    console.log(`Logged in as ${client.user.tag}`);
+});
+
+client.on("interactionCreate", async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const command = client.commands.get(interaction.commandName);
+    if (!command) return;
 
     try {
-        await client.access({
-            host: process.env.FTP_HOST,
-            user: process.env.FTP_USER,
-            password: process.env.FTP_PASS,
-            secure: false
-        });
-
-        console.log("Connected");
-
-        const folder = "/dayzps_missions/dayzOffline.chernarusplus/custom";
-        const filePath = folder + "/test1.xml";
-
-        console.log("Ensuring folder:", folder);
-        await client.ensureDir(folder);
-
-        console.log("Uploading file:", filePath);
-
-        // FIX: proper readable stream (this is the key change)
-        const stream = Readable.from(["test1"]);
-
-        await client.uploadFrom(stream, filePath);
-
-        console.log("UPLOAD COMPLETE");
-
-        const list = await client.list(folder);
-        console.log("FILES:", list.map(f => f.name));
-
+        await command.execute(interaction);
     } catch (err) {
-        console.error("FAILED:", err);
+        console.error(err);
+        await interaction.reply({
+            content: "Error executing command.",
+            ephemeral: true
+        });
     }
+});
 
-    client.close();
-}
-
-run();
+client.login(process.env.DISCORD_TOKEN);
