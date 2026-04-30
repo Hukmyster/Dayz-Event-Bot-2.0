@@ -1,12 +1,12 @@
 {
-  "name": "nitrado-ftp-uploader",
+  "name": "dayz-economy-bot",
   "version": "1.0.0",
-  "description": "Simple FTP test uploader for Nitrado via Railway",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "basic-ftp": "^5.0.5"
+    "discord.js": "^14.0.0",
+    "dotenv": "^16.0.0"
   }
 }
