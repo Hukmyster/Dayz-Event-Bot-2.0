@@ -5,9 +5,13 @@ const { Client } = require("basic-ftp");
 // ==============================
 // CONFIG
 // ==============================
-const LOOP_INTERVAL = 5 * 60 * 1000; // 2 min
+const LOOP_INTERVAL = 2 * 60 * 1000;
 
+// ==============================
+// ENV
+// ==============================
 const ENV = process.env || {};
+
 const API_TOKEN = ENV.API_TOKEN;
 const SERVICE_ID = ENV.SERVICE_ID;
 
@@ -16,23 +20,23 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 // ==============================
-// STATE
+// STATE (PERSIST IN MEMORY)
 // ==============================
-let knownFiles = new Set();
-let retryQueue = new Set();
-let fileOffsets = {};
+const state = {
+  knownFiles: new Set(),
+  retryQueue: new Set(),
+  fileOffsets: {}
+};
 
 // ==============================
-// LOG HELPERS
+// LOG HELPERS (CLEAN MODE)
 // ==============================
-function log(obj) {
-  console.log(JSON.stringify(obj, null, 2));
-}
+const log = (msg) => console.log(msg);
 
 // ==============================
 // API FETCH
 // ==============================
-async function getFiles() {
+async function fetchFiles() {
   try {
     console.log("\n🌐 API FETCH START");
 
@@ -46,16 +50,15 @@ async function getFiles() {
       }
     );
 
-    console.log("📡 STATUS:", res.status);
-
     const data = await res.json();
 
     const files =
       data?.data?.gameserver?.game_specific?.log_files || [];
 
-    console.log("📂 FILE COUNT:", files.length);
+    console.log(`📂 FILES: ${files.length}`);
 
     return files;
+
   } catch (err) {
     console.log("❌ API ERROR:", err.message);
     return [];
@@ -63,16 +66,15 @@ async function getFiles() {
 }
 
 // ==============================
-// FTP READ (SAFE + RETRY AWARE)
+// FTP BATCH SESSION (NEW)
 // ==============================
-async function ftpRead(filePath) {
+async function ftpBatch(files) {
   const client = new Client();
   const sessionId = Math.random().toString(36).slice(2, 8);
 
-  try {
-    console.log("\n🔌 FTP SESSION START", sessionId);
-    console.log("FILE:", filePath);
+  console.log(`\n🔌 FTP SESSION ${sessionId} (BATCH MODE)`);
 
+  try {
     await client.access({
       host: FTP_HOST,
       user: FTP_USER,
@@ -80,54 +82,63 @@ async function ftpRead(filePath) {
       secure: false
     });
 
-    const tmp = path.join("/tmp", `log_${Date.now()}.txt`);
+    for (const file of files) {
+      await handleFile(client, file, sessionId);
+    }
 
-    await client.downloadTo(tmp, filePath);
+  } catch (err) {
+    console.log("❌ FTP SESSION ERROR:", err.message);
+  }
+
+  client.close();
+}
+
+// ==============================
+// FILE HANDLER
+// ==============================
+async function handleFile(client, file, sessionId) {
+  try {
+    const tmp = `/tmp/${Date.now()}_${Math.random()}.log`;
+
+    await client.downloadTo(tmp, file);
 
     const content = fs.readFileSync(tmp, "utf8");
 
-    client.close();
-
-    console.log("📄 FTP SUCCESS:", filePath);
-
-    return content;
-
-  } catch (err) {
-    console.log("❌ FTP FAIL:", filePath);
-    console.log("   ↳", err.message);
-
-    if (err.message.includes("550")) {
-      console.log("⏳ QUEUED FOR RETRY:", filePath);
-      retryQueue.add(filePath);
+    if (!state.knownFiles.has(file)) {
+      console.log(`🆕 NEW FILE: ${file}`);
+      state.knownFiles.add(file);
     }
 
-    try { client.close(); } catch {}
+    processFile(file, content);
 
-    return null;
+  } catch (err) {
+    if (err.message.includes("550")) {
+      state.retryQueue.add(file);
+      console.log(`⏳ RETRY QUEUED: ${file}`);
+    } else {
+      console.log(`❌ FILE ERROR: ${file}`);
+    }
   }
 }
 
 // ==============================
-// PARSER
+// PARSER (UNCHANGED LOGIC)
 // ==============================
 function processFile(file, content) {
   const lines = content.split("\n");
 
-  const last = fileOffsets[file] || 0;
-
-  let events = 0;
+  const last = state.fileOffsets[file] || 0;
 
   for (let i = last; i < lines.length; i++) {
     const line = lines[i];
 
-    // ADM KILL EVENT (UNCHANGED)
+    // ADM KILL TRIGGER (UNCHANGED)
     if (file.endsWith(".ADM") && line.includes("killed by")) {
-      console.log("\n💀 ADM TRIGGER");
+      console.log("💀 ADM TRIGGER");
       console.log(line.trim());
-      events++;
     }
 
-    // RPT LOOTMAX ONLY
+    // RPT LOOTMAX 1–25 ONLY
     if (file.endsWith(".RPT") && line.includes("lootmax")) {
       const match = line.match(/lootmax\s*:\s*(\d+)/i);
 
@@ -135,54 +146,39 @@ function processFile(file, content) {
         const val = parseInt(match[1]);
 
         if (val >= 1 && val <= 25) {
-          console.log(`\n🔥 RPT TRIGGER ${val}`);
+          console.log(`🔥 RPT TRIGGER ${val}`);
           console.log(line.trim());
-          events++;
         }
       }
     }
   }
 
-  fileOffsets[file] = lines.length;
-
-  return events;
+  state.fileOffsets[file] = lines.length;
 }
 
 // ==============================
-// MAIN LOOP
+// LOOP
 // ==============================
 async function loop() {
   console.log("\n==============================");
-  console.log("🔄 LOOP START", new Date().toISOString());
+  console.log("🔄 LOOP", new Date().toISOString());
   console.log("==============================");
 
-  const files = await getFiles();
+  const apiFiles = await fetchFiles();
 
-  let allTargets = new Set([...files, ...retryQueue]);
-  retryQueue.clear();
+  const allFiles = [
+    ...apiFiles,
+    ...state.retryQueue
+  ];
 
-  let total = 0;
+  state.retryQueue.clear();
 
-  for (const file of allTargets) {
-    if (!file.endsWith(".RPT") && !file.endsWith(".ADM")) continue;
-
-    const content = await ftpRead(file);
-
-    if (!content) continue;
-
-    if (!knownFiles.has(file)) {
-      console.log("🆕 NEW FILE REGISTERED:", file);
-      knownFiles.add(file);
-    }
-
-    total += processFile(file, content);
+  if (allFiles.length === 0) {
+    console.log("🟡 NO FILES");
+    return;
   }
 
-  if (total === 0) {
-    console.log("🟡 NO EVENTS THIS LOOP");
-  } else {
-    console.log("✅ EVENTS FOUND:", total);
-  }
+  await ftpBatch(allFiles);
 
   console.log("🔌 LOOP END");
 }
@@ -190,6 +186,6 @@ async function loop() {
 // ==============================
 // START
 // ==============================
-console.log("🚀 BOT ONLINE (PIPELINE MODE)");
+console.log("🚀 BOT ONLINE (CLEAN PIPELINE V2)");
 loop();
 setInterval(loop, LOOP_INTERVAL);
