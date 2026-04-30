@@ -194,4 +194,4 @@ console.log("🚀 BOT STARTED (STRICT TRIGGER MODE)");
 console.log("⏱ LOOP: 120s");
 
 run();
-setInterval(run, 120000);
+setInterval(run, 360000);
