@@ -5,7 +5,7 @@ const { Client } = require("basic-ftp");
 // ==============================
 // CONFIG
 // ==============================
-const LOOP_INTERVAL = 2 * 60 * 1000; // 2 min
+const LOOP_INTERVAL = 5 * 60 * 1000; // 2 min
 
 const ENV = process.env || {};
 const API_TOKEN = ENV.API_TOKEN;
