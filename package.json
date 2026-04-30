@@ -1,10 +1,12 @@
 {
-  "name": "nitrado-hybrid-bot",
-  "version": "1.0.0",
-  "description": "DayZ Nitrado API + discovery fallback killfeed bot",
+  "name": "nitrado-live-bot",
+  "version": "2.0.0",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node index.js"
+  },
+  "dependencies": {
+    "basic-ftp": "^5.0.5"
   }
 }
