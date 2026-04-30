@@ -22,11 +22,11 @@ const client = new Client({
 // PATHS
 // -----------------------------
 const DB_PATH = "./database/orders.json";
-const SNAPSHOT_PATH = "./custom/snapshot.json";
-const XML_PATH = "./custom/generated_events.xml";
+const EVENTS_PATH = "./custom/shopevents.xml";
+const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
 
 // -----------------------------
-// LOAD / SAVE ORDERS
+// ORDER DB
 // -----------------------------
 function loadOrders() {
     try {
@@ -36,67 +36,82 @@ function loadOrders() {
         }
         return JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
     } catch (err) {
-        console.error("DB LOAD ERROR:", err);
+        console.error(err);
         return [];
     }
 }
 
 function saveOrders(data) {
-    try {
-        fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
-    } catch (err) {
-        console.error("DB SAVE ERROR:", err);
-    }
+    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
 // -----------------------------
-// SNAPSHOT (INTERMEDIATE)
+// EVENT NAME GENERATOR (OPTION A)
 // -----------------------------
-function buildSnapshot() {
-    const orders = loadOrders().filter(o => o.status === "pending");
-
-    const snapshot = {
-        createdAt: new Date().toISOString(),
-        spawns: orders
-    };
-
-    fs.mkdirSync("./custom", { recursive: true });
-    fs.writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2));
-
-    return snapshot;
+function makeEventName() {
+    return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 }
 
 // -----------------------------
-// XML BUILDER (DAYZ EVENT FORMAT)
+// XML BUILD SYSTEM
 // -----------------------------
-function buildXML() {
+function buildXMLFiles() {
 
     const orders = loadOrders().filter(o => o.status === "pending");
 
-    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
-    xml += `<events>\n`;
-    xml += `  <event name="DISCORD_SPAWNS">\n`;
-    xml += `    <nominal>${orders.length}</nominal>\n`;
-    xml += `    <lifetime>3600</lifetime>\n`;
-    xml += `    <restock>0</restock>\n`;
-    xml += `    <saferadius>100</saferadius>\n`;
-    xml += `    <distanceradius>50</distanceradius>\n`;
-    xml += `    <cleanupradius>100</cleanupradius>\n`;
-    xml += `    <flags deletable="1" init_random="0" remove_damaged="1"/>\n`;
-    xml += `    <position>fixed</position>\n`;
-    xml += `    <limit>child</limit>\n`;
+    let eventsXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<events>\n`;
+    let spawnsXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<eventposdef>\n`;
 
     for (const o of orders) {
-        xml += `    <child type="${o.item}" />\n`;
+
+        const eventName = makeEventName();
+
+        // -------------------------
+        // EVENTS.XML ENTRY
+        // -------------------------
+        eventsXML += `
+    <event name="${eventName}">
+        <nominal>1</nominal>
+        <min>1</min>
+        <max>1</max>
+        <lifetime>11000</lifetime>
+        <restock>0</restock>
+        <saferadius>0</saferadius>
+        <distanceradius>0</distanceradius>
+        <cleanupradius>0</cleanupradius>
+        <flags deletable="0" init_random="0" remove_damaged="1"/>
+        <position>fixed</position>
+        <limit>child</limit>
+        <active>1</active>
+        <children>
+            <child lootmax="0" lootmin="0" max="1" min="1" type="${o.item}"/>
+        </children>
+    </event>\n`;
+
+        // -------------------------
+        // CFG EVENT SPAWN ENTRY
+        // -------------------------
+        spawnsXML += `
+    <event name="${eventName}">
+        <pos x="${o.x}" z="${o.z}" a="0" />
+    </event>\n`;
+
+        // mark as processed (important for later automation)
+        o.status = "built";
+        o.eventName = eventName;
     }
 
-    xml += `  </event>\n`;
-    xml += `</events>\n`;
+    eventsXML += `</events>`;
+    spawnsXML += `</eventposdef>`;
 
     fs.mkdirSync("./custom", { recursive: true });
-    fs.writeFileSync(XML_PATH, xml);
 
-    console.log("XML GENERATED");
+    fs.writeFileSync(EVENTS_PATH, eventsXML);
+    fs.writeFileSync(SPAWNS_PATH, spawnsXML);
+
+    saveOrders(orders);
+
+    console.log("XML FILES GENERATED");
 }
 
 // -----------------------------
@@ -110,7 +125,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("build")
-        .setDescription("Build snapshot + XML files")
+        .setDescription("Generate DayZ XML files")
         .toJSON()
 ];
 
@@ -140,9 +155,9 @@ client.once("clientReady", () => {
 // -----------------------------
 client.on("interactionCreate", async (interaction) => {
 
+    // COMMANDS
     if (interaction.isChatInputCommand()) {
 
-        // BUY
         if (interaction.commandName === "buy") {
 
             const modal = new ModalBuilder()
@@ -151,19 +166,19 @@ client.on("interactionCreate", async (interaction) => {
 
             const item = new TextInputBuilder()
                 .setCustomId("item")
-                .setLabel("Item")
+                .setLabel("Item (M4, AK, DMR etc)")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
             const x = new TextInputBuilder()
                 .setCustomId("x")
-                .setLabel("X")
+                .setLabel("X Coordinate")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
             const z = new TextInputBuilder()
                 .setCustomId("z")
-                .setLabel("Z")
+                .setLabel("Z Coordinate")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -176,14 +191,12 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.showModal(modal);
         }
 
-        // BUILD EVERYTHING
         if (interaction.commandName === "build") {
 
-            buildSnapshot();
-            buildXML();
+            buildXMLFiles();
 
             await interaction.reply({
-                content: "🧠 Snapshot + XML generated.",
+                content: "🧠 XML files generated successfully.",
                 flags: InteractionResponseFlags.Ephemeral
             });
         }
