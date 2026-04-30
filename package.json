@@ -1,5 +1,5 @@
 {
-  "name": "dayz-economy-bot",
+  "name": "dayz-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
