@@ -1,23 +1,12 @@
 const fs = require("fs");
+const path = require("path");
+const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 const { Client } = require("basic-ftp");
-
-const API_BASE = "https://api.nitrado.net";
 
 // ==============================
 // ENV
 // ==============================
 const ENV = process.env || {};
-
-console.log("================================");
-console.log("🧪 ENV DEBUG (RAILWAY)");
-console.log({
-  API_TOKEN: !!ENV.API_TOKEN,
-  SERVICE_ID: !!ENV.SERVICE_ID,
-  FTP_HOST: !!ENV.FTP_HOST,
-  FTP_USER: !!ENV.FTP_USER,
-  FTP_PASS: !!ENV.FTP_PASS
-});
-console.log("================================");
 
 const API_TOKEN = ENV.API_TOKEN;
 const SERVICE_ID = ENV.SERVICE_ID;
@@ -27,22 +16,41 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 // ==============================
-// STATE (PREVENT DUPES)
+// CONFIG (ONLY CHANGE HERE)
 // ==============================
-const lastLineIndex = {};
+const LOOP_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+console.log("================================");
+console.log("🚀 BOT STARTED (10 MIN LOOTMAX MODE)");
+console.log("================================");
+
+console.log("🧪 ENV DEBUG:");
+console.log({
+  API_TOKEN: !!API_TOKEN,
+  SERVICE_ID: !!SERVICE_ID,
+  FTP_HOST: !!FTP_HOST,
+  FTP_USER: !!FTP_USER,
+  FTP_PASS: !!FTP_PASS
+});
+
+// ==============================
+// STATE
+// ==============================
+const seenLines = new Set();
 
 // ==============================
 // API
 // ==============================
-async function api(path) {
+async function api(pathUrl) {
   try {
-    const res = await fetch(`${API_BASE}${path}`, {
+    const res = await fetch(`https://api.nitrado.net${pathUrl}`, {
       headers: {
         Authorization: `Bearer ${API_TOKEN}`,
         Accept: "application/json"
       }
     });
 
+    console.log("🌐 API CALL:", pathUrl);
     console.log("📡 STATUS:", res.status);
 
     return await res.json();
@@ -61,7 +69,7 @@ async function getFiles() {
   const files =
     res?.data?.gameserver?.game_specific?.log_files || [];
 
-  console.log("📂 FILES:", files.length);
+  console.log("📂 FILES FOUND:", files.length);
 
   return files;
 }
@@ -69,10 +77,12 @@ async function getFiles() {
 // ==============================
 // FTP READ
 // ==============================
-async function readFile(filePath) {
+async function ftpRead(filePath) {
   const client = new Client();
 
   try {
+    console.log("📥 FTP READ:", filePath);
+
     await client.access({
       host: FTP_HOST,
       user: FTP_USER,
@@ -80,20 +90,19 @@ async function readFile(filePath) {
       secure: false
     });
 
-    const tmp = `/tmp/${Date.now()}.log`;
-
+    const tmp = path.join("/tmp", `log_${Date.now()}.txt`);
     await client.downloadTo(tmp, filePath);
 
-    client.close();
+    const content = fs.readFileSync(tmp, "utf8");
 
-    return fs.readFileSync(tmp, "utf8");
+    client.close();
+    return content;
 
   } catch (err) {
-    console.log("⚠️ FTP ERROR:", filePath);
+    console.log("❌ FTP ERROR:", filePath);
     console.log("   ↳", err.message);
 
-    try { client.close(); } catch {}
-
+    client.close();
     return null;
   }
 }
@@ -101,15 +110,40 @@ async function readFile(filePath) {
 // ==============================
 // LOOTMAX PARSER (1–25)
 // ==============================
-function getLootmax(line) {
-  const match = line.match(/lootmax\s*[: ]\s*(\d+)/i);
+function extractLootmax(line) {
+  const match = line.match(/lootmax\s*:\s*(\d+)/i);
   return match ? parseInt(match[1], 10) : null;
 }
 
-function getTriggerNumber(value) {
-  if (!value || value < 1) return null;
-  if (value > 25) return 25;
-  return value;
+// ==============================
+// PROCESS LINE
+// ==============================
+function processLine(file, line) {
+  if (!line || seenLines.has(line)) return;
+  seenLines.add(line);
+
+  const lower = line.toLowerCase();
+
+  // ==========================
+  // ADM TRIGGER
+  // ==========================
+  if (file.endsWith(".ADM") && lower.includes("killed by")) {
+    console.log("\n💀 ADM TRIGGER FOUND");
+    console.log(line);
+    return;
+  }
+
+  // ==========================
+  // RPT LOOTMAX 1–25
+  // ==========================
+  if (file.endsWith(".RPT") && lower.includes("lootmax")) {
+    const value = extractLootmax(line);
+
+    if (value && value >= 1 && value <= 25) {
+      console.log(`\n🔥 RPT TRIGGER lootmax ${value} FOUND`);
+      console.log(line);
+    }
+  }
 }
 
 // ==============================
@@ -117,43 +151,10 @@ function getTriggerNumber(value) {
 // ==============================
 function processFile(file, content) {
   const lines = content.split("\n");
-  const last = lastLineIndex[file] || 0;
 
-  let hits = 0;
-
-  for (let i = last; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-
-    const lower = line.toLowerCase();
-
-    // ==============================
-    // ADM TRIGGER (ONLY killed by)
-    // ==============================
-    if (file.endsWith(".ADM") && lower.includes("killed by")) {
-      console.log("\n💀 ADM TRIGGER FOUND");
-      console.log("Adm trigger found:", line.trim());
-      hits++;
-    }
-
-    // ==============================
-    // RPT TRIGGER (ONLY lootmax)
-    // ==============================
-    if (file.endsWith(".RPT") && lower.includes("lootmax")) {
-      const value = getLootmax(line);
-      const trigger = getTriggerNumber(value);
-
-      if (trigger) {
-        console.log(`\n🔥 RPT TRIGGER ${trigger} FOUND`);
-        console.log(line.trim());
-        hits++;
-      }
-    }
+  for (const line of lines) {
+    processLine(file, line);
   }
-
-  lastLineIndex[file] = lines.length;
-
-  return hits;
 }
 
 // ==============================
@@ -166,30 +167,20 @@ async function run() {
 
   const files = await getFiles();
 
-  let total = 0;
-
   for (const file of files) {
-    if (!file.endsWith(".RPT") && !file.endsWith(".ADM")) continue;
+    if (!file.endsWith(".rpt") && !file.endsWith(".adm")) continue;
 
-    const content = await readFile(file);
+    const content = await ftpRead(file);
     if (!content) continue;
 
-    total += processFile(file, content);
-  }
-
-  if (total === 0) {
-    console.log("🟡 NO NEW EVENTS THIS CYCLE");
-  } else {
-    console.log("⚡ EVENTS THIS CYCLE:", total);
+    processFile(file, content);
   }
 
   console.log("🔌 LOOP END");
 }
 
 // ==============================
-// START (5 MIN LOOP)
+// START (10 MIN LOOP)
 // ==============================
-console.log("🚀 BOT ONLINE (5 MIN STABLE MODE)");
-
 run();
-setInterval(run, 300000);
+setInterval(run, LOOP_INTERVAL);
