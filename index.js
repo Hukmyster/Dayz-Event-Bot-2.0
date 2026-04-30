@@ -44,12 +44,11 @@ function save(path, data) {
     fs.writeFileSync(path, JSON.stringify(data, null, 2));
 }
 
-// ---------------- SHOP ----------------
+// ---------------- DATA ----------------
 function getShop() {
     return load(SHOP_PATH);
 }
 
-// ---------------- ORDERS ----------------
 function getOrders() {
     return load(DB_PATH);
 }
@@ -70,8 +69,8 @@ function buildXML() {
 
         const eventName = makeEventName();
 
-        events.push(`
-<event name="${eventName}">
+        events.push(
+`<event name="${eventName}">
     <nominal>1</nominal>
     <min>1</min>
     <max>1</max>
@@ -87,12 +86,14 @@ function buildXML() {
     <children>
         <child lootmax="0" lootmin="0" max="1" min="1" type="${o.itemType}"/>
     </children>
-</event>`);
+</event>`
+        );
 
-        spawns.push(`
-<event name="${eventName}">
+        spawns.push(
+`<event name="${eventName}">
     <pos x="${o.x}" z="${o.z}" a="0" />
-</event>`);
+</event>`
+        );
 
         o.status = "built";
     }
@@ -120,40 +121,65 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("buy")
-        .setDescription("Buy item")
+        .setDescription("Purchase an item from the shop")
         .addStringOption(opt =>
             opt.setName("item")
-                .setDescription("Select item")
+                .setDescription("Select item to buy")
                 .setAutocomplete(true)
                 .setRequired(true)
         )
-        .addIntegerOption(opt => opt.setName("x").setDescription("X").setRequired(true))
-        .addIntegerOption(opt => opt.setName("z").setDescription("Z").setRequired(true)),
+        .addIntegerOption(opt =>
+            opt.setName("x")
+                .setDescription("Spawn X coordinate")
+                .setRequired(true)
+        )
+        .addIntegerOption(opt =>
+            opt.setName("z")
+                .setDescription("Spawn Z coordinate")
+                .setRequired(true)
+        ),
 
-    new SlashCommandBuilder().setName("additem").setDescription("Add item to shop"),
+    new SlashCommandBuilder()
+        .setName("additem")
+        .setDescription("Add a new item to the shop"),
 
     new SlashCommandBuilder()
         .setName("removeitem")
-        .setDescription("Remove item")
+        .setDescription("Remove an item from the shop")
         .addStringOption(opt =>
             opt.setName("item")
+                .setDescription("Select item to remove")
                 .setAutocomplete(true)
                 .setRequired(true)
         ),
 
-    new SlashCommandBuilder().setName("shop").setDescription("View shop"),
+    new SlashCommandBuilder()
+        .setName("shop")
+        .setDescription("View all shop items"),
 
-    new SlashCommandBuilder().setName("orders").setDescription("View pending orders"),
+    new SlashCommandBuilder()
+        .setName("orders")
+        .setDescription("View pending orders"),
 
-    new SlashCommandBuilder().setName("build").setDescription("Build XML"),
+    new SlashCommandBuilder()
+        .setName("build")
+        .setDescription("Build XML files from pending orders"),
 
-    new SlashCommandBuilder().setName("viewxml").setDescription("View XML"),
+    new SlashCommandBuilder()
+        .setName("viewxml")
+        .setDescription("View generated XML"),
 
-    new SlashCommandBuilder().setName("dumpshop").setDescription("Dump shop JSON"),
+    new SlashCommandBuilder()
+        .setName("dumpshop")
+        .setDescription("Debug: view raw shop data"),
 
-    new SlashCommandBuilder().setName("dumporders").setDescription("Dump orders JSON"),
+    new SlashCommandBuilder()
+        .setName("dumporders")
+        .setDescription("Debug: view raw orders data"),
 
-    new SlashCommandBuilder().setName("listcommands").setDescription("List commands")
+    new SlashCommandBuilder()
+        .setName("listcommands")
+        .setDescription("List all available commands")
 ];
 
 // ---------------- REGISTER ----------------
@@ -196,7 +222,6 @@ client.on("interactionCreate", async (interaction) => {
     // COMMANDS
     if (interaction.isChatInputCommand()) {
 
-        // BUY
         if (interaction.commandName === "buy") {
             const shop = getShop();
             const itemId = interaction.options.getString("item");
@@ -204,7 +229,6 @@ client.on("interactionCreate", async (interaction) => {
             const z = interaction.options.getInteger("z");
 
             const item = shop.find(i => i.id === itemId);
-
             if (!item) return interaction.reply({ content: "Item not found", flags: 64 });
 
             const orders = getOrders();
@@ -213,11 +237,14 @@ client.on("interactionCreate", async (interaction) => {
                 id: Date.now(),
                 itemType: item.type,
                 displayName: item.displayName,
-                x, z,
+                x,
+                z,
                 status: "pending"
             });
 
             save(DB_PATH, orders);
+
+            console.log("ORDER SAVED:", orders[orders.length - 1]);
 
             return interaction.reply({
                 content: `✅ ${item.displayName} @ ${x},${z}`,
@@ -225,7 +252,6 @@ client.on("interactionCreate", async (interaction) => {
             });
         }
 
-        // REMOVE ITEM
         if (interaction.commandName === "removeitem") {
             const id = interaction.options.getString("item");
             let shop = getShop();
@@ -236,40 +262,36 @@ client.on("interactionCreate", async (interaction) => {
             return interaction.reply({ content: "Item removed", flags: 64 });
         }
 
-        // SHOP
         if (interaction.commandName === "shop") {
             const shop = getShop();
 
-            if (!shop.length) return interaction.reply({ content: "Empty shop", flags: 64 });
+            if (!shop.length) return interaction.reply({ content: "Shop is empty", flags: 64 });
 
             const text = shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n");
 
             return interaction.reply({ content: text, flags: 64 });
         }
 
-        // ORDERS
         if (interaction.commandName === "orders") {
             const orders = getOrders().filter(o => o.status === "pending");
 
-            if (!orders.length) return interaction.reply({ content: "No orders", flags: 64 });
+            if (!orders.length) return interaction.reply({ content: "No pending orders", flags: 64 });
 
             const text = orders.map(o => `• ${o.displayName} @ ${o.x},${o.z}`).join("\n");
 
             return interaction.reply({ content: text, flags: 64 });
         }
 
-        // BUILD
         if (interaction.commandName === "build") {
             buildXML();
             return interaction.reply({ content: "XML built", flags: 64 });
         }
 
-        // VIEW XML
         if (interaction.commandName === "viewxml") {
             try {
-                const events = fs.readFileSync(EVENTS_PATH, "utf-8");
+                const xml = fs.readFileSync(EVENTS_PATH, "utf-8");
                 return interaction.reply({
-                    content: "```xml\n" + events.slice(0, 1800) + "\n```",
+                    content: "```xml\n" + xml.slice(0, 1800) + "\n```",
                     flags: 64
                 });
             } catch {
@@ -277,7 +299,6 @@ client.on("interactionCreate", async (interaction) => {
             }
         }
 
-        // DEBUG
         if (interaction.commandName === "dumpshop") {
             return interaction.reply({
                 content: "```json\n" + JSON.stringify(getShop(), null, 2).slice(0, 1800),
@@ -292,26 +313,23 @@ client.on("interactionCreate", async (interaction) => {
             });
         }
 
-        // LIST COMMANDS
         if (interaction.commandName === "listcommands") {
             return interaction.reply({
-                content: `
-/buy - purchase
+                content:
+`/buy - purchase item
 /additem - add shop item
 /removeitem - remove item
 /shop - view shop
 /orders - view orders
 /build - build XML
 /viewxml - view XML
-/dumpshop - debug
-/dumporders - debug
-/listcommands - this list
-                `,
+/dumpshop - debug shop
+/dumporders - debug orders
+/listcommands - this list`,
                 flags: 64
             });
         }
 
-        // ADD ITEM MODAL
         if (interaction.commandName === "additem") {
 
             const modal = new ModalBuilder()
@@ -343,7 +361,7 @@ client.on("interactionCreate", async (interaction) => {
         }
     }
 
-    // MODAL SUBMIT
+    // MODAL
     if (interaction.isModalSubmit()) {
 
         if (interaction.customId === "addItemModal") {
