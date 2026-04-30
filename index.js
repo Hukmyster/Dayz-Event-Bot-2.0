@@ -14,27 +14,23 @@ async function run() {
 
         console.log("Connected");
 
-        // STEP 1: go to mission root FIRST
-        await client.cd("/dayzps_missions/dayzOffline.chernarusplus");
+        const folderPath = "/dayzps_missions/dayzOffline.chernarusplus/custom";
+        const filePath = folderPath + "/test1.xml";
 
-        console.log("In mission directory");
+        console.log("Ensuring folder exists:", folderPath);
+        await client.ensureDir(folderPath);
 
-        // STEP 2: ensure custom folder exists here
-        await client.ensureDir("custom");
+        console.log("Uploading file:", filePath);
 
-        console.log("Custom folder ready");
+        await client.uploadFrom(
+            Buffer.from("test1", "utf-8"),
+            filePath
+        );
 
-        // STEP 3: create file content
-        const buffer = Buffer.from("test1", "utf-8");
+        console.log("UPLOAD COMPLETE");
 
-        // STEP 4: upload file INTO that folder
-        await client.uploadFrom(buffer, "custom/test.xml");
-
-        console.log("File uploaded");
-
-        // VERIFY
-        const list = await client.list("custom");
-        console.log("Custom folder contents:", list.map(f => f.name));
+        const list = await client.list(folderPath);
+        console.log("Folder contents:", list.map(f => f.name));
 
     } catch (err) {
         console.error("FAILED:", err);
