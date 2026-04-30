@@ -25,10 +25,15 @@ const FTP_PASS = ENV.FTP_PASS;
 const state = {
   knownFiles: new Set(),
   fileOffsets: {},
-  retryQueue: new Map(),
 
-  lastSuccessTime: Date.now(),
-  stalled: false,
+  blockedFiles: new Map(), // 550 cooldown
+
+  lastApiFiles: new Set(),
+
+  lastFtpSuccessTime: Date.now(),
+  lastAnyActivityTime: Date.now(),
+
+  stallMode: false,
 };
 
 // ==============================
@@ -49,6 +54,7 @@ async function fetchFiles() {
     );
 
     const data = await res.json();
+
     const files =
       data?.data?.gameserver?.game_specific?.log_files || [];
 
@@ -62,9 +68,25 @@ async function fetchFiles() {
 }
 
 // ==============================
+// COOLDOWN CHECK
+// ==============================
+function isBlocked(file) {
+  const until = state.blockedFiles.get(file);
+
+  if (!until) return false;
+
+  if (Date.now() > until) {
+    state.blockedFiles.delete(file);
+    return false;
+  }
+
+  return true;
+}
+
+// ==============================
 // FTP BATCH
 // ==============================
-async function ftpBatch(files, mode = "normal") {
+async function ftpBatch(files, mode = "NORMAL") {
   const client = new Client();
   const sessionId = Math.random().toString(36).slice(2, 8);
 
@@ -78,15 +100,17 @@ async function ftpBatch(files, mode = "normal") {
       secure: false,
     });
 
-    console.log(`🌐 FTP CONNECTED`);
-    console.log(`REMOTE HOST: ${FTP_HOST}`);
-
     for (const file of files) {
+      if (!state.stallMode && isBlocked(file)) {
+        console.log(`⏭ SKIP COOLDOWN: ${file}`);
+        continue;
+      }
+
       await handleFile(client, file, sessionId);
     }
 
   } catch (err) {
-    console.log(`❌ FTP SESSION ERROR ${sessionId}`);
+    console.log("❌ FTP SESSION ERROR");
     console.log(err?.message || err);
   }
 
@@ -109,7 +133,8 @@ async function handleFile(client, file, sessionId) {
       state.knownFiles.add(file);
     }
 
-    state.lastSuccessTime = Date.now();
+    state.lastFtpSuccessTime = Date.now();
+    state.lastAnyActivityTime = Date.now();
 
     processFile(file, content);
 
@@ -119,22 +144,27 @@ async function handleFile(client, file, sessionId) {
     console.log(`❌ FTP FAIL: ${file}`);
     console.log(`   ↳ ${msg}`);
 
-    // 🔥 NEW: IMMEDIATE RAW FTP DEBUG OUTPUT
-    console.log("\n📡 FTP RAW RESPONSE (IMMEDIATE DEBUG)");
+    // immediate raw debug (as requested)
+    console.log("\n📡 FTP RAW RESPONSE");
     console.log({
       sessionId,
       file,
       error: msg,
       host: FTP_HOST,
-      time: new Date().toISOString(),
+      time: new Date().toISOString()
     });
 
-    state.retryQueue.set(file, Date.now());
+    if (msg.includes("550")) {
+      state.blockedFiles.set(
+        file,
+        Date.now() + 20 * 60 * 1000
+      );
+    }
   }
 }
 
 // ==============================
-// PARSER (UNCHANGED RULES)
+// PARSER
 // ==============================
 function processFile(file, content) {
   const lines = content.split("\n");
@@ -143,13 +173,11 @@ function processFile(file, content) {
   for (let i = last; i < lines.length; i++) {
     const line = lines[i];
 
-    // ADM ONLY
     if (file.endsWith(".ADM") && line.includes("killed by")) {
       console.log("\n💀 ADM TRIGGER");
       console.log(line.trim());
     }
 
-    // RPT ONLY lootmax 1–25
     if (file.endsWith(".RPT") && line.includes("lootmax")) {
       const match = line.match(/lootmax\s*:\s*(\d+)/i);
 
@@ -168,35 +196,39 @@ function processFile(file, content) {
 }
 
 // ==============================
-// STALL CHECK
+// STALL v2 CHECK
 // ==============================
-async function checkStall() {
+async function checkStallV2(apiFiles) {
   const now = Date.now();
-  const diff = now - state.lastSuccessTime;
+  const timeSinceFtp = now - state.lastFtpSuccessTime;
 
-  if (diff < STALL_THRESHOLD || state.stalled) return;
+  const apiHasFiles = apiFiles && apiFiles.length > 0;
 
-  state.stalled = true;
+  if (!apiHasFiles || state.stallMode) return;
 
-  console.log("\n🚨 STALL DETECTED (20 MIN NO SUCCESS)");
-  console.log("🔧 ENTERING STALL DEBUG MODE...\n");
+  if (timeSinceFtp < STALL_THRESHOLD) return;
 
-  const files = await fetchFiles();
+  state.stallMode = true;
+
+  console.log("\n🚨 STALL v2 DETECTED");
+  console.log("🔧 API HAS FILES BUT NO FTP SUCCESS FOR 20 MIN");
 
   try {
-    await ftpBatch(files, "STALL_DEBUG");
+    console.log("🔁 FORCE RECOVERY MODE STARTING...\n");
 
-    console.log("\n✅ STALL DEBUG SUCCESSFUL");
-    console.log("🔄 RESUMING NORMAL OPERATION\n");
+    await ftpBatch(apiFiles, "STALL_RECOVERY");
 
-    state.lastSuccessTime = Date.now();
-    state.stalled = false;
+    console.log("\n✅ STALL RECOVERY SUCCESSFUL");
+    console.log("🔄 RESUMING NORMAL MODE\n");
+
+    state.lastFtpSuccessTime = Date.now();
+    state.stallMode = false;
 
   } catch (err) {
-    console.log("\n❌ STALL DEBUG FAILED");
-    console.log("🛑 STOPPING BOT FOR DIAGNOSTICS");
-    console.log(err?.message || err);
+    console.log("\n❌ STALL RECOVERY FAILED");
+    console.log("🛑 STOPPING BOT");
 
+    console.log(err?.message || err);
     process.exit(1);
   }
 }
@@ -210,19 +242,23 @@ async function loop() {
   console.log("==============================");
 
   const apiFiles = await fetchFiles();
-  const retryFiles = Array.from(state.retryQueue.keys());
 
-  const allFiles = [...apiFiles, ...retryFiles];
+  for (const f of apiFiles) {
+    if (!state.lastApiFiles.has(f)) {
+      console.log(`🆕 API NEW FILE: ${f}`);
+    }
+  }
 
-  if (allFiles.length === 0) {
-    console.log("🟡 NO FILES THIS LOOP");
-    await checkStall();
+  state.lastApiFiles = new Set(apiFiles);
+
+  if (apiFiles.length === 0) {
+    console.log("🟡 NO API FILES");
     return;
   }
 
-  await ftpBatch(allFiles);
+  await ftpBatch(apiFiles);
 
-  await checkStall();
+  await checkStallV2(apiFiles);
 
   console.log("🔌 LOOP END");
 }
@@ -230,6 +266,6 @@ async function loop() {
 // ==============================
 // START
 // ==============================
-console.log("🚀 BOT ONLINE (STALL SAFE MODE 20MIN + RAW FTP DEBUG)");
+console.log("🚀 BOT ONLINE (STALL v2 + SELF HEAL ENGINE)");
 loop();
 setInterval(loop, LOOP_INTERVAL);
