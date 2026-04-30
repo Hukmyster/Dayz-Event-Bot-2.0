@@ -4,7 +4,7 @@ const { Client } = require("basic-ftp");
 const API_BASE = "https://api.nitrado.net";
 
 // ==============================
-// ENV DEBUG (DO NOT REMOVE)
+// ENV
 // ==============================
 const ENV = process.env || {};
 
@@ -27,24 +27,14 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 // ==============================
-// SAFETY CHECK
+// STATE (PREVENT DUPES)
 // ==============================
-if (!API_TOKEN || !SERVICE_ID || !FTP_HOST || !FTP_USER || !FTP_PASS) {
-  console.log("❌ Missing ENV variables");
-  process.exit(1);
-}
+const lastLineIndex = {};
 
 // ==============================
-// STATE (PREVENT DUPLICATES)
-// ==============================
-const lastSeenLine = {};
-
-// ==============================
-// API CALL
+// API
 // ==============================
 async function api(path) {
-  console.log("🌐 API CALL:", path);
-
   try {
     const res = await fetch(`${API_BASE}${path}`, {
       headers: {
@@ -63,7 +53,7 @@ async function api(path) {
 }
 
 // ==============================
-// GET FILE LIST
+// FILE LIST
 // ==============================
 async function getFiles() {
   const res = await api(`/services/${SERVICE_ID}/gameservers`);
@@ -80,8 +70,6 @@ async function getFiles() {
 // FTP READ
 // ==============================
 async function readFile(filePath) {
-  console.log("📥 FTP READ:", filePath);
-
   const client = new Client();
 
   try {
@@ -101,7 +89,7 @@ async function readFile(filePath) {
     return fs.readFileSync(tmp, "utf8");
 
   } catch (err) {
-    console.log("❌ FTP ERROR:", filePath);
+    console.log("⚠️ FTP ERROR:", filePath);
     console.log("   ↳", err.message);
 
     try { client.close(); } catch {}
@@ -111,23 +99,25 @@ async function readFile(filePath) {
 }
 
 // ==============================
-// TRIGGERS (STRICT ONLY)
+// LOOTMAX PARSER (1–25)
 // ==============================
-function isLootmax(line) {
-  return line.toLowerCase().includes("lootmax");
+function getLootmax(line) {
+  const match = line.match(/lootmax\s*[: ]\s*(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
 }
 
-function isKilledBy(line) {
-  return line.toLowerCase().includes("killed by");
+function getTriggerNumber(value) {
+  if (!value || value < 1) return null;
+  if (value > 25) return 25;
+  return value;
 }
 
 // ==============================
-// PROCESS FILE (NEW LINES ONLY)
+// PROCESS FILE
 // ==============================
 function processFile(file, content) {
   const lines = content.split("\n");
-
-  const last = lastSeenLine[file] || 0;
+  const last = lastLineIndex[file] || 0;
 
   let hits = 0;
 
@@ -135,24 +125,33 @@ function processFile(file, content) {
     const line = lines[i];
     if (!line) continue;
 
-    // TRIGGER 1
-    if (isLootmax(line)) {
-      console.log("\n🔥 LOOTMAX TRIGGER");
-      console.log("📄 FILE:", file);
-      console.log(line.trim());
+    const lower = line.toLowerCase();
+
+    // ==============================
+    // ADM TRIGGER (ONLY killed by)
+    // ==============================
+    if (file.endsWith(".ADM") && lower.includes("killed by")) {
+      console.log("\n💀 ADM TRIGGER FOUND");
+      console.log("Adm trigger found:", line.trim());
       hits++;
     }
 
-    // TRIGGER 2
-    if (isKilledBy(line)) {
-      console.log("\n💀 KILL TRIGGER");
-      console.log("📄 FILE:", file);
-      console.log(line.trim());
-      hits++;
+    // ==============================
+    // RPT TRIGGER (ONLY lootmax)
+    // ==============================
+    if (file.endsWith(".RPT") && lower.includes("lootmax")) {
+      const value = getLootmax(line);
+      const trigger = getTriggerNumber(value);
+
+      if (trigger) {
+        console.log(`\n🔥 RPT TRIGGER ${trigger} FOUND`);
+        console.log(line.trim());
+        hits++;
+      }
     }
   }
 
-  lastSeenLine[file] = lines.length;
+  lastLineIndex[file] = lines.length;
 
   return hits;
 }
@@ -181,17 +180,16 @@ async function run() {
   if (total === 0) {
     console.log("🟡 NO NEW EVENTS THIS CYCLE");
   } else {
-    console.log("⚡ TOTAL EVENTS:", total);
+    console.log("⚡ EVENTS THIS CYCLE:", total);
   }
 
   console.log("🔌 LOOP END");
 }
 
 // ==============================
-// START
+// START (5 MIN LOOP)
 // ==============================
-console.log("🚀 BOT STARTED (STRICT TRIGGER MODE)");
-console.log("⏱ LOOP: 120s");
+console.log("🚀 BOT ONLINE (5 MIN STABLE MODE)");
 
 run();
-setInterval(run, 360000);
+setInterval(run, 300000);
