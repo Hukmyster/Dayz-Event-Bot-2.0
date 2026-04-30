@@ -7,15 +7,13 @@ const {
     ModalBuilder,
     TextInputBuilder,
     TextInputStyle,
-    ActionRowBuilder
+    ActionRowBuilder,
+    InteractionResponseFlags
 } = require("discord.js");
 
 const fs = require("fs");
 require("dotenv").config();
 
-// -----------------------------
-// CLIENT
-// -----------------------------
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
@@ -24,130 +22,175 @@ const client = new Client({
 // PATHS
 // -----------------------------
 const DB_PATH = "./database/orders.json";
+const SHOP_PATH = "./database/shop.json";
 const EVENTS_PATH = "./custom/shopevents.xml";
 const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
 
 // -----------------------------
-// SAFETY NETS (RAILWAY STABILITY)
+// SAFETY
 // -----------------------------
-process.on("unhandledRejection", (err) => {
-    console.error("Unhandled Rejection:", err);
-});
-
-process.on("uncaughtException", (err) => {
-    console.error("Uncaught Exception:", err);
-});
+process.on("unhandledRejection", console.error);
+process.on("uncaughtException", console.error);
 
 // -----------------------------
-// DATABASE
+// INIT FILES
 // -----------------------------
-function loadOrders() {
-    try {
-        if (!fs.existsSync(DB_PATH)) {
-            fs.mkdirSync("./database", { recursive: true });
-            fs.writeFileSync(DB_PATH, "[]");
-        }
-        return JSON.parse(fs.readFileSync(DB_PATH, "utf-8"));
-    } catch (err) {
-        console.error("DB LOAD ERROR:", err);
-        return [];
-    }
+function ensureFiles() {
+    if (!fs.existsSync("./database")) fs.mkdirSync("./database", { recursive: true });
+
+    if (!fs.existsSync(DB_PATH)) fs.writeFileSync(DB_PATH, "[]");
+    if (!fs.existsSync(SHOP_PATH)) fs.writeFileSync(SHOP_PATH, "[]");
+}
+
+function loadJSON(path) {
+    return JSON.parse(fs.readFileSync(path, "utf-8"));
+}
+
+function saveJSON(path, data) {
+    fs.writeFileSync(path, JSON.stringify(data, null, 2));
+}
+
+// -----------------------------
+// SHOP SYSTEM
+// -----------------------------
+function getShop() {
+    return loadJSON(SHOP_PATH);
+}
+
+function findShopMatch(query) {
+    const shop = getShop();
+    return shop
+        .filter(i => i.displayName.toLowerCase().includes(query.toLowerCase()))
+        .slice(0, 5);
+}
+
+// -----------------------------
+// ORDERS
+// -----------------------------
+function getOrders() {
+    return loadJSON(DB_PATH);
 }
 
 function saveOrders(data) {
-    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+    saveJSON(DB_PATH, data);
 }
 
 // -----------------------------
-// EVENT NAME GENERATOR (OPTION A)
+// EVENT NAME
 // -----------------------------
 function makeEventName() {
     return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 }
 
 // -----------------------------
-// XML BUILDER
+// XML BUILD
 // -----------------------------
-function buildXMLFiles() {
+function buildXML() {
 
-    const orders = loadOrders().filter(o => o.status === "pending");
+    const orders = getOrders().filter(o => o.status === "pending");
 
-    let eventsXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<events>\n`;
-    let spawnsXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<eventposdef>\n`;
+    let events = [];
+    let spawns = [];
 
     for (const o of orders) {
 
         const eventName = makeEventName();
 
-        console.log(`[BUILD] Creating event ${eventName} for ${o.item}`);
+        events.push(`
+<event name="${eventName}">
+    <nominal>1</nominal>
+    <min>1</min>
+    <max>1</max>
+    <lifetime>11000</lifetime>
+    <restock>0</restock>
+    <saferadius>0</saferadius>
+    <distanceradius>0</distanceradius>
+    <cleanupradius>0</cleanupradius>
+    <flags deletable="0" init_random="0" remove_damaged="1"/>
+    <position>fixed</position>
+    <limit>child</limit>
+    <active>1</active>
+    <children>
+        <child lootmax="0" lootmin="0" max="1" min="1" type="${o.itemType}"/>
+    </children>
+</event>`);
 
-        eventsXML += `
-    <event name="${eventName}">
-        <nominal>1</nominal>
-        <min>1</min>
-        <max>1</max>
-        <lifetime>11000</lifetime>
-        <restock>0</restock>
-        <saferadius>0</saferadius>
-        <distanceradius>0</distanceradius>
-        <cleanupradius>0</cleanupradius>
-        <flags deletable="0" init_random="0" remove_damaged="1"/>
-        <position>fixed</position>
-        <limit>child</limit>
-        <active>1</active>
-        <children>
-            <child lootmax="0" lootmin="0" max="1" min="1" type="${o.item}"/>
-        </children>
-    </event>\n`;
-
-        spawnsXML += `
-    <event name="${eventName}">
-        <pos x="${o.x}" z="${o.z}" a="0" />
-    </event>\n`;
+        spawns.push(`
+<event name="${eventName}">
+    <pos x="${o.x}" z="${o.z}" a="0" />
+</event>`);
 
         o.status = "built";
         o.eventName = eventName;
     }
 
-    eventsXML += `</events>`;
-    spawnsXML += `</eventposdef>`;
+    const eventsXML =
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<events>
+${events.join("")}
+</events>`;
+
+    const spawnsXML =
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<eventposdef>
+${spawns.join("")}
+</eventposdef>`;
 
     fs.mkdirSync("./custom", { recursive: true });
-
     fs.writeFileSync(EVENTS_PATH, eventsXML);
     fs.writeFileSync(SPAWNS_PATH, spawnsXML);
 
     saveOrders(orders);
 
-    console.log("XML FILES GENERATED");
+    console.log("XML GENERATED");
 }
 
 // -----------------------------
-// SLASH COMMANDS
+// COMMANDS
 // -----------------------------
 const commands = [
+
+    // BUY
     new SlashCommandBuilder()
         .setName("buy")
-        .setDescription("Purchase an item")
+        .setDescription("Buy an item")
+        .addStringOption(opt =>
+            opt.setName("item")
+                .setDescription("Search shop items")
+                .setAutocomplete(true)
+                .setRequired(true)
+        )
+        .addIntegerOption(opt =>
+            opt.setName("x")
+                .setDescription("X coord")
+                .setRequired(true)
+        )
+        .addIntegerOption(opt =>
+            opt.setName("z")
+                .setDescription("Z coord")
+                .setRequired(true)
+        )
         .toJSON(),
 
+    // ADD ITEM (ADMIN SHOP BUILDER)
+    new SlashCommandBuilder()
+        .setName("additem")
+        .setDescription("Add item to shop")
+        .toJSON(),
+
+    // BUILD
     new SlashCommandBuilder()
         .setName("build")
-        .setDescription("Generate XML files")
-        .toJSON(),
-
-    new SlashCommandBuilder()
-        .setName("viewxml")
-        .setDescription("View generated XML files")
+        .setDescription("Generate XML")
         .toJSON()
 ];
 
 // -----------------------------
-// REGISTER COMMANDS
+// REGISTER
 // -----------------------------
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
-async function registerCommands() {
+async function register() {
     await rest.put(
         Routes.applicationGuildCommands(
             process.env.CLIENT_ID,
@@ -155,7 +198,6 @@ async function registerCommands() {
         ),
         { body: commands }
     );
-
     console.log("Commands registered");
 }
 
@@ -171,109 +213,127 @@ client.once("clientReady", () => {
 // -----------------------------
 client.on("interactionCreate", async (interaction) => {
 
+    ensureFiles();
+
+    // AUTOCOMPLETE (SHOP SEARCH)
+    if (interaction.isAutocomplete()) {
+
+        const focused = interaction.options.getFocused();
+        const matches = findShopMatch(focused);
+
+        return interaction.respond(
+            matches.map(i => ({
+                name: `${i.displayName} ($${i.price})`,
+                value: i.id
+            }))
+        );
+    }
+
+    // COMMANDS
     if (interaction.isChatInputCommand()) {
 
         // BUY
         if (interaction.commandName === "buy") {
 
+            const shop = getShop();
+            const itemId = interaction.options.getString("item");
+            const x = interaction.options.getInteger("x");
+            const z = interaction.options.getInteger("z");
+
+            const item = shop.find(i => i.id === itemId);
+
+            if (!item) {
+                return interaction.reply({
+                    content: "Item not found.",
+                    flags: 64
+                });
+            }
+
+            const orders = getOrders();
+
+            orders.push({
+                id: Date.now(),
+                user: interaction.user.id,
+                itemType: item.type,
+                displayName: item.displayName,
+                x,
+                z,
+                status: "pending"
+            });
+
+            saveOrders(orders);
+
+            return interaction.reply({
+                content: `✅ Purchased ${item.displayName} at ${x},${z}`,
+                flags: 64
+            });
+        }
+
+        // ADD ITEM
+        if (interaction.commandName === "additem") {
+
             const modal = new ModalBuilder()
-                .setCustomId("buyModal")
-                .setTitle("Purchase Item");
+                .setCustomId("addItemModal")
+                .setTitle("Add Shop Item");
 
-            const item = new TextInputBuilder()
-                .setCustomId("item")
-                .setLabel("Item")
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
+            const type = new TextInputBuilder()
+                .setCustomId("type")
+                .setLabel("types.xml ITEM NAME (case sensitive)")
+                .setStyle(TextInputStyle.Short);
 
-            const x = new TextInputBuilder()
-                .setCustomId("x")
-                .setLabel("X Coordinate")
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
+            const name = new TextInputBuilder()
+                .setCustomId("name")
+                .setLabel("Display Name (Discord)")
+                .setStyle(TextInputStyle.Short);
 
-            const z = new TextInputBuilder()
-                .setCustomId("z")
-                .setLabel("Z Coordinate")
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
+            const price = new TextInputBuilder()
+                .setCustomId("price")
+                .setLabel("Price")
+                .setStyle(TextInputStyle.Short);
 
             modal.addComponents(
-                new ActionRowBuilder().addComponents(item),
-                new ActionRowBuilder().addComponents(x),
-                new ActionRowBuilder().addComponents(z)
+                new ActionRowBuilder().addComponents(type),
+                new ActionRowBuilder().addComponents(name),
+                new ActionRowBuilder().addComponents(price)
             );
 
-            await interaction.showModal(modal);
+            return interaction.showModal(modal);
         }
 
         // BUILD
         if (interaction.commandName === "build") {
 
-            buildXMLFiles();
+            buildXML();
 
-            await interaction.reply({
-                content: "🧠 XML files generated successfully.",
+            return interaction.reply({
+                content: "XML built.",
                 flags: 64
             });
         }
-
-        // VIEW XML (DEBUG TOOL)
-        if (interaction.commandName === "viewxml") {
-
-            try {
-                const events = fs.readFileSync(EVENTS_PATH, "utf-8");
-                const spawns = fs.readFileSync(SPAWNS_PATH, "utf-8");
-
-                await interaction.reply({
-                    content:
-                        "```xml\n--- SHOPEVENTS ---\n" +
-                        events.slice(0, 1500) +
-                        "\n\n--- SPAWNS ---\n" +
-                        spawns.slice(0, 1500) +
-                        "\n```",
-                    flags: 64
-                });
-
-            } catch (err) {
-                console.error(err);
-
-                await interaction.reply({
-                    content: "❌ No XML files found. Run /build first.",
-                    flags: 64
-                });
-            }
-        }
     }
 
-    // MODAL
+    // MODALS
     if (interaction.isModalSubmit()) {
 
-        if (interaction.customId === "buyModal") {
+        if (interaction.customId === "addItemModal") {
 
-            const item = interaction.fields.getTextInputValue("item");
-            const x = interaction.fields.getTextInputValue("x");
-            const z = interaction.fields.getTextInputValue("z");
+            const type = interaction.fields.getTextInputValue("type");
+            const name = interaction.fields.getTextInputValue("name");
+            const price = interaction.fields.getTextInputValue("price");
 
-            const orders = loadOrders();
+            const shop = getShop();
 
-            const order = {
-                id: Date.now(),
-                user: interaction.user.id,
-                item,
-                x,
-                z,
-                status: "pending",
-                createdAt: new Date().toISOString()
-            };
+            shop.push({
+                id: Date.now().toString(),
+                type,
+                displayName: name,
+                price: Number(price)
+            });
 
-            orders.push(order);
-            saveOrders(orders);
+            saveJSON(SHOP_PATH, shop);
 
-            console.log(`[BUY] ${interaction.user.username} -> ${item} @ ${x},${z}`);
-
-            await interaction.reply({
-                content: `✅ Order saved: **${item}** at X:${x} Z:${z}`,
+            return interaction.reply({
+                content: `Added ${name} to shop.`,
                 flags: 64
             });
         }
@@ -281,8 +341,6 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // -----------------------------
-// START BOT
+// START
 // -----------------------------
-registerCommands().then(() => {
-    client.login(process.env.DISCORD_TOKEN);
-});
+register().then(() => client.login(process.env.DISCORD_TOKEN));
