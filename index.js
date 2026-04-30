@@ -5,7 +5,7 @@ const { Client } = require("basic-ftp");
 // CONFIG
 // ==============================
 const LOOP_INTERVAL = 5 * 60 * 1000; // 5 min
-const STALL_THRESHOLD = 40 * 60 * 1000; // 40 min
+const STALL_THRESHOLD = 20 * 60 * 1000; // 20 min
 
 // ==============================
 // ENV
@@ -25,19 +25,14 @@ const FTP_PASS = ENV.FTP_PASS;
 const state = {
   knownFiles: new Set(),
   fileOffsets: {},
-  retryQueue: new Map(), // file -> timestamp added
+  retryQueue: new Map(),
+
   lastSuccessTime: Date.now(),
-  lastProcessedFile: null,
-  lastProcessedAt: Date.now(),
+  stalled: false,
 };
 
 // ==============================
-// LOG HELPERS
-// ==============================
-const log = (msg) => console.log(msg);
-
-// ==============================
-// API FETCH (ALWAYS FRESH)
+// API FETCH
 // ==============================
 async function fetchFiles() {
   try {
@@ -54,7 +49,6 @@ async function fetchFiles() {
     );
 
     const data = await res.json();
-
     const files =
       data?.data?.gameserver?.game_specific?.log_files || [];
 
@@ -68,14 +62,13 @@ async function fetchFiles() {
 }
 
 // ==============================
-// FTP SESSION
+// FTP BATCH
 // ==============================
 async function ftpBatch(files, mode = "normal") {
   const client = new Client();
   const sessionId = Math.random().toString(36).slice(2, 8);
 
   console.log(`\n🔌 FTP SESSION START ${sessionId} (${mode})`);
-  console.log(`REMOTE HOST: ${FTP_HOST}`);
 
   try {
     await client.access({
@@ -85,12 +78,15 @@ async function ftpBatch(files, mode = "normal") {
       secure: false,
     });
 
+    console.log(`🌐 FTP CONNECTED`);
+    console.log(`REMOTE HOST: ${FTP_HOST}`);
+
     for (const file of files) {
       await handleFile(client, file, sessionId);
     }
 
   } catch (err) {
-    console.log(`❌ FTP SESSION ERROR [${sessionId}]`);
+    console.log(`❌ FTP SESSION ERROR ${sessionId}`);
     console.log(err?.message || err);
   }
 
@@ -109,12 +105,10 @@ async function handleFile(client, file, sessionId) {
     const content = fs.readFileSync(tmp, "utf8");
 
     if (!state.knownFiles.has(file)) {
-      console.log(`🆕 NEW FILE REGISTERED: ${file}`);
+      console.log(`🆕 NEW FILE: ${file}`);
       state.knownFiles.add(file);
     }
 
-    state.lastProcessedFile = file;
-    state.lastProcessedAt = Date.now();
     state.lastSuccessTime = Date.now();
 
     processFile(file, content);
@@ -125,11 +119,17 @@ async function handleFile(client, file, sessionId) {
     console.log(`❌ FTP FAIL: ${file}`);
     console.log(`   ↳ ${msg}`);
 
-    // store retry WITH timestamp (so it expires)
-    state.retryQueue.set(file, Date.now());
+    // 🔥 NEW: IMMEDIATE RAW FTP DEBUG OUTPUT
+    console.log("\n📡 FTP RAW RESPONSE (IMMEDIATE DEBUG)");
+    console.log({
+      sessionId,
+      file,
+      error: msg,
+      host: FTP_HOST,
+      time: new Date().toISOString(),
+    });
 
-    // keep raw error for debug visibility
-    console.log(`⚠️ FTP RAW ERROR STORED FOR ANALYSIS`);
+    state.retryQueue.set(file, Date.now());
   }
 }
 
@@ -138,13 +138,12 @@ async function handleFile(client, file, sessionId) {
 // ==============================
 function processFile(file, content) {
   const lines = content.split("\n");
-
   const last = state.fileOffsets[file] || 0;
 
   for (let i = last; i < lines.length; i++) {
     const line = lines[i];
 
-    // ADM ONLY "killed by"
+    // ADM ONLY
     if (file.endsWith(".ADM") && line.includes("killed by")) {
       console.log("\n💀 ADM TRIGGER");
       console.log(line.trim());
@@ -169,30 +168,37 @@ function processFile(file, content) {
 }
 
 // ==============================
-// STALL RECOVERY LOGIC
+// STALL CHECK
 // ==============================
-async function stallCheckAndRecover() {
+async function checkStall() {
   const now = Date.now();
-  const stallTime = now - state.lastSuccessTime;
+  const diff = now - state.lastSuccessTime;
 
-  if (stallTime < STALL_THRESHOLD) return;
+  if (diff < STALL_THRESHOLD || state.stalled) return;
 
-  console.log("\n⚠️ STALL DETECTED (40+ min no successful file processing)");
-  console.log(`Last success: ${new Date(state.lastSuccessTime).toISOString()}`);
+  state.stalled = true;
 
-  const retryFiles = Array.from(state.retryQueue.keys());
+  console.log("\n🚨 STALL DETECTED (20 MIN NO SUCCESS)");
+  console.log("🔧 ENTERING STALL DEBUG MODE...\n");
 
-  if (retryFiles.length === 0) {
-    console.log("🧪 RECOVERY SWEEP: forcing API + FTP refresh");
-    const files = await fetchFiles();
-    await ftpBatch(files, "STALL_RECOVERY");
-    return;
+  const files = await fetchFiles();
+
+  try {
+    await ftpBatch(files, "STALL_DEBUG");
+
+    console.log("\n✅ STALL DEBUG SUCCESSFUL");
+    console.log("🔄 RESUMING NORMAL OPERATION\n");
+
+    state.lastSuccessTime = Date.now();
+    state.stalled = false;
+
+  } catch (err) {
+    console.log("\n❌ STALL DEBUG FAILED");
+    console.log("🛑 STOPPING BOT FOR DIAGNOSTICS");
+    console.log(err?.message || err);
+
+    process.exit(1);
   }
-
-  console.log(`🧪 RETRY QUEUE SIZE: ${retryFiles.length}`);
-  await ftpBatch(retryFiles, "STALL_RETRY");
-
-  console.log("✅ RECOVERY ATTEMPT COMPLETE");
 }
 
 // ==============================
@@ -204,27 +210,19 @@ async function loop() {
   console.log("==============================");
 
   const apiFiles = await fetchFiles();
-
-  // expire old retry entries (prevents infinite stuck files)
-  const now = Date.now();
-  for (const [file, ts] of state.retryQueue.entries()) {
-    if (now - ts > 60 * 60 * 1000) {
-      state.retryQueue.delete(file);
-    }
-  }
-
   const retryFiles = Array.from(state.retryQueue.keys());
 
   const allFiles = [...apiFiles, ...retryFiles];
 
   if (allFiles.length === 0) {
-    console.log("🟡 NO FILES THIS CYCLE");
+    console.log("🟡 NO FILES THIS LOOP");
+    await checkStall();
     return;
   }
 
   await ftpBatch(allFiles);
 
-  await stallCheckAndRecover();
+  await checkStall();
 
   console.log("🔌 LOOP END");
 }
@@ -232,6 +230,6 @@ async function loop() {
 // ==============================
 // START
 // ==============================
-console.log("🚀 BOT STARTED (STABLE + SELF HEAL MODE)");
+console.log("🚀 BOT ONLINE (STALL SAFE MODE 20MIN + RAW FTP DEBUG)");
 loop();
 setInterval(loop, LOOP_INTERVAL);
