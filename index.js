@@ -1,10 +1,10 @@
-const fetch = global.fetch;
+const fs = require("fs");
+const { Client } = require("basic-ftp");
 
 // ==============================
 // CONFIG
 // ==============================
-const LOOP_INTERVAL = 0.5 * 60 * 1000;
-const FAIL_THRESHOLD = 2; // loops before fallback
+const LOOP_INTERVAL = 60 * 1000; // 🔥 1 MIN LOOP (IMPORTANT)
 
 // ==============================
 // ENV
@@ -12,24 +12,26 @@ const FAIL_THRESHOLD = 2; // loops before fallback
 const API_TOKEN = process.env.API_TOKEN;
 const SERVICE_ID = process.env.SERVICE_ID;
 
+const FTP_HOST = process.env.FTP_HOST;
+const FTP_USER = process.env.FTP_USER;
+const FTP_PASS = process.env.FTP_PASS;
+
 // ==============================
 // STATE
 // ==============================
 const state = {
-  knownFiles: new Set(),
-  fileOffsets: {},
-
-  failCount: 0,
-  mode: "NORMAL", // NORMAL | DISCOVERY
+  activeFiles: {
+    RPT: null,
+    ADM: null,
+  },
+  offsets: {}, // byte offsets per file
 };
 
 // ==============================
-// FETCH FILE LIST
+// FETCH FILE LIST (API)
 // ==============================
 async function fetchFiles() {
   try {
-    console.log("\n🌐 API FETCH START");
-
     const res = await fetch(
       `https://api.nitrado.net/services/${SERVICE_ID}/gameservers`,
       {
@@ -42,12 +44,7 @@ async function fetchFiles() {
 
     const data = await res.json();
 
-    const files =
-      data?.data?.gameserver?.game_specific?.log_files || [];
-
-    console.log(`📂 FILES FROM API: ${files.length}`);
-
-    return files;
+    return data?.data?.gameserver?.game_specific?.log_files || [];
   } catch (err) {
     console.log("❌ API ERROR:", err.message);
     return [];
@@ -55,48 +52,38 @@ async function fetchFiles() {
 }
 
 // ==============================
-// DOWNLOAD FILE (API)
+// PICK LATEST FILES
 // ==============================
-async function downloadFile(file) {
-  try {
-    const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(file)}`;
+function selectLatest(files) {
+  const rpt = files
+    .filter(f => f.endsWith(".RPT"))
+    .sort()
+    .pop();
 
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${API_TOKEN}`,
-      },
-    });
+  const adm = files
+    .filter(f => f.endsWith(".ADM"))
+    .sort()
+    .pop();
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const text = await res.text();
-    return text;
-
-  } catch (err) {
-    console.log(`❌ DOWNLOAD FAIL: ${file}`);
-    console.log(`   ↳ ${err.message}`);
-    return null;
-  }
+  return { rpt, adm };
 }
 
 // ==============================
-// PROCESS FILE
+// PROCESS NEW DATA ONLY
 // ==============================
-function processFile(file, content) {
-  const lines = content.split("\n");
-  const last = state.fileOffsets[file] || 0;
+function processLines(file, newContent) {
+  const lines = newContent.split("\n");
 
-  let newData = false;
+  for (const line of lines) {
+    if (!line.trim()) continue;
 
-  for (let i = last; i < lines.length; i++) {
-    const line = lines[i];
-
+    // ADM
     if (file.endsWith(".ADM") && line.includes("killed by")) {
-      console.log("\n💀 ADM TRIGGER");
+      console.log("\n💀 ADM EVENT");
       console.log(line.trim());
-      newData = true;
     }
 
+    // RPT
     if (file.endsWith(".RPT") && line.includes("lootmax")) {
       const match = line.match(/lootmax\s*:\s*(\d+)/i);
 
@@ -104,139 +91,47 @@ function processFile(file, content) {
         const val = parseInt(match[1]);
 
         if (val >= 1 && val <= 25) {
-          console.log(`\n🔥 RPT TRIGGER ${val}`);
+          console.log(`\n🔥 LOOT EVENT ${val}`);
           console.log(line.trim());
-          newData = true;
         }
       }
     }
   }
-
-  state.fileOffsets[file] = lines.length;
-  return newData;
 }
 
 // ==============================
-// DISCOVERY HELPERS
+// READ FILE (DELTA MODE)
 // ==============================
-function deepSearch(obj, results = []) {
-  if (!obj) return results;
-
-  if (typeof obj === "string") {
-    if (
-      obj.toLowerCase().includes(".rpt") ||
-      obj.toLowerCase().includes(".adm") ||
-      obj.toLowerCase().includes("log")
-    ) {
-      results.push(obj);
-    }
-  }
-
-  if (typeof obj === "object") {
-    for (const key in obj) {
-      deepSearch(obj[key], results);
-    }
-  }
-
-  return results;
-}
-
-async function apiCall(endpoint) {
+async function readFileDelta(client, file) {
   try {
-    const res = await fetch(`https://api.nitrado.net${endpoint}`, {
-      headers: {
-        Authorization: `Bearer ${API_TOKEN}`,
-      },
-    });
+    const tmp = `/tmp/${Date.now()}.log`;
 
-    const text = await res.text();
+    await client.downloadTo(tmp, file);
 
-    console.log(`📡 ${endpoint} → ${res.status}`);
+    const stats = fs.statSync(tmp);
+    const size = stats.size;
 
-    try {
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
-  } catch {
-    return null;
-  }
-}
+    const lastOffset = state.offsets[file] || 0;
 
-// ==============================
-// DISCOVERY MODE
-// ==============================
-async function runDiscovery() {
-  console.log("\n🧠 ENTERING DISCOVERY MODE");
-
-  const endpoints = [
-    `/services/${SERVICE_ID}/gameservers`,
-    `/services/${SERVICE_ID}/gameservers/file_server/list`,
-    `/services/${SERVICE_ID}/file_server/list`,
-    `/services/${SERVICE_ID}/gameservers/logs`,
-  ];
-
-  let discovered = [];
-
-  for (const ep of endpoints) {
-    const data = await apiCall(ep);
-    if (!data) continue;
-
-    const found = deepSearch(data);
-
-    if (found.length) {
-      console.log(`🔥 FOUND (${ep})`);
-      found.forEach(f => console.log("   →", f));
-      discovered.push(...found);
-    }
-  }
-
-  if (discovered.length > 0) {
-    console.log("✅ DISCOVERY FOUND DATA → RETURNING TO NORMAL MODE");
-    state.mode = "NORMAL";
-    state.failCount = 0;
-  } else {
-    console.log("❌ DISCOVERY FAILED → STILL NO ACCESS");
-  }
-}
-
-// ==============================
-// NORMAL MODE LOOP
-// ==============================
-async function runNormal() {
-  const files = await fetchFiles();
-
-  if (files.length === 0) {
-    state.failCount++;
-    return;
-  }
-
-  let success = false;
-
-  for (const file of files) {
-    const content = await downloadFile(file);
-    if (!content) continue;
-
-    if (!state.knownFiles.has(file)) {
-      console.log(`🆕 NEW FILE: ${file}`);
-      state.knownFiles.add(file);
+    // 🔥 If file shrank → reset (new restart)
+    if (size < lastOffset) {
+      console.log(`🔄 FILE RESET DETECTED: ${file}`);
+      state.offsets[file] = 0;
     }
 
-    const newData = processFile(file, content);
-    if (newData) success = true;
-  }
+    const buffer = fs.readFileSync(tmp);
+    const newData = buffer.slice(state.offsets[file] || 0).toString();
 
-  if (success) {
-    state.failCount = 0;
-  } else {
-    state.failCount++;
-  }
+    if (newData.length > 0) {
+      console.log(`📥 NEW DATA: ${file}`);
+      processLines(file, newData);
+    }
 
-  console.log(`⚠️ FAIL COUNT: ${state.failCount}`);
+    state.offsets[file] = size;
 
-  if (state.failCount >= FAIL_THRESHOLD) {
-    console.log("\n🚨 SWITCHING TO DISCOVERY MODE");
-    state.mode = "DISCOVERY";
+  } catch (err) {
+    console.log(`❌ READ FAIL: ${file}`);
+    console.log(`   ↳ ${err.message}`);
   }
 }
 
@@ -245,15 +140,54 @@ async function runNormal() {
 // ==============================
 async function loop() {
   console.log("\n==============================");
-  console.log(`🔄 LOOP ${new Date().toISOString()}`);
-  console.log(`🧭 MODE: ${state.mode}`);
+  console.log("🔄 LOOP", new Date().toISOString());
   console.log("==============================");
 
-  if (state.mode === "NORMAL") {
-    await runNormal();
-  } else {
-    await runDiscovery();
+  const files = await fetchFiles();
+
+  if (!files.length) {
+    console.log("🟡 NO FILES");
+    return;
   }
+
+  const { rpt, adm } = selectLatest(files);
+
+  // Detect file switches
+  if (rpt && state.activeFiles.RPT !== rpt) {
+    console.log(`🆕 SWITCH RPT → ${rpt}`);
+    state.activeFiles.RPT = rpt;
+    state.offsets[rpt] = 0;
+  }
+
+  if (adm && state.activeFiles.ADM !== adm) {
+    console.log(`🆕 SWITCH ADM → ${adm}`);
+    state.activeFiles.ADM = adm;
+    state.offsets[adm] = 0;
+  }
+
+  const client = new Client();
+
+  try {
+    await client.access({
+      host: FTP_HOST,
+      user: FTP_USER,
+      password: FTP_PASS,
+      secure: false,
+    });
+
+    if (state.activeFiles.RPT) {
+      await readFileDelta(client, state.activeFiles.RPT);
+    }
+
+    if (state.activeFiles.ADM) {
+      await readFileDelta(client, state.activeFiles.ADM);
+    }
+
+  } catch (err) {
+    console.log("❌ FTP SESSION ERROR:", err.message);
+  }
+
+  client.close();
 
   console.log("🔌 LOOP END");
 }
@@ -261,6 +195,6 @@ async function loop() {
 // ==============================
 // START
 // ==============================
-console.log("🚀 HYBRID BOT (AUTO FALLBACK MODE)");
+console.log("🚀 BOT ONLINE (LIVE TRACKING MODE)");
 loop();
 setInterval(loop, LOOP_INTERVAL);
