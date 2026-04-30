@@ -3,8 +3,8 @@ const fetch = global.fetch;
 // ==============================
 // CONFIG
 // ==============================
-const LOOP_INTERVAL = 2 * 60 * 1000;
-const FAIL_THRESHOLD = 5; // loops before fallback
+const LOOP_INTERVAL = 5 * 60 * 1000;
+const FAIL_THRESHOLD = 2; // loops before fallback
 
 // ==============================
 // ENV
