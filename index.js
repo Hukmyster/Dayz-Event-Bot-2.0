@@ -19,10 +19,14 @@ const client = new Client({
 });
 
 // -----------------------------
-// DATABASE
+// PATHS
 // -----------------------------
 const DB_PATH = "./database/orders.json";
+const SNAPSHOT_PATH = "./custom/snapshot.json";
 
+// -----------------------------
+// DATABASE FUNCTIONS
+// -----------------------------
 function loadOrders() {
     try {
         if (!fs.existsSync(DB_PATH)) {
@@ -45,12 +49,43 @@ function saveOrders(data) {
 }
 
 // -----------------------------
-// SLASH COMMAND SETUP
+// SNAPSHOT BUILDER
+// -----------------------------
+function buildSnapshot() {
+    const orders = loadOrders();
+
+    const pending = orders.filter(o => o.status === "pending");
+
+    const snapshot = {
+        createdAt: new Date().toISOString(),
+        totalOrders: pending.length,
+        spawns: pending.map(o => ({
+            item: o.item,
+            position: {
+                x: Number(o.x),
+                z: Number(o.z)
+            }
+        }))
+    };
+
+    fs.mkdirSync("./custom", { recursive: true });
+    fs.writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2));
+
+    console.log("SNAPSHOT BUILT:", snapshot);
+}
+
+// -----------------------------
+// SLASH COMMAND
 // -----------------------------
 const commands = [
     new SlashCommandBuilder()
         .setName("buy")
         .setDescription("Purchase an item in-game")
+        .toJSON(),
+
+    new SlashCommandBuilder()
+        .setName("build")
+        .setDescription("Build snapshot file from orders")
         .toJSON()
 ];
 
@@ -75,22 +110,23 @@ async function registerCommands() {
 }
 
 // -----------------------------
-// READY EVENT
+// READY
 // -----------------------------
 client.once("clientReady", () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
 // -----------------------------
-// INTERACTION HANDLER
+// INTERACTIONS
 // -----------------------------
 client.on("interactionCreate", async (interaction) => {
 
     // -------------------------
-    // /BUY COMMAND
+    // COMMANDS
     // -------------------------
     if (interaction.isChatInputCommand()) {
 
+        // BUY
         if (interaction.commandName === "buy") {
 
             const modal = new ModalBuilder()
@@ -99,7 +135,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const item = new TextInputBuilder()
                 .setCustomId("item")
-                .setLabel("Item (M4, AK, Glock etc)")
+                .setLabel("Item")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -123,10 +159,21 @@ client.on("interactionCreate", async (interaction) => {
 
             await interaction.showModal(modal);
         }
+
+        // BUILD SNAPSHOT (MANUAL TRIGGER FOR TESTING)
+        if (interaction.commandName === "build") {
+
+            buildSnapshot();
+
+            await interaction.reply({
+                content: "🧠 Snapshot built successfully.",
+                flags: InteractionResponseFlags.Ephemeral
+            });
+        }
     }
 
     // -------------------------
-    // MODAL SUBMISSION
+    // MODAL
     // -------------------------
     if (interaction.isModalSubmit()) {
 
@@ -138,7 +185,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const orders = loadOrders();
 
-            const order = {
+            orders.push({
                 id: Date.now(),
                 user: interaction.user.id,
                 item,
@@ -146,15 +193,12 @@ client.on("interactionCreate", async (interaction) => {
                 z,
                 status: "pending",
                 createdAt: new Date().toISOString()
-            };
+            });
 
-            orders.push(order);
             saveOrders(orders);
 
-            console.log("ORDER SAVED:", order);
-
             await interaction.reply({
-                content: `✅ Order saved: **${item}** at (${x}, ${z})`,
+                content: `✅ Order saved: **${item}**`,
                 flags: InteractionResponseFlags.Ephemeral
             });
         }
@@ -162,7 +206,7 @@ client.on("interactionCreate", async (interaction) => {
 });
 
 // -----------------------------
-// START BOT
+// START
 // -----------------------------
 registerCommands().then(() => {
     client.login(process.env.DISCORD_TOKEN);
