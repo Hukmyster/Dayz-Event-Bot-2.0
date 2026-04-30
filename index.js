@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 const { Client } = require("basic-ftp");
 
 // ==============================
@@ -16,12 +15,12 @@ const FTP_USER = ENV.FTP_USER;
 const FTP_PASS = ENV.FTP_PASS;
 
 // ==============================
-// CONFIG (ONLY CHANGE HERE)
+// CONFIG
 // ==============================
 const LOOP_INTERVAL = 10 * 60 * 1000; // 10 minutes
 
 console.log("================================");
-console.log("🚀 BOT STARTED (10 MIN LOOTMAX MODE)");
+console.log("🚀 BOT STARTED (10 MIN LOOTMAX MODE - NO FETCH DEP)");
 console.log("================================");
 
 console.log("🧪 ENV DEBUG:");
@@ -34,12 +33,12 @@ console.log({
 });
 
 // ==============================
-// STATE
+// STATE (dedupe lines)
 // ==============================
 const seenLines = new Set();
 
 // ==============================
-// API
+// API CALL (NATIVE FETCH ONLY)
 // ==============================
 async function api(pathUrl) {
   try {
@@ -61,7 +60,7 @@ async function api(pathUrl) {
 }
 
 // ==============================
-// FILE LIST
+// GET FILES
 // ==============================
 async function getFiles() {
   const res = await api(`/services/${SERVICE_ID}/gameservers`);
@@ -108,7 +107,7 @@ async function ftpRead(filePath) {
 }
 
 // ==============================
-// LOOTMAX PARSER (1–25)
+// LOOTMAX PARSER
 // ==============================
 function extractLootmax(line) {
   const match = line.match(/lootmax\s*:\s*(\d+)/i);
@@ -124,18 +123,14 @@ function processLine(file, line) {
 
   const lower = line.toLowerCase();
 
-  // ==========================
-  // ADM TRIGGER
-  // ==========================
+  // ADM trigger (UNCHANGED)
   if (file.endsWith(".ADM") && lower.includes("killed by")) {
     console.log("\n💀 ADM TRIGGER FOUND");
     console.log(line);
     return;
   }
 
-  // ==========================
-  // RPT LOOTMAX 1–25
-  // ==========================
+  // RPT lootmax 1–25
   if (file.endsWith(".RPT") && lower.includes("lootmax")) {
     const value = extractLootmax(line);
 
@@ -180,7 +175,7 @@ async function run() {
 }
 
 // ==============================
-// START (10 MIN LOOP)
+// START LOOP
 // ==============================
 run();
 setInterval(run, LOOP_INTERVAL);
