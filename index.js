@@ -8,6 +8,7 @@ const {
     TextInputBuilder,
     TextInputStyle,
     ActionRowBuilder,
+    InteractionResponseFlags
 } = require("discord.js");
 
 const fs = require("fs");
@@ -18,7 +19,7 @@ const client = new Client({
 });
 
 // -----------------------------
-// DATABASE SETUP
+// DATABASE
 // -----------------------------
 const DB_PATH = "./database/orders.json";
 
@@ -81,7 +82,7 @@ client.once("clientReady", () => {
 });
 
 // -----------------------------
-// INTERACTIONS
+// INTERACTION HANDLER
 // -----------------------------
 client.on("interactionCreate", async (interaction) => {
 
@@ -98,7 +99,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const item = new TextInputBuilder()
                 .setCustomId("item")
-                .setLabel("Item (M4, AK, Glock, etc)")
+                .setLabel("Item (M4, AK, Glock etc)")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -125,7 +126,7 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // -------------------------
-    // MODAL SUBMIT (SAVE ORDER)
+    // MODAL SUBMISSION
     // -------------------------
     if (interaction.isModalSubmit()) {
 
@@ -154,14 +155,14 @@ client.on("interactionCreate", async (interaction) => {
 
             await interaction.reply({
                 content: `✅ Order saved: **${item}** at (${x}, ${z})`,
-                ephemeral: true
+                flags: InteractionResponseFlags.Ephemeral
             });
         }
     }
 });
 
 // -----------------------------
-// START BOT + REGISTER COMMANDS
+// START BOT
 // -----------------------------
 registerCommands().then(() => {
     client.login(process.env.DISCORD_TOKEN);
