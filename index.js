@@ -23,9 +23,10 @@ const client = new Client({
 // -----------------------------
 const DB_PATH = "./database/orders.json";
 const SNAPSHOT_PATH = "./custom/snapshot.json";
+const XML_PATH = "./custom/generated_events.xml";
 
 // -----------------------------
-// DATABASE FUNCTIONS
+// LOAD / SAVE ORDERS
 // -----------------------------
 function loadOrders() {
     try {
@@ -49,64 +50,82 @@ function saveOrders(data) {
 }
 
 // -----------------------------
-// SNAPSHOT BUILDER
+// SNAPSHOT (INTERMEDIATE)
 // -----------------------------
 function buildSnapshot() {
-    const orders = loadOrders();
-
-    const pending = orders.filter(o => o.status === "pending");
+    const orders = loadOrders().filter(o => o.status === "pending");
 
     const snapshot = {
         createdAt: new Date().toISOString(),
-        totalOrders: pending.length,
-        spawns: pending.map(o => ({
-            item: o.item,
-            position: {
-                x: Number(o.x),
-                z: Number(o.z)
-            }
-        }))
+        spawns: orders
     };
 
     fs.mkdirSync("./custom", { recursive: true });
     fs.writeFileSync(SNAPSHOT_PATH, JSON.stringify(snapshot, null, 2));
 
-    console.log("SNAPSHOT BUILT:", snapshot);
+    return snapshot;
 }
 
 // -----------------------------
-// SLASH COMMAND
+// XML BUILDER (DAYZ EVENT FORMAT)
+// -----------------------------
+function buildXML() {
+
+    const orders = loadOrders().filter(o => o.status === "pending");
+
+    let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+    xml += `<events>\n`;
+    xml += `  <event name="DISCORD_SPAWNS">\n`;
+    xml += `    <nominal>${orders.length}</nominal>\n`;
+    xml += `    <lifetime>3600</lifetime>\n`;
+    xml += `    <restock>0</restock>\n`;
+    xml += `    <saferadius>100</saferadius>\n`;
+    xml += `    <distanceradius>50</distanceradius>\n`;
+    xml += `    <cleanupradius>100</cleanupradius>\n`;
+    xml += `    <flags deletable="1" init_random="0" remove_damaged="1"/>\n`;
+    xml += `    <position>fixed</position>\n`;
+    xml += `    <limit>child</limit>\n`;
+
+    for (const o of orders) {
+        xml += `    <child type="${o.item}" />\n`;
+    }
+
+    xml += `  </event>\n`;
+    xml += `</events>\n`;
+
+    fs.mkdirSync("./custom", { recursive: true });
+    fs.writeFileSync(XML_PATH, xml);
+
+    console.log("XML GENERATED");
+}
+
+// -----------------------------
+// SLASH COMMANDS
 // -----------------------------
 const commands = [
     new SlashCommandBuilder()
         .setName("buy")
-        .setDescription("Purchase an item in-game")
+        .setDescription("Purchase item")
         .toJSON(),
 
     new SlashCommandBuilder()
         .setName("build")
-        .setDescription("Build snapshot file from orders")
+        .setDescription("Build snapshot + XML files")
         .toJSON()
 ];
 
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 async function registerCommands() {
-    try {
-        console.log("Registering slash commands...");
+    await rest.put(
+        Routes.applicationGuildCommands(
+            process.env.CLIENT_ID,
+            process.env.GUILD_ID
+        ),
+        { body: commands }
+    );
 
-        await rest.put(
-            Routes.applicationGuildCommands(
-                process.env.CLIENT_ID,
-                process.env.GUILD_ID
-            ),
-            { body: commands }
-        );
-
-        console.log("Slash commands registered.");
-    } catch (err) {
-        console.error("Command registration failed:", err);
-    }
+    console.log("Commands registered");
 }
 
 // -----------------------------
@@ -121,9 +140,6 @@ client.once("clientReady", () => {
 // -----------------------------
 client.on("interactionCreate", async (interaction) => {
 
-    // -------------------------
-    // COMMANDS
-    // -------------------------
     if (interaction.isChatInputCommand()) {
 
         // BUY
@@ -131,7 +147,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const modal = new ModalBuilder()
                 .setCustomId("buyModal")
-                .setTitle("DayZ Purchase System");
+                .setTitle("Purchase Item");
 
             const item = new TextInputBuilder()
                 .setCustomId("item")
@@ -141,13 +157,13 @@ client.on("interactionCreate", async (interaction) => {
 
             const x = new TextInputBuilder()
                 .setCustomId("x")
-                .setLabel("X Coordinate")
+                .setLabel("X")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
             const z = new TextInputBuilder()
                 .setCustomId("z")
-                .setLabel("Z Coordinate")
+                .setLabel("Z")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -160,21 +176,20 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.showModal(modal);
         }
 
-        // BUILD SNAPSHOT (MANUAL TRIGGER FOR TESTING)
+        // BUILD EVERYTHING
         if (interaction.commandName === "build") {
 
             buildSnapshot();
+            buildXML();
 
             await interaction.reply({
-                content: "🧠 Snapshot built successfully.",
+                content: "🧠 Snapshot + XML generated.",
                 flags: InteractionResponseFlags.Ephemeral
             });
         }
     }
 
-    // -------------------------
     // MODAL
-    // -------------------------
     if (interaction.isModalSubmit()) {
 
         if (interaction.customId === "buyModal") {
@@ -198,7 +213,7 @@ client.on("interactionCreate", async (interaction) => {
             saveOrders(orders);
 
             await interaction.reply({
-                content: `✅ Order saved: **${item}**`,
+                content: `✅ Order saved: ${item}`,
                 flags: InteractionResponseFlags.Ephemeral
             });
         }
