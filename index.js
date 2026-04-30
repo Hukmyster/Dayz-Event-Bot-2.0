@@ -1,4 +1,5 @@
 const ftp = require("basic-ftp");
+const { Readable } = require("stream");
 
 async function run() {
     const client = new ftp.Client();
@@ -14,23 +15,23 @@ async function run() {
 
         console.log("Connected");
 
-        const folderPath = "/dayzps_missions/dayzOffline.chernarusplus/custom";
-        const filePath = folderPath + "/test1.xml";
+        const folder = "/dayzps_missions/dayzOffline.chernarusplus/custom";
+        const filePath = folder + "/test1.xml";
 
-        console.log("Ensuring folder exists:", folderPath);
-        await client.ensureDir(folderPath);
+        console.log("Ensuring folder:", folder);
+        await client.ensureDir(folder);
 
         console.log("Uploading file:", filePath);
 
-        await client.uploadFrom(
-            Buffer.from("test1", "utf-8"),
-            filePath
-        );
+        // FIX: proper readable stream (this is the key change)
+        const stream = Readable.from(["test1"]);
+
+        await client.uploadFrom(stream, filePath);
 
         console.log("UPLOAD COMPLETE");
 
-        const list = await client.list(folderPath);
-        console.log("Folder contents:", list.map(f => f.name));
+        const list = await client.list(folder);
+        console.log("FILES:", list.map(f => f.name));
 
     } catch (err) {
         console.error("FAILED:", err);
