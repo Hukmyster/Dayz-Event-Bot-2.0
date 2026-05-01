@@ -15,28 +15,36 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// ---------------- COMMANDS ----------------
+// ---------------- SLASH COMMANDS ----------------
 const commands = [
+
     new SlashCommandBuilder()
         .setName("shop")
-        .setDescription("View shop"),
+        .setDescription("View shop items"),
 
     new SlashCommandBuilder()
         .setName("buy")
         .setDescription("Buy item")
         .addStringOption(o =>
-            o.setName("item").setDescription("Item name").setRequired(true)
+            o.setName("item")
+                .setDescription("Item (search enabled)")
+                .setRequired(true)
+                .setAutocomplete(true)
         )
         .addIntegerOption(o =>
-            o.setName("x").setDescription("X").setRequired(true)
+            o.setName("x")
+                .setDescription("X coordinate")
+                .setRequired(true)
         )
         .addIntegerOption(o =>
-            o.setName("z").setDescription("Z").setRequired(true)
+            o.setName("z")
+                .setDescription("Z coordinate")
+                .setRequired(true)
         ),
 
     new SlashCommandBuilder()
         .setName("additem")
-        .setDescription("Add item"),
+        .setDescription("Add item to shop"),
 
     new SlashCommandBuilder()
         .setName("viewxml")
@@ -44,23 +52,24 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("deleteshophistory")
-        .setDescription("Wipe shop + orders + XML"),
+        .setDescription("Clear ONLY orders (keep shop items)"),
 
     new SlashCommandBuilder()
         .setName("orders")
-        .setDescription("View orders"),
+        .setDescription("View all orders"),
 
     new SlashCommandBuilder()
         .setName("queue")
-        .setDescription("Queue orders"),
+        .setDescription("Queue pending orders"),
 
     new SlashCommandBuilder()
         .setName("build")
-        .setDescription("Build XML")
+        .setDescription("Build XML files")
 ];
 
 // ---------------- READY ----------------
 client.once("clientReady", async () => {
+
     console.log(`Logged in as ${client.user.tag}`);
 
     await db.loadData();
