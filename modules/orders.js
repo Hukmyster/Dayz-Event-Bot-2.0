@@ -1,6 +1,6 @@
 const db = require("../services/db");
 
-// ---------------- CREATE ORDER ----------------
+// ---------------- CREATE ----------------
 async function createOrder(item, x, z) {
 
     const order = {
@@ -16,20 +16,17 @@ async function createOrder(item, x, z) {
         .from("orders")
         .insert([order]);
 
-    if (error) {
-        console.error("[ORDER INSERT ERROR]", error);
-        throw error;
-    }
+    if (error) throw error;
 
     await db.loadData();
 }
 
-// ---------------- QUEUE ORDERS ----------------
+// ---------------- QUEUE ----------------
 async function queueOrders() {
 
     const orders = db.getOrders();
 
-    for (let o of orders) {
+    for (const o of orders) {
         if (o.status === "pending") {
             o.status = "queued";
         }
@@ -38,12 +35,12 @@ async function queueOrders() {
     await db.saveOrders(orders);
 }
 
-// ---------------- CYCLE ORDERS ----------------
+// ---------------- CYCLE ----------------
 async function cycleOrders() {
 
     const orders = db.getOrders();
 
-    for (let o of orders) {
+    for (const o of orders) {
         if (o.status === "built") {
             o.status = "completed";
         }
