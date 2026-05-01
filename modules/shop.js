@@ -1,13 +1,17 @@
 const fs = require("fs");
 const path = require("path");
 
+/* ---------------- FILE PATHS ---------------- */
+
 const SHOP_FILE = path.join(__dirname, "../data/shop.json");
 const ORDERS_FILE = path.join(__dirname, "../data/orders.json");
+
+/* ---------------- MEMORY ---------------- */
 
 let shop = [];
 let orders = [];
 
-/* ---------------- FILE SAFETY ---------------- */
+/* ---------------- FILE HELPERS ---------------- */
 
 function ensureFiles() {
   const dir = path.dirname(SHOP_FILE);
@@ -17,125 +21,142 @@ function ensureFiles() {
   }
 
   if (!fs.existsSync(SHOP_FILE)) {
-    fs.writeFileSync(SHOP_FILE, JSON.stringify([]));
+    fs.writeFileSync(SHOP_FILE, "[]");
   }
 
   if (!fs.existsSync(ORDERS_FILE)) {
-    fs.writeFileSync(ORDERS_FILE, JSON.stringify([]));
+    fs.writeFileSync(ORDERS_FILE, "[]");
   }
 }
 
-/* ---------------- LOAD / SAVE ---------------- */
-
-function loadAll() {
+function loadData() {
   ensureFiles();
 
   try {
-    shop = JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8"));
+    shop = JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8") || "[]");
   } catch {
     shop = [];
   }
 
   try {
-    orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8"));
+    orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8") || "[]");
   } catch {
     orders = [];
   }
 }
 
 function saveShop() {
+  ensureFiles();
   fs.writeFileSync(SHOP_FILE, JSON.stringify(shop, null, 2));
 }
 
 function saveOrders() {
+  ensureFiles();
   fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
 }
 
-/* auto-load on startup */
-loadAll();
+/* INIT LOAD */
+loadData();
 
-/* ---------------- SHOP ---------------- */
+/* ---------------- SHOP FUNCTIONS ---------------- */
 
-function addItem(name, type, price) {
+async function addItem(name, type, price) {
+  if (!name || !type || price === undefined || price === null) {
+    return { reply: "Invalid item data" };
+  }
+
   const item = {
     id: Date.now().toString(),
-    name: name.trim(),
-    type: type.trim(),
+    name: String(name),
+    type: String(type),
     price: Number(price)
   };
 
   shop.push(item);
   saveShop();
 
-  return `Added ${item.name} (${item.type})`;
+  return { reply: `Added ${item.name} (${item.type}) - $${item.price}` };
 }
 
-function deleteItem(name) {
-  const before = shop.length;
+async function deleteItem(name) {
+  if (!name) return { reply: "Invalid item name" };
 
-  shop = shop.filter(
-    i => i.name.toLowerCase() !== name.toLowerCase()
-  );
+  const before = shop.length;
+  shop = shop.filter(i => i.name !== name);
+  const removed = before - shop.length;
 
   saveShop();
 
-  return before === shop.length
-    ? `Item not found`
-    : `Deleted ${name}`;
+  return { reply: `Deleted ${removed} item(s) named ${name}` };
 }
 
 function getShopList() {
-  loadAll();
   return shop;
 }
 
-/* ---------------- ORDERS ---------------- */
+/* ---------------- BUY SYSTEM ---------------- */
 
-function createOrder(itemName, qty, x, z) {
-  loadAll();
+async function buyItem(itemName, qty, x, z) {
+  if (!itemName) return { reply: "Item not found" };
 
-  const item = shop.find(
-    i => i.name.toLowerCase() === itemName.toLowerCase()
-  );
+  const item = shop.find(i => i.name === itemName);
 
-  if (!item) return { error: "Item not found" };
+  if (!item) {
+    return { reply: "Item not found in shop" };
+  }
 
-  const quantity = Math.max(1, Number(qty || 1));
+  const quantity = Number(qty) || 1;
 
   const order = {
     id: Date.now().toString(),
     item: item.name,
     type: item.type,
+    price: item.price,
     qty: quantity,
-    x,
-    z,
+    x: Number(x) || 0,
+    z: Number(z) || 0,
     status: "queued",
-    created: Date.now()
+    timestamp: Date.now()
   };
 
   orders.push(order);
   saveOrders();
 
   return {
-    message: `Queued ${quantity}x ${item.name} @ (${x},${z})`
+    reply: `Queued ${quantity}x ${item.name} @ (${order.x},${order.z})`
   };
 }
 
 function getOrders() {
-  loadAll();
   return orders;
 }
+
+/* ---------------- AUTOCOMPLETE ---------------- */
+
+function autocomplete(query) {
+  if (!query) query = "";
+
+  const q = query.toLowerCase();
+
+  return shop
+    .filter(i => (i.name || "").toLowerCase().includes(q))
+    .slice(0, 25)
+    .map(i => ({
+      name: `${i.name} ($${i.price})`,
+      value: i.name
+    }));
+}
+
+/* ---------------- CLEAR ORDERS ---------------- */
 
 function clearOrders() {
   orders = [];
   saveOrders();
 }
 
-/* ---------------- XML ---------------- */
+/* ---------------- XML BUILD ---------------- */
 
 function buildXML() {
-  loadAll();
-
   let events = "";
   let positions = "";
 
@@ -168,37 +189,17 @@ function buildXML() {
   }
 
   return {
-    eventsXML: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<events>${events}
-</events>`,
-
-    positionsXML: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<eventposdef>${positions}
-</eventposdef>`
+    eventsXML: `<events>${events}</events>`,
+    positionsXML: `<eventposdef>${positions}</eventposdef>`
   };
 }
 
-/* ---------------- AUTOCOMPLETE ---------------- */
-
-function autocomplete(query = "") {
-  loadAll();
-
-  return shop
-    .filter(i =>
-      i.name.toLowerCase().includes(query.toLowerCase())
-    )
-    .map(i => ({
-      name: `${i.name} ($${i.price})`,
-      value: i.name
-    }));
-}
-
-/* ---------------- EXPORT ---------------- */
+/* ---------------- EXPORTS ---------------- */
 
 module.exports = {
   addItem,
   deleteItem,
-  createOrder,
+  buyItem,
   getShopList,
   getOrders,
   buildXML,
