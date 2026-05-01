@@ -83,8 +83,7 @@ async function replyOnce(interaction, payload, label = "reply") {
     data.flags = MessageFlags.Ephemeral;
   }
   debug.step(label, { action: "send", command: interaction.commandName, replied: interaction.replied, deferred: interaction.deferred });
-  if (interaction.replied || interaction.deferred) return interaction.followUp(data);
-  return interaction.reply(data);
+  return (interaction.replied || interaction.deferred) ? interaction.followUp(data) : interaction.reply(data);
 }
 
 async function handleCommand(interaction) {
@@ -92,91 +91,53 @@ async function handleCommand(interaction) {
   debug.start(cmd, { user: interaction.user?.tag });
 
   if (cmd === "shop" || cmd === "shophelp") {
-    const msg = [
-      "shoplist - list all shop items",
-      "shopbuyitem - buy an item",
-      "shopadditem - add a new item",
-      "shopremoveitem - remove an item",
-      "shopeditprice - change an item price",
-      "shopeditname - rename an item",
-      "shopqueue - view queued purchases",
-      "shopclearqueue - clear queued purchases",
-      "shopbuildxml - build XML files",
-      "shopviewxml - view built XML",
-      "shoppushxml - push XML output",
-      "shopstatus - show status",
-      "shopreload - reload data"
-    ].join("\n");
-    return replyOnce(interaction, { content: msg, ephemeral: true }, cmd);
+    return replyOnce(interaction, {
+      content: [
+        "shoplist - list all shop items",
+        "shopbuyitem - buy an item",
+        "shopadditem - add a new item",
+        "shopremoveitem - remove an item",
+        "shopeditprice - change an item price",
+        "shopeditname - rename an item",
+        "shopqueue - view queued purchases",
+        "shopclearqueue - clear queued purchases",
+        "shopbuildxml - build XML files",
+        "shopviewxml - view built XML",
+        "shoppushxml - push XML output",
+        "shopstatus - show status",
+        "shopreload - reload data"
+      ].join("\n"),
+      ephemeral: true
+    }, cmd);
   }
+
+  const send = (res, label = cmd) =>
+    replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
 
   if (cmd === "shoplist") {
     const items = shop.getShopList() || [];
-    const msg = items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty";
-    return replyOnce(interaction, { content: formatMsg(msg), ephemeral: true }, cmd);
+    return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
   }
 
-  if (cmd === "shopadditem") {
-    const res = await shop.addItem(interaction.options.getString("name"), interaction.options.getString("type"), interaction.options.getInteger("price"));
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
-
-  if (cmd === "shopbuyitem") {
-    const res = await shop.buyItem(interaction.options.getString("item"), interaction.options.getInteger("quantity"), interaction.options.getInteger("x"), interaction.options.getInteger("z"));
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
-
-  if (cmd === "shopremoveitem") {
-    const res = await shop.deleteItem(interaction.options.getString("name"));
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
-
-  if (cmd === "shopeditprice") {
-    const res = await shop.editPrice(interaction.options.getString("name"), interaction.options.getInteger("price"));
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
-
-  if (cmd === "shopeditname") {
-    const res = await shop.editName(interaction.options.getString("name"), interaction.options.getString("newname"));
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
-
+  if (cmd === "shopadditem") return send(await shop.addItem(interaction.options.getString("name"), interaction.options.getString("type"), interaction.options.getInteger("price")));
+  if (cmd === "shopbuyitem") return send(await shop.buyItem(interaction.options.getString("item"), interaction.options.getInteger("quantity"), interaction.options.getInteger("x"), interaction.options.getInteger("z")));
+  if (cmd === "shopremoveitem") return send(await shop.deleteItem(interaction.options.getString("name")));
+  if (cmd === "shopeditprice") return send(await shop.editPrice(interaction.options.getString("name"), interaction.options.getInteger("price")));
+  if (cmd === "shopeditname") return send(await shop.editName(interaction.options.getString("name"), interaction.options.getString("newname")));
   if (cmd === "shopqueue") {
     const orders = shop.getOrders() || [];
-    const msg = orders.length ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z}) [${o.status}]`).join("\n") : "No orders";
-    return replyOnce(interaction, { content: formatMsg(msg), ephemeral: true }, cmd);
+    return send({ reply: orders.length ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z}) [${o.status}]`).join("\n") : "No orders" });
   }
-
-  if (cmd === "shopclearqueue") {
-    const res = await shop.clearOrders();
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
-
-  if (cmd === "shopbuildxml") {
-    const res = await shop.buildXML();
-    return replyOnce(interaction, { content: res.reply || "XML built successfully", ephemeral: true }, cmd);
-  }
-
-  if (cmd === "shopviewxml") {
-    const res = await shop.viewXML();
-    return replyOnce(interaction, { content: formatMsg(res.reply), ephemeral: true }, cmd);
-  }
-
-  if (cmd === "shoppushxml") {
-    const res = await shop.pushXML();
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
-
+  if (cmd === "shopclearqueue") return send(await shop.clearOrders());
+  if (cmd === "shopbuildxml") return send(await shop.buildXML());
+  if (cmd === "shopviewxml") return send(await shop.viewXML());
+  if (cmd === "shoppushxml") return send(await shop.pushXML());
   if (cmd === "shopstatus") {
     const items = shop.getShopList() || [];
     const orders = shop.getOrders() || [];
-    return replyOnce(interaction, { content: `Items: ${items.length}\nOrders: ${orders.length}`, ephemeral: true }, cmd);
+    return send({ reply: `Items: ${items.length}\nOrders: ${orders.length}` });
   }
-
-  if (cmd === "shopreload") {
-    const res = await shop.reloadData();
-    return replyOnce(interaction, { content: res.reply, ephemeral: true }, cmd);
-  }
+  if (cmd === "shopreload") return send(await shop.reloadData());
 
   debug.step(cmd, { note: "no handler matched" });
   return replyOnce(interaction, { content: "Unknown command", ephemeral: true }, cmd);
