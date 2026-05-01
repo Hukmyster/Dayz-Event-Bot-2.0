@@ -5,29 +5,29 @@ const xml = require("./xml");
 // COMMANDS
 // =========================
 module.exports.commands = [
-    { name: "shop", description: "View shop items" },
+    { name: "shop", description: "View shop" },
     { name: "queue", description: "View queued orders" },
     { name: "orders", description: "View all orders" },
-    { name: "build", description: "Build XML from orders" },
-    { name: "shopcycle", description: "Force all orders → XML" },
-    { name: "deleteshophistory", description: "Clear all orders" },
+    { name: "build", description: "Build XML" },
+    { name: "shopcycle", description: "Force build all orders" },
+    { name: "deleteshophistory", description: "Clear orders" },
 
     {
         name: "buy",
         description: "Buy item",
         options: [
             { name: "item", description: "Item", type: 3, required: true, autocomplete: true },
-            { name: "x", description: "X coord", type: 4, required: true },
-            { name: "z", description: "Z coord", type: 4, required: true },
+            { name: "x", description: "X", type: 4, required: true },
+            { name: "z", description: "Z", type: 4, required: true },
             { name: "quantity", description: "Amount", type: 4, required: false }
         ]
     },
 
-    { name: "additem", description: "Add shop item" },
+    { name: "additem", description: "Add item" },
 
     {
         name: "deleteshopitem",
-        description: "Delete shop item",
+        description: "Delete item",
         options: [
             { name: "item", description: "Item", type: 3, required: true, autocomplete: true }
         ]
@@ -38,12 +38,10 @@ module.exports.commands = [
 // SHOP
 // =========================
 module.exports.shop = async (interaction) => {
-
     const shop = db.getShop();
 
-    if (!shop.length) {
+    if (!shop.length)
         return interaction.reply({ content: "Shop empty", ephemeral: true });
-    }
 
     return interaction.reply({
         content: shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n"),
@@ -52,22 +50,21 @@ module.exports.shop = async (interaction) => {
 };
 
 // =========================
-// BUY
+// BUY → INSTANT XML READY
 // =========================
 module.exports.buy = async (interaction) => {
 
     const shop = db.getShop();
 
-    const itemName = interaction.options.getString("item");
+    const name = interaction.options.getString("item");
     const x = interaction.options.getInteger("x");
     const z = interaction.options.getInteger("z");
     const qty = interaction.options.getInteger("quantity") || 1;
 
-    const item = shop.find(i => i.displayName === itemName);
+    const item = shop.find(i => i.displayName === name);
 
-    if (!item) {
+    if (!item)
         return interaction.reply({ content: "Item not found", ephemeral: true });
-    }
 
     const orders = db.getOrders();
 
@@ -78,7 +75,7 @@ module.exports.buy = async (interaction) => {
         x,
         z,
         quantity: qty,
-        status: "queued"
+        status: "built"
     });
 
     db.saveOrders(orders);
@@ -90,34 +87,28 @@ module.exports.buy = async (interaction) => {
 };
 
 // =========================
-// QUEUE (FIXED)
+// QUEUE
 // =========================
 module.exports.queue = async (interaction) => {
-
     const orders = db.getOrders().filter(o => o.status === "queued");
 
-    if (!orders.length) {
+    if (!orders.length)
         return interaction.reply({ content: "Queue empty", ephemeral: true });
-    }
 
     return interaction.reply({
-        content: orders.map(o =>
-            `• ${o.displayName} x${o.quantity} @ (${o.x},${o.z})`
-        ).join("\n"),
+        content: orders.map(o => `• ${o.displayName} x${o.quantity}`).join("\n"),
         ephemeral: true
     });
 };
 
 // =========================
-// ORDERS (ALL STAGES)
+// ORDERS
 // =========================
 module.exports.orders = async (interaction) => {
-
     const orders = db.getOrders();
 
-    if (!orders.length) {
+    if (!orders.length)
         return interaction.reply({ content: "No orders", ephemeral: true });
-    }
 
     return interaction.reply({
         content: orders.map(o =>
@@ -128,48 +119,43 @@ module.exports.orders = async (interaction) => {
 };
 
 // =========================
-// BUILD (FIXED TIMEOUT BUG)
+// BUILD XML
 // =========================
 module.exports.build = async (interaction) => {
 
     await interaction.deferReply({ ephemeral: true });
 
-    try {
-        xml.buildXML(db);
+    const result = xml.buildXML(db);
 
-        return interaction.editReply("XML built successfully");
-    } catch (err) {
-        console.log(err);
-        return interaction.editReply("Build failed");
-    }
+    return interaction.editReply({
+        content:
+            `EVENTS XML:\n\n${result.events.substring(0, 1500)}\n\n` +
+            `POS XML:\n\n${result.pos.substring(0, 1500)}`
+    });
 };
 
 // =========================
-// SHOP CYCLE (FORCE BUILD)
+// SHOPCYCLE
 // =========================
 module.exports.shopcycle = async (interaction) => {
 
     await interaction.deferReply({ ephemeral: true });
 
-    try {
-        let orders = db.getOrders();
+    let orders = db.getOrders();
 
-        // force all to built
-        orders = orders.map(o => ({ ...o, status: "built" }));
+    orders = orders.map(o => ({ ...o, status: "built" }));
 
-        db.saveOrders(orders);
+    db.saveOrders(orders);
 
-        xml.buildXML(db);
+    const result = xml.buildXML(db);
 
-        return interaction.editReply("Shop cycle complete (all built)");
-    } catch (err) {
-        console.log(err);
-        return interaction.editReply("Shop cycle failed");
-    }
+    return interaction.editReply({
+        content: "All orders built into XML"
+    });
 };
 
 // =========================
-// CLEAR ORDERS
+// DELETE HISTORY
 // =========================
 module.exports.deleteshophistory = async (interaction) => {
 
@@ -182,7 +168,7 @@ module.exports.deleteshophistory = async (interaction) => {
 };
 
 // =========================
-// DELETE SHOP ITEM
+// DELETE ITEM
 // =========================
 module.exports.deleteshopitem = async (interaction) => {
 
@@ -211,10 +197,7 @@ module.exports.autocomplete = async (interaction) => {
     return interaction.respond(
         shop
             .filter(i => i.displayName.toLowerCase().includes(focused.toLowerCase()))
+            .map(i => ({ name: i.displayName, value: i.displayName }))
             .slice(0, 25)
-            .map(i => ({
-                name: i.displayName,
-                value: i.displayName
-            }))
     );
 };
