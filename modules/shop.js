@@ -1,5 +1,4 @@
 const db = require("../services/db");
-const xml = require("./xml");
 
 const {
     ModalBuilder,
@@ -9,7 +8,7 @@ const {
 } = require("discord.js");
 
 // =========================
-// SLASH COMMAND DEFINITIONS
+// COMMANDS
 // =========================
 module.exports.commands = [
     { name: "shop", description: "View shop items" },
@@ -47,10 +46,11 @@ module.exports.commands = [
     },
 
     { name: "additem", description: "Add shop item" },
+    { name: "queue", description: "View queued orders" },
 
     {
         name: "deleteshopitem",
-        description: "Remove item",
+        description: "Delete item",
         options: [
             {
                 name: "item",
@@ -63,8 +63,6 @@ module.exports.commands = [
     },
 
     { name: "deleteshophistory", description: "Clear orders only" },
-    { name: "build", description: "Build XML files" },
-    { name: "viewxml", description: "View XML output" }
 ];
 
 // =========================
@@ -74,12 +72,15 @@ module.exports.shop = async (interaction) => {
 
     const shop = db.getShop();
 
-    const output = shop.length
-        ? shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
-        : "Shop is empty";
+    if (!shop.length) {
+        return interaction.reply({
+            content: "Shop is empty",
+            ephemeral: true
+        });
+    }
 
     return interaction.reply({
-        content: output,
+        content: shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n"),
         ephemeral: true
     });
 };
@@ -126,13 +127,13 @@ module.exports.buy = async (interaction) => {
 };
 
 // =========================
-// ADD ITEM (MODAL OPEN)
+// ADD ITEM (MODAL)
 // =========================
 module.exports.additem = async (interaction) => {
 
     const modal = new ModalBuilder()
         .setCustomId("additem_modal")
-        .setTitle("Add Shop Item");
+        .setTitle("Add Item");
 
     const name = new TextInputBuilder()
         .setCustomId("name")
@@ -142,7 +143,7 @@ module.exports.additem = async (interaction) => {
 
     const type = new TextInputBuilder()
         .setCustomId("type")
-        .setLabel("DayZ Type (M4A1 etc)")
+        .setLabel("DayZ Type")
         .setStyle(TextInputStyle.Short)
         .setRequired(true);
 
@@ -179,13 +180,13 @@ module.exports.handleModal = async (interaction) => {
     db.saveShop(shop);
 
     return interaction.reply({
-        content: "Item added successfully",
+        content: "Item added",
         ephemeral: true
     });
 };
 
 // =========================
-// AUTOCOMPLETE FIX (IMPORTANT)
+// AUTOCOMPLETE FIX
 // =========================
 module.exports.autocomplete = async (interaction) => {
 
@@ -193,17 +194,37 @@ module.exports.autocomplete = async (interaction) => {
 
     const focused = interaction.options.getFocused();
 
-    const results = shop
-        .filter(i =>
-            i.displayName.toLowerCase().includes(focused.toLowerCase())
-        )
-        .slice(0, 25)
-        .map(i => ({
-            name: i.displayName,
-            value: i.displayName
-        }));
+    return interaction.respond(
+        shop
+            .filter(i => i.displayName.toLowerCase().includes(focused.toLowerCase()))
+            .slice(0, 25)
+            .map(i => ({
+                name: i.displayName,
+                value: i.displayName
+            }))
+    );
+};
 
-    return interaction.respond(results);
+// =========================
+// QUEUE FIX (YOUR BROKEN COMMAND)
+// =========================
+module.exports.queue = async (interaction) => {
+
+    const orders = db.getOrders();
+
+    if (!orders.length) {
+        return interaction.reply({
+            content: "No queued orders",
+            ephemeral: true
+        });
+    }
+
+    return interaction.reply({
+        content: orders.map(o =>
+            `• ${o.displayName} x${o.quantity} @ (${o.x},${o.z})`
+        ).join("\n"),
+        ephemeral: true
+    });
 };
 
 // =========================
@@ -220,7 +241,7 @@ module.exports.deleteshopitem = async (interaction) => {
     db.saveShop(shop);
 
     return interaction.reply({
-        content: "Item removed",
+        content: "Item deleted",
         ephemeral: true
     });
 };
@@ -234,34 +255,6 @@ module.exports.deleteshophistory = async (interaction) => {
 
     return interaction.reply({
         content: "Order history cleared",
-        ephemeral: true
-    });
-};
-
-// =========================
-// BUILD XML
-// =========================
-module.exports.build = async (interaction) => {
-
-    xml.buildXML(db);
-
-    return interaction.reply({
-        content: "XML rebuilt successfully",
-        ephemeral: true
-    });
-};
-
-// =========================
-// VIEW XML
-// =========================
-const fs = require("fs");
-
-module.exports.viewxml = async (interaction) => {
-
-    const events = fs.readFileSync("./custom/shopevents.xml", "utf8");
-
-    return interaction.reply({
-        content: "XML sent to logs (too large for Discord preview)",
         ephemeral: true
     });
 };
