@@ -11,54 +11,90 @@ const {
 } = require("discord.js");
 
 const fs = require("fs");
+const { Octokit } = require("@octokit/rest");
 require("dotenv").config();
 
+// ---------------- DISCORD ----------------
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// ---------------- PATHS ----------------
-const DB_PATH = "./database/orders.json";
-const SHOP_PATH = "./database/shop.json";
-const EVENTS_PATH = "./custom/shopevents.xml";
-const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
+// ---------------- GITHUB DB ----------------
+const octokit = new Octokit({
+    auth: process.env.GITHUB_TOKEN
+});
+
+const [OWNER, REPO] = process.env.GITHUB_REPO.split("/");
+
+const SHOP_FILE = "database/shop.json";
+const ORDERS_FILE = "database/orders.json";
 
 // ---------------- SAFETY ----------------
 process.on("unhandledRejection", console.error);
 process.on("uncaughtException", console.error);
 
-// ---------------- INIT ----------------
-function ensureFiles() {
-    if (!fs.existsSync("./database")) fs.mkdirSync("./database");
-    if (!fs.existsSync("./custom")) fs.mkdirSync("./custom");
-
-    if (!fs.existsSync(DB_PATH)) fs.writeFileSync(DB_PATH, "[]");
-    if (!fs.existsSync(SHOP_PATH)) fs.writeFileSync(SHOP_PATH, "[]");
-}
-
-// ---------------- LOAD/SAVE ----------------
-function load(path) {
+// ---------------- GITHUB FUNCTIONS ----------------
+async function loadFromGitHub(path) {
     try {
-        return JSON.parse(fs.readFileSync(path, "utf-8"));
+        const res = await octokit.repos.getContent({
+            owner: OWNER,
+            repo: REPO,
+            path
+        });
+
+        return JSON.parse(
+            Buffer.from(res.data.content, "base64").toString()
+        );
     } catch {
         return [];
     }
 }
 
-function save(path, data) {
-    fs.writeFileSync(path, JSON.stringify(data, null, 2));
+async function saveToGitHub(path, data) {
+    let sha;
+
+    try {
+        const res = await octokit.repos.getContent({
+            owner: OWNER,
+            repo: REPO,
+            path
+        });
+
+        sha = res.data.sha;
+    } catch {}
+
+    await octokit.repos.createOrUpdateFileContents({
+        owner: OWNER,
+        repo: REPO,
+        path,
+        message: "bot update",
+        content: Buffer.from(JSON.stringify(data, null, 2)).toString("base64"),
+        sha
+    });
 }
 
-const getShop = () => load(SHOP_PATH);
-const getOrders = () => load(DB_PATH);
+// wrappers
+const getShop = () => loadFromGitHub(SHOP_FILE);
+const getOrders = () => loadFromGitHub(ORDERS_FILE);
+const saveShop = (d) => saveToGitHub(SHOP_FILE, d);
+const saveOrders = (d) => saveToGitHub(ORDERS_FILE, d);
 
-// ---------------- XML ----------------
+// ---------------- XML PATHS ----------------
+const EVENTS_PATH = "./custom/shopevents.xml";
+const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
+
+// ---------------- INIT ----------------
+function ensureFiles() {
+    if (!fs.existsSync("./custom")) fs.mkdirSync("./custom");
+}
+
+// ---------------- XML BUILDER ----------------
 function makeEventName() {
     return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 }
 
-function buildXML() {
-    const orders = getOrders();
+async function buildXML() {
+    const orders = await getOrders();
 
     let events = [];
     let spawns = [];
@@ -93,12 +129,14 @@ function buildXML() {
     }
 
     fs.writeFileSync(EVENTS_PATH,
-`<?xml version="1.0" encoding="UTF-8"?><events>${events.join("")}</events>`);
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<events>${events.join("")}</events>`);
 
     fs.writeFileSync(SPAWNS_PATH,
-`<?xml version="1.0" encoding="UTF-8"?><eventposdef>${spawns.join("")}</eventposdef>`);
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<eventposdef>${spawns.join("")}</eventposdef>`);
 
-    save(DB_PATH, orders);
+    await saveOrders(orders);
 
     console.log("XML BUILT + STATUS UPDATED");
 }
@@ -108,36 +146,32 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("buy")
-        .setDescription("Purchase item")
+        .setDescription("Buy item")
         .addStringOption(o =>
-            o.setName("item").setDescription("Select item").setAutocomplete(true).setRequired(true)
+            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
         )
         .addIntegerOption(o =>
-            o.setName("x").setDescription("X coord").setRequired(true)
+            o.setName("x").setDescription("X").setRequired(true)
         )
         .addIntegerOption(o =>
-            o.setName("z").setDescription("Z coord").setRequired(true)
+            o.setName("z").setDescription("Z").setRequired(true)
         ),
 
-    new SlashCommandBuilder().setName("additem").setDescription("Add item to shop"),
-
+    new SlashCommandBuilder().setName("additem").setDescription("Add item"),
     new SlashCommandBuilder()
         .setName("removeitem")
-        .setDescription("Remove item from shop")
+        .setDescription("Remove item")
         .addStringOption(o =>
             o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
         ),
 
     new SlashCommandBuilder().setName("shop").setDescription("View shop"),
     new SlashCommandBuilder().setName("orders").setDescription("View orders"),
-    new SlashCommandBuilder().setName("queue").setDescription("Move pending → queued"),
+    new SlashCommandBuilder().setName("queue").setDescription("Queue orders"),
     new SlashCommandBuilder().setName("build").setDescription("Build XML"),
-    new SlashCommandBuilder().setName("cycle").setDescription("Complete restart cycle"),
-    new SlashCommandBuilder().setName("status").setDescription("System status"),
-    new SlashCommandBuilder().setName("viewxml").setDescription("View XML"),
-    new SlashCommandBuilder().setName("dumpshop").setDescription("Debug shop"),
-    new SlashCommandBuilder().setName("dumporders").setDescription("Debug orders"),
-    new SlashCommandBuilder().setName("listcommands").setDescription("List commands")
+    new SlashCommandBuilder().setName("cycle").setDescription("Complete cycle"),
+    new SlashCommandBuilder().setName("status").setDescription("Status"),
+    new SlashCommandBuilder().setName("listcommands").setDescription("Commands list")
 ];
 
 // ---------------- REGISTER ----------------
@@ -145,7 +179,10 @@ const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 async function register() {
     await rest.put(
-        Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+        Routes.applicationGuildCommands(
+            process.env.CLIENT_ID,
+            process.env.GUILD_ID
+        ),
         { body: commands }
     );
 }
@@ -156,7 +193,7 @@ client.once("clientReady", () => {
     console.log(`Logged in as ${client.user.tag}`);
 });
 
-// ---------------- INTERACTIONS ----------------
+// ---------------- MAIN ----------------
 client.on("interactionCreate", async (interaction) => {
 
     ensureFiles();
@@ -164,11 +201,13 @@ client.on("interactionCreate", async (interaction) => {
     // AUTOCOMPLETE
     if (interaction.isAutocomplete()) {
         const focused = interaction.options.getFocused();
-        const shop = getShop();
+        const shop = await getShop();
 
         return interaction.respond(
             shop
-                .filter(i => i.displayName.toLowerCase().includes(focused.toLowerCase()))
+                .filter(i =>
+                    i.displayName.toLowerCase().includes(focused.toLowerCase())
+                )
                 .slice(0, 5)
                 .map(i => ({
                     name: `${i.displayName} ($${i.price})`,
@@ -178,173 +217,105 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     // ---------------- COMMANDS ----------------
-    if (interaction.isChatInputCommand()) {
+    if (!interaction.isChatInputCommand()) return;
 
-        // ADD ITEM
-        if (interaction.commandName === "additem") {
+    // SHOP
+    if (interaction.commandName === "shop") {
+        const shop = await getShop();
+        return interaction.reply({
+            content: shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty",
+            flags: 64
+        });
+    }
 
-            const modal = new ModalBuilder()
-                .setCustomId("addItemModal")
-                .setTitle("Add Item");
+    // BUY
+    if (interaction.commandName === "buy") {
 
-            modal.addComponents(
-                new ActionRowBuilder().addComponents(
-                    new TextInputBuilder().setCustomId("type").setLabel("types.xml name").setStyle(TextInputStyle.Short)
-                ),
-                new ActionRowBuilder().addComponents(
-                    new TextInputBuilder().setCustomId("name").setLabel("Display name").setStyle(TextInputStyle.Short)
-                ),
-                new ActionRowBuilder().addComponents(
-                    new TextInputBuilder().setCustomId("price").setLabel("Price").setStyle(TextInputStyle.Short)
-                )
-            );
+        const shop = await getShop();
+        const item = shop.find(i => i.id === interaction.options.getString("item"));
 
-            return interaction.showModal(modal);
-        }
+        if (!item)
+            return interaction.reply({ content: "Item not found", flags: 64 });
 
-        // BUY
-        if (interaction.commandName === "buy") {
-            const shop = getShop();
-            const item = shop.find(i => i.id === interaction.options.getString("item"));
+        const orders = await getOrders();
 
-            if (!item) return interaction.reply({ content: "Item not found", flags: 64 });
+        orders.push({
+            id: Date.now(),
+            itemType: item.type,
+            displayName: item.displayName,
+            x: interaction.options.getInteger("x"),
+            z: interaction.options.getInteger("z"),
+            status: "pending"
+        });
 
-            const orders = getOrders();
+        await saveOrders(orders);
 
-            orders.push({
-                id: Date.now(),
-                itemType: item.type,
-                displayName: item.displayName,
-                x: interaction.options.getInteger("x"),
-                z: interaction.options.getInteger("z"),
-                status: "pending"
-            });
+        return interaction.reply({
+            content: `Added ${item.displayName} @ ${interaction.options.getInteger("x")},${interaction.options.getInteger("z")}`,
+            flags: 64
+        });
+    }
 
-            save(DB_PATH, orders);
+    // QUEUE
+    if (interaction.commandName === "queue") {
+        const orders = await getOrders();
+        let moved = 0;
 
-            console.log("ORDER SAVED:", orders[orders.length - 1]);
-
-            return interaction.reply({
-                content: `✅ ${item.displayName} @ ${interaction.options.getInteger("x")},${interaction.options.getInteger("z")} (pending)`,
-                flags: 64
-            });
-        }
-
-        // REMOVE ITEM
-        if (interaction.commandName === "removeitem") {
-            const id = interaction.options.getString("item");
-            let shop = getShop();
-
-            shop = shop.filter(i => i.id !== id);
-            save(SHOP_PATH, shop);
-
-            return interaction.reply({ content: "Item removed", flags: 64 });
-        }
-
-        // SHOP
-        if (interaction.commandName === "shop") {
-            const shop = getShop();
-            return interaction.reply({
-                content: shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty",
-                flags: 64
-            });
-        }
-
-        // ORDERS
-        if (interaction.commandName === "orders") {
-            const orders = getOrders();
-            return interaction.reply({
-                content: orders.map(o => `• ${o.displayName} [${o.status}]`).join("\n") || "None",
-                flags: 64
-            });
-        }
-
-        // QUEUE
-        if (interaction.commandName === "queue") {
-            const orders = getOrders();
-            let moved = 0;
-
-            for (const o of orders) {
-                if (o.status === "pending" && moved < 10) {
-                    o.status = "queued";
-                    moved++;
-                }
+        for (const o of orders) {
+            if (o.status === "pending") {
+                o.status = "queued";
+                moved++;
             }
-
-            save(DB_PATH, orders);
-
-            return interaction.reply({ content: `Queued ${moved}`, flags: 64 });
         }
 
-        // BUILD
-        if (interaction.commandName === "build") {
-            buildXML();
-            return interaction.reply({ content: "XML built", flags: 64 });
-        }
+        await saveOrders(orders);
 
-        // CYCLE
-        if (interaction.commandName === "cycle") {
-            const orders = getOrders();
-            let done = 0;
+        return interaction.reply({ content: `Queued ${moved}`, flags: 64 });
+    }
 
-            for (const o of orders) {
-                if (o.status === "built") {
-                    o.status = "completed";
-                    done++;
-                }
+    // BUILD
+    if (interaction.commandName === "build") {
+        await buildXML();
+        return interaction.reply({ content: "XML built", flags: 64 });
+    }
+
+    // CYCLE
+    if (interaction.commandName === "cycle") {
+        const orders = await getOrders();
+        let done = 0;
+
+        for (const o of orders) {
+            if (o.status === "built") {
+                o.status = "completed";
+                done++;
             }
-
-            save(DB_PATH, orders);
-
-            return interaction.reply({ content: `Completed ${done}`, flags: 64 });
         }
 
-        // STATUS
-        if (interaction.commandName === "status") {
-            const orders = getOrders();
-            const count = s => orders.filter(o => o.status === s).length;
+        await saveOrders(orders);
 
-            return interaction.reply({
-                content:
+        return interaction.reply({ content: `Completed ${done}`, flags: 64 });
+    }
+
+    // STATUS
+    if (interaction.commandName === "status") {
+        const orders = await getOrders();
+
+        const count = s => orders.filter(o => o.status === s).length;
+
+        return interaction.reply({
+            content:
 `Pending: ${count("pending")}
 Queued: ${count("queued")}
 Built: ${count("built")}
 Completed: ${count("completed")}`,
-                flags: 64
-            });
-        }
+            flags: 64
+        });
+    }
 
-        // VIEW XML
-        if (interaction.commandName === "viewxml") {
-            try {
-                const xml = fs.readFileSync(EVENTS_PATH, "utf-8");
-                return interaction.reply({
-                    content: "```xml\n" + xml.slice(0, 1800) + "\n```",
-                    flags: 64
-                });
-            } catch {
-                return interaction.reply({ content: "No XML yet", flags: 64 });
-            }
-        }
-
-        // DEBUG
-        if (interaction.commandName === "dumpshop") {
-            return interaction.reply({
-                content: "```json\n" + JSON.stringify(getShop(), null, 2).slice(0, 1800),
-                flags: 64
-            });
-        }
-
-        if (interaction.commandName === "dumporders") {
-            return interaction.reply({
-                content: "```json\n" + JSON.stringify(getOrders(), null, 2).slice(0, 1800),
-                flags: 64
-            });
-        }
-
-        if (interaction.commandName === "listcommands") {
-            return interaction.reply({
-                content:
+    // COMMAND LIST
+    if (interaction.commandName === "listcommands") {
+        return interaction.reply({
+            content:
 `/buy
 /additem
 /removeitem
@@ -353,41 +324,11 @@ Completed: ${count("completed")}`,
 /queue
 /build
 /cycle
-/status
-/viewxml
-/dumpshop
-/dumporders
-/listcommands`,
-                flags: 64
-            });
-        }
+/status`,
+            flags: 64
+        });
     }
 
-    // ---------------- MODAL FIX ----------------
-    if (interaction.isModalSubmit()) {
-
-        if (interaction.customId === "addItemModal") {
-
-            const shop = getShop();
-
-            const item = {
-                id: Date.now().toString(),
-                type: interaction.fields.getTextInputValue("type"),
-                displayName: interaction.fields.getTextInputValue("name"),
-                price: Number(interaction.fields.getTextInputValue("price"))
-            };
-
-            shop.push(item);
-            save(SHOP_PATH, shop);
-
-            console.log("ITEM ADDED:", item);
-
-            return interaction.reply({
-                content: "Item added",
-                flags: 64
-            });
-        }
-    }
 });
 
 // ---------------- START ----------------
