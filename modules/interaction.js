@@ -1,4 +1,9 @@
-const { MessageFlags, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require("discord.js");
+const {
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ActionRowBuilder
+} = require("discord.js");
 
 const db = require("../services/db");
 const orders = require("./orders");
@@ -9,37 +14,64 @@ module.exports = async (interaction) => {
 
     try {
 
-        // ---------------- MODAL OPEN (ADD ITEM) ----------------
+        // ================= BUY AUTOCOMPLETE =================
+        if (interaction.isAutocomplete()) {
+
+            const focused = interaction.options.getFocused();
+            const shop = db.getShop();
+
+            return interaction.respond(
+                shop
+                    .filter(i =>
+                        i.displayName.toLowerCase().includes(focused.toLowerCase())
+                    )
+                    .slice(0, 5)
+                    .map(i => ({
+                        name: `${i.displayName} ($${i.price})`,
+                        value: i.displayName
+                    }))
+            );
+        }
+
+        // ================= ADD ITEM MODAL =================
         if (interaction.isChatInputCommand() && interaction.commandName === "additem") {
 
             const modal = new ModalBuilder()
                 .setCustomId("additem_modal")
                 .setTitle("Add Shop Item");
 
-            const nameInput = new TextInputBuilder()
+            const name = new TextInputBuilder()
                 .setCustomId("name")
-                .setLabel("Item Name")
+                .setLabel("Display Name")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
-            const priceInput = new TextInputBuilder()
+            const type = new TextInputBuilder()
+                .setCustomId("type")
+                .setLabel("XML Type (child type=...)")
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true);
+
+            const price = new TextInputBuilder()
                 .setCustomId("price")
                 .setLabel("Price")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
             modal.addComponents(
-                new ActionRowBuilder().addComponents(nameInput),
-                new ActionRowBuilder().addComponents(priceInput)
+                new ActionRowBuilder().addComponents(name),
+                new ActionRowBuilder().addComponents(type),
+                new ActionRowBuilder().addComponents(price)
             );
 
             return interaction.showModal(modal);
         }
 
-        // ---------------- MODAL SUBMIT ----------------
+        // ================= MODAL SUBMIT =================
         if (interaction.isModalSubmit() && interaction.customId === "additem_modal") {
 
             const name = interaction.fields.getTextInputValue("name");
+            const type = interaction.fields.getTextInputValue("type");
             const price = parseInt(interaction.fields.getTextInputValue("price"));
 
             const shop = db.getShop();
@@ -47,18 +79,19 @@ module.exports = async (interaction) => {
             shop.push({
                 id: Date.now().toString(),
                 displayName: name,
-                price
+                type: type,
+                price: price
             });
 
             await db.saveShop(shop);
 
             return interaction.reply({
-                content: `Added item: ${name}`,
+                content: `Added: ${name}`,
                 ephemeral: true
             });
         }
 
-        // ---------------- VIEW XML ----------------
+        // ================= VIEW XML =================
         if (interaction.isChatInputCommand() && interaction.commandName === "viewxml") {
 
             await interaction.deferReply({ ephemeral: true });
@@ -68,33 +101,39 @@ module.exports = async (interaction) => {
 
             const eventXML = fs.existsSync(eventFile)
                 ? fs.readFileSync(eventFile, "utf8")
-                : "Missing";
+                : "Missing XML";
 
             const spawnXML = fs.existsSync(spawnFile)
                 ? fs.readFileSync(spawnFile, "utf8")
-                : "Missing";
+                : "Missing XML";
 
             return interaction.editReply(
-                "EVENT XML:\n```xml\n" + eventXML.slice(0, 1800) +
-                "\n```\nSPAWN XML:\n```xml\n" + spawnXML.slice(0, 1800) + "\n```"
+                "EVENT XML:\n```xml\n" +
+                eventXML.slice(0, 1800) +
+                "\n```\nSPAWN XML:\n```xml\n" +
+                spawnXML.slice(0, 1800) +
+                "\n```"
             );
         }
 
-        // ---------------- DELETE SHOP HISTORY ----------------
+        // ================= DELETE ORDER HISTORY ONLY =================
         if (interaction.isChatInputCommand() && interaction.commandName === "deleteshophistory") {
 
-            await db.clearAll();
+            const ordersList = db.getOrders();
+
+            ordersList.length = 0;
+            await db.saveOrders(ordersList);
 
             fs.writeFileSync("./custom/shopevents.xml", "");
             fs.writeFileSync("./custom/cfgeventspawns.xml", "");
 
             return interaction.reply({
-                content: "Shop + orders + XML cleared",
+                content: "Orders cleared ONLY (shop preserved)",
                 ephemeral: true
             });
         }
 
-        // ---------------- NORMAL COMMANDS ----------------
+        // ================= NORMAL COMMANDS =================
         if (!interaction.isChatInputCommand()) return;
 
         await interaction.deferReply({ ephemeral: true });
@@ -104,19 +143,21 @@ module.exports = async (interaction) => {
         // SHOP
         if (cmd === "shop") {
             return interaction.editReply(
-                db.getShop().map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty"
+                db.getShop().map(i =>
+                    `• ${i.displayName} ($${i.price})`
+                ).join("\n") || "Empty"
             );
         }
 
         // BUY
         if (cmd === "buy") {
 
-            const name = interaction.options.getString("item");
+            const itemName = interaction.options.getString("item");
             const x = interaction.options.getInteger("x");
             const z = interaction.options.getInteger("z");
 
             const item = db.getShop().find(i =>
-                i.displayName.toLowerCase() === name.toLowerCase()
+                i.displayName.toLowerCase().includes(itemName.toLowerCase())
             );
 
             if (!item) return interaction.editReply("Item not found");
