@@ -1,14 +1,8 @@
-const {
-  Client,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  Events
-} = require("discord.js");
-
+const { Client, GatewayIntentBits, REST, Routes, Events } = require("discord.js");
 require("dotenv").config();
 
 const shop = require("./modules/shop");
+const logger = require("./utils/logger");
 
 if (!process.env.DISCORD_TOKEN) {
   console.error("[FATAL] DISCORD_TOKEN missing");
@@ -23,8 +17,6 @@ if (!process.env.GUILD_ID) {
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
-
-/* ---------------- COMMANDS ---------------- */
 
 const commands = [
   {
@@ -67,7 +59,16 @@ const commands = [
   }
 ];
 
-/* ---------------- READY ---------------- */
+async function safeReply(interaction, payload) {
+  try {
+    if (interaction.replied || interaction.deferred) {
+      return interaction.followUp(payload);
+    }
+    return interaction.reply(payload);
+  } catch (err) {
+    logger.error("REPLY ERROR", err);
+  }
+}
 
 client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
@@ -95,24 +96,8 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
-/* ---------------- SAFE REPLY ---------------- */
-
-async function safeReply(interaction, payload) {
-  try {
-    if (interaction.replied || interaction.deferred) {
-      return interaction.followUp(payload);
-    }
-    return interaction.reply(payload);
-  } catch (err) {
-    console.error("[REPLY ERROR]", err);
-  }
-}
-
-/* ---------------- INTERACTIONS ---------------- */
-
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-
     if (!interaction.guild) {
       console.log("[IGNORED] DM interaction");
       return;
@@ -124,7 +109,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const results = shop.autocomplete(query);
 
-      console.log("[AUTOCOMPLETE]", { query, results });
+      logger.interaction({ type: "autocomplete", query, results });
 
       return interaction.respond(results.slice(0, 25)).catch(console.error);
     }
@@ -133,7 +118,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const cmd = interaction.commandName;
 
-    console.log(`[COMMAND] ${cmd}`);
+    logger.interaction({ type: "command", cmd, user: interaction.user?.tag });
 
     if (cmd === "shop") {
       const items = shop.getShopList() || [];
@@ -149,13 +134,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const name = interaction.options.getString("name");
       const type = interaction.options.getString("type");
       const price = interaction.options.getInteger("price");
-
-      console.log("[ADD ITEM RAW]", {
-        name,
-        type,
-        price,
-        raw: interaction.options.data
-      });
 
       const res = await shop.addItem(name, type, price);
 
@@ -192,16 +170,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (cmd === "build") {
-      const xml = shop.buildXML();
+      const res = await shop.buildXML();
 
       return safeReply(interaction, {
-        content: "XML built successfully",
+        content: res.reply || "XML built successfully",
         ephemeral: true
       });
     }
-
   } catch (err) {
-    console.error("[INTERACTION ERROR]", err);
+    logger.error("INTERACTION ERROR", err);
 
     return safeReply(interaction, {
       content: "Error executing command",
