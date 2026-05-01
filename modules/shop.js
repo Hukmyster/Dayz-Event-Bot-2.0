@@ -72,8 +72,7 @@ async function loadShop() {
 
   const { data, error } = await supabase
     .from("shop")
-    .select("id,displayName,type,price")
-    .order("created_at", { ascending: true });
+    .select("id,displayName,type,price");
 
   if (error) {
     debug.supabaseError("shop.loadShop", "select", error, { table: "shop" });
@@ -88,7 +87,7 @@ async function findShopItemByName(name) {
   const clean = normalizeText(name).toLowerCase();
   const items = await loadShop();
 
-  let exact = items.find(i => i.name.toLowerCase() === clean);
+  const exact = items.find(i => i.name.toLowerCase() === clean);
   if (exact) return exact;
 
   return items.find(i => i.name.toLowerCase().includes(clean)) || null;
