@@ -1,298 +1,218 @@
 const db = require("../services/db");
 const xml = require("./xml");
-const fs = require("fs");
 
-// =====================
-// COMMAND REGISTRATION
-// =====================
+const {
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ActionRowBuilder
+} = require("discord.js");
+
+// =========================
+// COMMANDS
+// =========================
 module.exports.commands = [
-    {
-        name: "shop",
-        description: "View shop items"
-    },
+    { name: "shop", description: "View shop" },
+
     {
         name: "buy",
-        description: "Buy an item from the shop",
+        description: "Buy item",
         options: [
-            {
-                name: "item",
-                description: "Item name",
-                type: 3,
-                required: true,
-                autocomplete: true
-            },
-            {
-                name: "x",
-                description: "X coordinate",
-                type: 4,
-                required: true
-            },
-            {
-                name: "z",
-                description: "Z coordinate",
-                type: 4,
-                required: true
-            },
-            {
-                name: "quantity",
-                description: "Amount to buy",
-                type: 4,
-                required: false
-            }
+            { name: "item", description: "Item", type: 3, required: true, autocomplete: true },
+            { name: "x", description: "X", type: 4, required: true },
+            { name: "z", description: "Z", type: 4, required: true },
+            { name: "quantity", description: "Amount", type: 4, required: false }
         ]
     },
-    {
-        name: "additem",
-        description: "Add item to shop"
-    },
+
+    { name: "additem", description: "Add item" },
+
     {
         name: "deleteshopitem",
-        description: "Remove item from shop",
+        description: "Remove item",
         options: [
-            {
-                name: "item",
-                description: "Item name",
-                type: 3,
-                required: true,
-                autocomplete: true
-            }
+            { name: "item", description: "Item", type: 3, required: true, autocomplete: true }
         ]
     },
-    {
-        name: "deleteshophistory",
-        description: "Clear all purchase history"
-    },
-    {
-        name: "queue",
-        description: "View queued orders"
-    },
-    {
-        name: "build",
-        description: "Build XML files"
-    },
-    {
-        name: "shopcycle",
-        description: "Force rebuild cycle"
-    },
-    {
-        name: "viewxml",
-        description: "View generated XML"
-    }
+
+    { name: "deleteshophistory", description: "Clear orders" },
+    { name: "build", description: "Build XML" },
+    { name: "viewxml", description: "View XML" }
 ];
 
-// =====================
-// AUTOCOMPLETE
-// =====================
-module.exports.autocomplete = async (interaction) => {
-    const shop = db.getShop?.() || [];
-
-    const focused = interaction.options.getFocused();
-
-    const filtered = shop
-        .filter(i =>
-            i.displayName.toLowerCase().includes(focused.toLowerCase())
-        )
-        .slice(0, 25);
-
-    return interaction.respond(
-        filtered.map(i => ({
-            name: i.displayName,
-            value: i.displayName
-        }))
-    );
-};
-
-// =====================
-// VIEW SHOP
-// =====================
-module.exports.view = async (interaction) => {
-
-    const shop = db.getShop?.() || [];
-
-    const list = shop.length
-        ? shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
-        : "Shop is empty";
+// =========================
+// SHOP VIEW
+// =========================
+module.exports.shop = async (interaction) => {
+    const shop = db.getShop();
 
     return interaction.reply({
-        content: list,
+        content: shop.length
+            ? shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
+            : "Empty shop",
         ephemeral: true
     });
 };
 
-// =====================
-// BUY ITEM
-// =====================
+// =========================
+// BUY
+// =========================
 module.exports.buy = async (interaction) => {
 
-    const shop = db.getShop?.() || [];
+    const shop = db.getShop();
 
-    const itemName = interaction.options.getString("item");
+    const name = interaction.options.getString("item");
     const x = interaction.options.getInteger("x");
     const z = interaction.options.getInteger("z");
-    const quantity = interaction.options.getInteger("quantity") || 1;
+    const qty = interaction.options.getInteger("quantity") || 1;
 
-    const item = shop.find(i => i.displayName === itemName);
+    const item = shop.find(i => i.displayName === name);
 
     if (!item) {
-        return interaction.reply({
-            content: "Item not found",
-            ephemeral: true
-        });
+        return interaction.reply({ content: "Not found", ephemeral: true });
     }
 
-    const orders = db.getOrders?.() || [];
+    const orders = db.getOrders();
 
     orders.push({
-        id: Date.now().toString(),
         displayName: item.displayName,
         type: item.type,
         x,
         z,
-        quantity,
+        quantity: qty,
         status: "queued"
     });
 
-    db.saveOrders?.(orders);
+    db.saveOrders(orders);
 
     return interaction.reply({
-        content: `Purchased ${quantity}x ${item.displayName}`,
+        content: `Bought ${qty}x ${item.displayName}`,
         ephemeral: true
     });
 };
 
-// =====================
-// ADD ITEM (SAFE PLACEHOLDER OR MODAL READY)
-// =====================
-module.exports.add = async (interaction) => {
+// =========================
+// ADD ITEM MODAL
+// =========================
+module.exports.additem = async (interaction) => {
 
-    // For now safe stub so bot never hangs
+    const modal = new ModalBuilder()
+        .setCustomId("additem_modal")
+        .setTitle("Add Item");
+
+    const name = new TextInputBuilder()
+        .setCustomId("name")
+        .setLabel("Display Name")
+        .setStyle(TextInputStyle.Short);
+
+    const type = new TextInputBuilder()
+        .setCustomId("type")
+        .setLabel("DayZ Type")
+        .setStyle(TextInputStyle.Short);
+
+    const price = new TextInputBuilder()
+        .setCustomId("price")
+        .setLabel("Price")
+        .setStyle(TextInputStyle.Short);
+
+    modal.addComponents(
+        new ActionRowBuilder().addComponents(name),
+        new ActionRowBuilder().addComponents(type),
+        new ActionRowBuilder().addComponents(price)
+    );
+
+    return interaction.showModal(modal);
+};
+
+// =========================
+// MODAL HANDLER
+// =========================
+module.exports.handleModal = async (interaction) => {
+
+    if (interaction.customId !== "additem_modal") return;
+
+    const db = require("../services/db");
+
+    const shop = db.getShop();
+
+    shop.push({
+        displayName: interaction.fields.getTextInputValue("name"),
+        type: interaction.fields.getTextInputValue("type"),
+        price: parseInt(interaction.fields.getTextInputValue("price"))
+    });
+
+    db.saveShop(shop);
+
     return interaction.reply({
-        content: "Additem UI will be upgraded to modal system next step.",
+        content: "Item added",
         ephemeral: true
     });
 };
 
-// =====================
+// =========================
 // DELETE ITEM
-// =====================
-module.exports.remove = async (interaction) => {
+// =========================
+module.exports.deleteshopitem = async (interaction) => {
 
-    let shop = db.getShop?.() || [];
+    const db = require("../services/db");
+
+    let shop = db.getShop();
 
     const name = interaction.options.getString("item");
 
-    const before = shop.length;
-
     shop = shop.filter(i => i.displayName !== name);
 
-    db.saveShop?.(shop);
+    db.saveShop(shop);
 
     return interaction.reply({
-        content: `Removed item. (${before - shop.length})`,
+        content: "Item removed",
         ephemeral: true
     });
 };
 
-// =====================
-// CLEAR HISTORY (SAFE)
-// =====================
-module.exports.clearOrders = async (interaction) => {
+// =========================
+// CLEAR HISTORY
+// =========================
+module.exports.deleteshophistory = async (interaction) => {
 
-    db.saveOrders?.([]);
+    const db = require("../services/db");
 
-    // also wipe XML safely
-    try {
-        fs.writeFileSync("./custom/shopevents.xml", "<events></events>");
-        fs.writeFileSync("./custom/cfgeventspawns.xml", "<eventposdef></eventposdef>");
-    } catch (e) {
-        console.log("[XML CLEAR ERROR]", e.message);
-    }
+    db.saveOrders([]);
 
     return interaction.reply({
-        content: "Order history cleared",
+        content: "Orders cleared",
         ephemeral: true
     });
 };
 
-// =====================
-// QUEUE VIEW
-// =====================
-module.exports.queue = async (interaction) => {
-
-    const orders = db.getOrders?.() || [];
-
-    const queued = orders.filter(o => o.status === "queued");
-
-    return interaction.reply({
-        content: queued.length
-            ? queued.map(o =>
-                `• ${o.quantity}x ${o.displayName} @ (${o.x}, ${o.z})`
-            ).join("\n")
-            : "No queued orders",
-        ephemeral: true
-    });
-};
-
-// =====================
+// =========================
 // BUILD XML
-// =====================
+// =========================
 module.exports.build = async (interaction) => {
-    await xml.buildXML(db);
+
+    const db = require("../services/db");
+    const xml = require("./xml");
+
+    xml.buildXML(db);
 
     return interaction.reply({
-        content: "XML built successfully",
+        content: "XML built",
         ephemeral: true
     });
 };
 
-// =====================
-// FORCE CYCLE
-// =====================
-module.exports.forceCycle = async (interaction) => {
-
-    const orders = db.getOrders?.() || [];
-
-    orders.forEach(o => o.status = "queued");
-
-    db.saveOrders?.(orders);
-
-    await xml.buildXML(db);
-
-    return interaction.reply({
-        content: "Shop cycle completed",
-        ephemeral: true
-    });
-};
-
-// =====================
+// =========================
 // VIEW XML
-// =====================
-module.exports.viewXML = async (interaction) => {
+// =========================
+const fs = require("fs");
 
-    let events = "";
-    let spawns = "";
+module.exports.viewxml = async (interaction) => {
 
-    try {
-        events = fs.readFileSync("./custom/shopevents.xml", "utf8");
-        spawns = fs.readFileSync("./custom/cfgeventspawns.xml", "utf8");
-    } catch (e) {
-        return interaction.reply({
-            content: "XML files not found yet",
-            ephemeral: true
-        });
-    }
+    const events = fs.readFileSync("./custom/shopevents.xml", "utf8");
+    const spawns = fs.readFileSync("./custom/cfgeventspawns.xml", "utf8");
 
     return interaction.reply({
-        content:
-`EVENTS:
-\`\`\`xml
-${events}
-\`\`\`
-
-SPAWNS:
-\`\`\`xml
-${spawns}
-\`\`\``,
+        content: "XML sent to console",
         ephemeral: true
     });
 };
