@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, Events } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, Events, ApplicationCommandOptionType, MessageFlags } = require("discord.js");
 require("dotenv").config();
 
 const shop = require("./modules/shop");
@@ -27,26 +27,26 @@ const commands = [
     name: "additem",
     description: "Add item to shop",
     options: [
-      { name: "name", type: 3, description: "Item name", required: true },
-      { name: "type", type: 3, description: "DayZ type name", required: true },
-      { name: "price", type: 4, description: "Price", required: true }
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Item name", required: true },
+      { name: "type", type: ApplicationCommandOptionType.String, description: "DayZ type name", required: true },
+      { name: "price", type: ApplicationCommandOptionType.Integer, description: "Price", required: true }
     ]
   },
   {
     name: "buy",
     description: "Buy item",
     options: [
-      { name: "item", type: 3, required: true, autocomplete: true },
-      { name: "quantity", type: 4, required: true },
-      { name: "x", type: 4, required: true },
-      { name: "z", type: 4, required: true }
+      { name: "item", type: ApplicationCommandOptionType.String, description: "Item name", required: true, autocomplete: true },
+      { name: "quantity", type: ApplicationCommandOptionType.Integer, description: "Quantity", required: true },
+      { name: "x", type: ApplicationCommandOptionType.Integer, description: "X coordinate", required: true },
+      { name: "z", type: ApplicationCommandOptionType.Integer, description: "Z coordinate", required: true }
     ]
   },
   {
     name: "deleteshopitem",
     description: "Remove item from shop",
     options: [
-      { name: "name", type: 3, required: true }
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Item name", required: true }
     ]
   },
   {
@@ -61,10 +61,18 @@ const commands = [
 
 async function safeReply(interaction, payload) {
   try {
-    if (interaction.replied || interaction.deferred) {
-      return interaction.followUp(payload);
+    const data = { ...payload };
+
+    if (data.ephemeral) {
+      delete data.ephemeral;
+      data.flags = MessageFlags.Ephemeral;
     }
-    return interaction.reply(payload);
+
+    if (interaction.replied || interaction.deferred) {
+      return interaction.followUp(data);
+    }
+
+    return interaction.reply(data);
   } catch (err) {
     logger.error("REPLY ERROR", err);
   }
