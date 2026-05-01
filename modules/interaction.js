@@ -27,18 +27,18 @@ module.exports = async (interaction) => {
                     )
                     .slice(0, 5)
                     .map(i => ({
-                        name: `${i.displayName} ($${i.price})`,
+                        name: i.displayName,
                         value: i.displayName
                     }))
             );
         }
 
-        // ================= ADD ITEM MODAL =================
+        // ================= ADD ITEM =================
         if (interaction.isChatInputCommand() && interaction.commandName === "additem") {
 
             const modal = new ModalBuilder()
                 .setCustomId("additem_modal")
-                .setTitle("Add Shop Item");
+                .setTitle("Add Item");
 
             const name = new TextInputBuilder()
                 .setCustomId("name")
@@ -48,7 +48,7 @@ module.exports = async (interaction) => {
 
             const type = new TextInputBuilder()
                 .setCustomId("type")
-                .setLabel("XML Type (M4A1 etc)")
+                .setLabel("XML Type")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -67,26 +67,62 @@ module.exports = async (interaction) => {
             return interaction.showModal(modal);
         }
 
-        // ================= ADD ITEM SUBMIT =================
-        if (interaction.isModalSubmit() && interaction.customId === "additem_modal") {
+        // ================= DELETE SHOP ITEM =================
+        if (interaction.isChatInputCommand() && interaction.commandName === "deleteshopitem") {
 
-            const name = interaction.fields.getTextInputValue("name");
-            const type = interaction.fields.getTextInputValue("type");
-            const price = parseInt(interaction.fields.getTextInputValue("price"));
+            const name = interaction.options.getString("item");
+
+            let shop = db.getShop();
+
+            const before = shop.length;
+
+            shop = shop.filter(i =>
+                i.displayName.toLowerCase() !== name.toLowerCase()
+            );
+
+            await db.saveShop(shop);
+
+            return interaction.reply({
+                content: `Removed ${before - shop.length} item(s)`,
+                ephemeral: true
+            });
+        }
+
+        // ================= SHOP CYCLE (NEW) =================
+        if (interaction.isChatInputCommand() && interaction.commandName === "shopcycle") {
+
+            let ordersList = db.getOrders();
+
+            for (const o of ordersList) {
+                o.status = "built";
+            }
+
+            await db.saveOrders(ordersList);
+
+            await xml.buildXML();
+
+            return interaction.reply({
+                content: "All orders forced to BUILT + XML regenerated",
+                ephemeral: true
+            });
+        }
+
+        // ================= MODAL SUBMIT =================
+        if (interaction.isModalSubmit() && interaction.customId === "additem_modal") {
 
             const shop = db.getShop();
 
             shop.push({
                 id: Date.now().toString(),
-                displayName: name,
-                type: type,
-                price: price
+                displayName: interaction.fields.getTextInputValue("name"),
+                type: interaction.fields.getTextInputValue("type"),
+                price: parseInt(interaction.fields.getTextInputValue("price"))
             });
 
             await db.saveShop(shop);
 
             return interaction.reply({
-                content: `Added ${name}`,
+                content: "Item added",
                 ephemeral: true
             });
         }
@@ -113,18 +149,19 @@ module.exports = async (interaction) => {
             );
         }
 
-        // ================= DELETE ORDER HISTORY ONLY =================
+        // ================= DELETE ORDER HISTORY =================
         if (interaction.isChatInputCommand() && interaction.commandName === "deleteshophistory") {
 
             const ordersList = db.getOrders();
             ordersList.length = 0;
+
             await db.saveOrders(ordersList);
 
             fs.writeFileSync("./custom/shopevents.xml", "");
             fs.writeFileSync("./custom/cfgeventspawns.xml", "");
 
             return interaction.reply({
-                content: "Orders cleared ONLY",
+                content: "Orders cleared",
                 ephemeral: true
             });
         }
@@ -136,7 +173,6 @@ module.exports = async (interaction) => {
 
         const cmd = interaction.commandName;
 
-        // SHOP
         if (cmd === "shop") {
             return interaction.editReply(
                 db.getShop().map(i =>
@@ -145,7 +181,6 @@ module.exports = async (interaction) => {
             );
         }
 
-        // BUY
         if (cmd === "buy") {
 
             const name = interaction.options.getString("item");
@@ -154,25 +189,20 @@ module.exports = async (interaction) => {
             const qty = interaction.options.getInteger("quantity") || 1;
 
             const item = db.getShop().find(i =>
-                i.displayName.toLowerCase().includes(name.toLowerCase())
+                i.displayName.toLowerCase() === name.toLowerCase()
             );
 
             if (!item) return interaction.editReply("Item not found");
 
-            const totalPrice = item.price * qty;
-
             await orders.createOrder({
                 ...item,
                 quantity: qty,
-                totalPrice
+                totalPrice: item.price * qty
             }, x, z);
 
-            return interaction.editReply(
-                `Order: ${item.displayName} x${qty} ($${totalPrice})`
-            );
+            return interaction.editReply(`Ordered ${qty}x ${item.displayName}`);
         }
 
-        // ORDERS
         if (cmd === "orders") {
             return interaction.editReply(
                 db.getOrders().map(o =>
@@ -181,16 +211,14 @@ module.exports = async (interaction) => {
             );
         }
 
-        // QUEUE
         if (cmd === "queue") {
             await orders.queueOrders();
             return interaction.editReply("Queued");
         }
 
-        // BUILD
         if (cmd === "build") {
             await xml.buildXML();
-            return interaction.editReply("XML built");
+            return interaction.editReply("Built XML");
         }
 
     } catch (err) {
