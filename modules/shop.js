@@ -1,152 +1,298 @@
-const fs = require("fs");
 const db = require("../services/db");
 const xml = require("./xml");
+const fs = require("fs");
 
-// ---------------- COMMANDS ----------------
+// =====================
+// COMMAND REGISTRATION
+// =====================
 module.exports.commands = [
-    { name: "shop", description: "View shop" },
+    {
+        name: "shop",
+        description: "View shop items"
+    },
     {
         name: "buy",
-        description: "Buy item",
+        description: "Buy an item from the shop",
         options: [
-            { name: "item", type: 3, required: true, autocomplete: true },
-            { name: "x", type: 4, required: true },
-            { name: "z", type: 4, required: true },
-            { name: "quantity", type: 4, required: false }
+            {
+                name: "item",
+                description: "Item name",
+                type: 3,
+                required: true,
+                autocomplete: true
+            },
+            {
+                name: "x",
+                description: "X coordinate",
+                type: 4,
+                required: true
+            },
+            {
+                name: "z",
+                description: "Z coordinate",
+                type: 4,
+                required: true
+            },
+            {
+                name: "quantity",
+                description: "Amount to buy",
+                type: 4,
+                required: false
+            }
         ]
     },
-    { name: "additem", description: "Add item" },
+    {
+        name: "additem",
+        description: "Add item to shop"
+    },
     {
         name: "deleteshopitem",
-        description: "Delete item",
+        description: "Remove item from shop",
         options: [
-            { name: "item", type: 3, required: true, autocomplete: true }
+            {
+                name: "item",
+                description: "Item name",
+                type: 3,
+                required: true,
+                autocomplete: true
+            }
         ]
     },
-    { name: "deleteshophistory", description: "Clear orders" },
-    { name: "queue", description: "Queue orders" },
-    { name: "build", description: "Build XML" },
-    { name: "shopcycle", description: "Force cycle" },
-    { name: "viewxml", description: "View XML" }
+    {
+        name: "deleteshophistory",
+        description: "Clear all purchase history"
+    },
+    {
+        name: "queue",
+        description: "View queued orders"
+    },
+    {
+        name: "build",
+        description: "Build XML files"
+    },
+    {
+        name: "shopcycle",
+        description: "Force rebuild cycle"
+    },
+    {
+        name: "viewxml",
+        description: "View generated XML"
+    }
 ];
 
-// ---------------- AUTOCOMPLETE ----------------
-module.exports.autocomplete = async (i) => {
+// =====================
+// AUTOCOMPLETE
+// =====================
+module.exports.autocomplete = async (interaction) => {
+    const shop = db.getShop?.() || [];
 
-    const shop = db.getShop();
+    const focused = interaction.options.getFocused();
 
-    return i.respond(
-        shop.map(x => ({
-            name: x.displayName,
-            value: x.displayName
+    const filtered = shop
+        .filter(i =>
+            i.displayName.toLowerCase().includes(focused.toLowerCase())
+        )
+        .slice(0, 25);
+
+    return interaction.respond(
+        filtered.map(i => ({
+            name: i.displayName,
+            value: i.displayName
         }))
     );
 };
 
-// ---------------- VIEW ----------------
-module.exports.view = async (i) => {
-    return i.reply({
-        content: db.getShop().map(x =>
-            `• ${x.displayName} ($${x.price})`
-        ).join("\n") || "Empty",
+// =====================
+// VIEW SHOP
+// =====================
+module.exports.view = async (interaction) => {
+
+    const shop = db.getShop?.() || [];
+
+    const list = shop.length
+        ? shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
+        : "Shop is empty";
+
+    return interaction.reply({
+        content: list,
         ephemeral: true
     });
 };
 
-// ---------------- BUY ----------------
-module.exports.buy = async (i) => {
+// =====================
+// BUY ITEM
+// =====================
+module.exports.buy = async (interaction) => {
 
-    const shop = db.getShop();
+    const shop = db.getShop?.() || [];
 
-    const name = i.options.getString("item");
-    const x = i.options.getInteger("x");
-    const z = i.options.getInteger("z");
-    const qty = i.options.getInteger("quantity") || 1;
+    const itemName = interaction.options.getString("item");
+    const x = interaction.options.getInteger("x");
+    const z = interaction.options.getInteger("z");
+    const quantity = interaction.options.getInteger("quantity") || 1;
 
-    const item = shop.find(x =>
-        x.displayName === name
-    );
+    const item = shop.find(i => i.displayName === itemName);
 
-    if (!item)
-        return i.reply({ content: "Not found", ephemeral: true });
+    if (!item) {
+        return interaction.reply({
+            content: "Item not found",
+            ephemeral: true
+        });
+    }
 
-    const orders = db.getOrders();
+    const orders = db.getOrders?.() || [];
 
     orders.push({
+        id: Date.now().toString(),
         displayName: item.displayName,
         type: item.type,
-        x, z,
-        quantity: qty,
+        x,
+        z,
+        quantity,
         status: "queued"
     });
 
-    db.saveOrders(orders);
+    db.saveOrders?.(orders);
 
-    return i.reply({
-        content: `Ordered ${qty}x ${item.displayName}`,
+    return interaction.reply({
+        content: `Purchased ${quantity}x ${item.displayName}`,
         ephemeral: true
     });
 };
 
-// ---------------- ADD ITEM ----------------
-module.exports.add = async (i) => {
-    return i.reply({ content: "Use DB file add (next upgrade will add modal)", ephemeral: true });
+// =====================
+// ADD ITEM (SAFE PLACEHOLDER OR MODAL READY)
+// =====================
+module.exports.add = async (interaction) => {
+
+    // For now safe stub so bot never hangs
+    return interaction.reply({
+        content: "Additem UI will be upgraded to modal system next step.",
+        ephemeral: true
+    });
 };
 
-// ---------------- DELETE ITEM ----------------
-module.exports.remove = async (i) => {
+// =====================
+// DELETE ITEM
+// =====================
+module.exports.remove = async (interaction) => {
 
-    let shop = db.getShop();
+    let shop = db.getShop?.() || [];
 
-    const name = i.options.getString("item");
+    const name = interaction.options.getString("item");
 
-    shop = shop.filter(x => x.displayName !== name);
+    const before = shop.length;
 
-    db.saveShop(shop);
+    shop = shop.filter(i => i.displayName !== name);
 
-    return i.reply({ content: "Removed", ephemeral: true });
+    db.saveShop?.(shop);
+
+    return interaction.reply({
+        content: `Removed item. (${before - shop.length})`,
+        ephemeral: true
+    });
 };
 
-// ---------------- ORDERS ----------------
-module.exports.clearOrders = async (i) => {
-    db.saveOrders([]);
-    fs.writeFileSync("./custom/shopevents.xml", "<events></events>");
-    fs.writeFileSync("./custom/cfgeventspawns.xml", "<eventposdef></eventposdef>");
+// =====================
+// CLEAR HISTORY (SAFE)
+// =====================
+module.exports.clearOrders = async (interaction) => {
 
-    return i.reply({ content: "Cleared", ephemeral: true });
+    db.saveOrders?.([]);
+
+    // also wipe XML safely
+    try {
+        fs.writeFileSync("./custom/shopevents.xml", "<events></events>");
+        fs.writeFileSync("./custom/cfgeventspawns.xml", "<eventposdef></eventposdef>");
+    } catch (e) {
+        console.log("[XML CLEAR ERROR]", e.message);
+    }
+
+    return interaction.reply({
+        content: "Order history cleared",
+        ephemeral: true
+    });
 };
 
-// ---------------- QUEUE ----------------
-module.exports.queue = async (i) => {
-    return i.reply({ content: "Queued (placeholder)", ephemeral: true });
+// =====================
+// QUEUE VIEW
+// =====================
+module.exports.queue = async (interaction) => {
+
+    const orders = db.getOrders?.() || [];
+
+    const queued = orders.filter(o => o.status === "queued");
+
+    return interaction.reply({
+        content: queued.length
+            ? queued.map(o =>
+                `• ${o.quantity}x ${o.displayName} @ (${o.x}, ${o.z})`
+            ).join("\n")
+            : "No queued orders",
+        ephemeral: true
+    });
 };
 
-// ---------------- BUILD ----------------
-module.exports.build = async (i) => {
+// =====================
+// BUILD XML
+// =====================
+module.exports.build = async (interaction) => {
     await xml.buildXML(db);
-    return i.reply({ content: "Built", ephemeral: true });
+
+    return interaction.reply({
+        content: "XML built successfully",
+        ephemeral: true
+    });
 };
 
-// ---------------- FORCE CYCLE ----------------
-module.exports.forceCycle = async (i) => {
-    const orders = db.getOrders();
+// =====================
+// FORCE CYCLE
+// =====================
+module.exports.forceCycle = async (interaction) => {
+
+    const orders = db.getOrders?.() || [];
 
     orders.forEach(o => o.status = "queued");
 
-    db.saveOrders(orders);
+    db.saveOrders?.(orders);
+
     await xml.buildXML(db);
 
-    return i.reply({ content: "Cycled", ephemeral: true });
+    return interaction.reply({
+        content: "Shop cycle completed",
+        ephemeral: true
+    });
 };
 
-// ---------------- VIEW XML ----------------
-module.exports.viewXML = async (i) => {
+// =====================
+// VIEW XML
+// =====================
+module.exports.viewXML = async (interaction) => {
 
-    const event = fs.readFileSync("./custom/shopevents.xml", "utf8");
-    const spawn = fs.readFileSync("./custom/cfgeventspawns.xml", "utf8");
+    let events = "";
+    let spawns = "";
 
-    return i.reply({
-        content: "EVENT:\n```xml\n" + event + "\n```\nSPAWN:\n```xml\n" + spawn + "\n```",
+    try {
+        events = fs.readFileSync("./custom/shopevents.xml", "utf8");
+        spawns = fs.readFileSync("./custom/cfgeventspawns.xml", "utf8");
+    } catch (e) {
+        return interaction.reply({
+            content: "XML files not found yet",
+            ephemeral: true
+        });
+    }
+
+    return interaction.reply({
+        content:
+`EVENTS:
+\`\`\`xml
+${events}
+\`\`\`
+
+SPAWNS:
+\`\`\`xml
+${spawns}
+\`\`\``,
         ephemeral: true
     });
 };
