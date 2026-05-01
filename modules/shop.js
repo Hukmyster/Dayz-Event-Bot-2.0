@@ -42,7 +42,7 @@ function saveOrders() {
   fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
 }
 
-/* ALWAYS LOAD ON IMPORT */
+/* always sync on load */
 loadAll();
 
 /* ---------------- SHOP ---------------- */
@@ -87,7 +87,8 @@ async function buyItem(itemName, qty, x, z) {
   loadAll();
 
   const item = shop.find(i => i.name === itemName);
-  if (!item) return { reply: "Item not found in shop" };
+
+  if (!item) return { reply: "Item not found" };
 
   const order = {
     id: Date.now().toString(),
@@ -107,4 +108,82 @@ async function buyItem(itemName, qty, x, z) {
   };
 }
 
-function
+function getOrders() {
+  loadAll();
+  return orders;
+}
+
+/* ---------------- XML ---------------- */
+
+function buildXML() {
+  loadAll();
+
+  let events = "";
+  let positions = "";
+
+  for (const o of orders) {
+    const id = `ShopEvent_${o.id}`;
+
+    events += `
+<event name="${id}">
+  <nominal>1</nominal>
+  <min>${o.qty}</min>
+  <max>${o.qty}</max>
+  <lifetime>3000</lifetime>
+  <restock>3888000</restock>
+  <saferadius>0</saferadius>
+  <distanceradius>0</distanceradius>
+  <cleanupradius>0</cleanupradius>
+  <flags deletable="0" init_random="0" remove_damaged="1"/>
+  <position>fixed</position>
+  <limit>child</limit>
+  <active>1</active>
+  <children>
+    <child lootmax="0" lootmin="0" max="${o.qty}" min="${o.qty}" type="${o.type}"/>
+  </children>
+</event>`;
+
+    positions += `
+<event name="${id}">
+  <pos x="${o.x}" z="${o.z}" a="0"/>
+</event>`;
+  }
+
+  return {
+    eventsXML: `<events>${events}</events>`,
+    positionsXML: `<eventposdef>${positions}</eventposdef>`
+  };
+}
+
+/* ---------------- AUTOCOMPLETE ---------------- */
+
+function autocomplete(query) {
+  loadAll();
+
+  if (!query) return [];
+
+  return shop
+    .filter(i => i.name.toLowerCase().includes(query.toLowerCase()))
+    .map(i => ({
+      name: i.name,
+      value: i.name
+    }));
+}
+
+/* ---------------- CLEAR ---------------- */
+
+function clearOrders() {
+  orders = [];
+  saveOrders();
+}
+
+module.exports = {
+  addItem,
+  deleteItem,
+  buyItem,
+  getShopList,
+  getOrders,
+  buildXML,
+  autocomplete,
+  clearOrders
+};
