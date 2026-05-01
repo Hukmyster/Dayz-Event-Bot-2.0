@@ -1,17 +1,37 @@
+const {
+  Client,
+  GatewayIntentBits,
+  Collection,
+  REST,
+  Routes
+} = require("discord.js");
+
 require("dotenv").config();
-const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
 
 const shop = require("./modules/shop");
-const xml = require("./modules/xml");
+const deploy = require("./core/deployManager");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds
+  ]
 });
+
+/* ---------------- COMMAND REGISTRY ---------------- */
 
 const commands = [
   {
+    name: "shop",
+    description: "View shop items"
+  },
+  {
     name: "additem",
-    description: "Add item to shop"
+    description: "Add item to shop",
+    options: [
+      { name: "name", type: 3, description: "Item name", required: true },
+      { name: "type", type: 3, description: "DayZ type name", required: true },
+      { name: "price", type: 4, description: "Price", required: true }
+    ]
   },
   {
     name: "buy",
@@ -19,41 +39,54 @@ const commands = [
     options: [
       {
         name: "item",
-        description: "Item name",
         type: 3,
+        description: "Item name",
         required: true,
         autocomplete: true
       },
       {
-        name: "x",
-        description: "X coordinate",
+        name: "quantity",
         type: 4,
+        description: "Amount",
+        required: true
+      },
+      {
+        name: "x",
+        type: 4,
+        description: "X coord",
         required: true
       },
       {
         name: "z",
-        description: "Z coordinate",
         type: 4,
+        description: "Z coord",
         required: true
-      },
-      {
-        name: "quantity",
-        description: "Amount",
-        type: 4,
-        required: false
       }
     ]
   },
   {
-    name: "viewxml",
-    description: "View built XML"
+    name: "deleteshopitem",
+    description: "Remove item from shop",
+    options: [
+      { name: "name", type: 3, description: "Item name", required: true }
+    ]
+  },
+  {
+    name: "queue",
+    description: "View queued orders"
+  },
+  {
+    name: "build",
+    description: "Build XML files"
   }
 ];
+
+/* ---------------- REGISTER COMMANDS ---------------- */
 
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
   await rest.put(
     Routes.applicationCommands(client.user.id),
@@ -63,42 +96,84 @@ client.once("ready", async () => {
   console.log("[DISCORD] Commands registered");
 });
 
+/* ---------------- INTERACTION ROUTER ---------------- */
+
 client.on("interactionCreate", async (interaction) => {
   try {
-    // AUTOCOMPLETE
     if (interaction.isAutocomplete()) {
-      return shop.autocomplete(interaction);
+      const focused = interaction.options.getFocused();
+      const results = shop.autocomplete(focused);
+
+      return interaction.respond(results);
     }
 
-    // MODAL SUBMIT
-    if (interaction.isModalSubmit()) {
-      return shop.handleModal(interaction);
-    }
-
-    // COMMANDS
     if (!interaction.isChatInputCommand()) return;
 
-    if (interaction.commandName === "additem") {
-      return shop.showAddModal(interaction);
+    const { commandName } = interaction;
+
+    /* ---------------- SHOP VIEW ---------------- */
+    if (commandName === "shop") {
+      const items = await shop.getShopList();
+      const list = items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") || "Empty shop";
+
+      return interaction.reply({ content: list, ephemeral: true });
     }
 
-    if (interaction.commandName === "buy") {
-      return shop.buy(interaction);
+    /* ---------------- ADD ITEM ---------------- */
+    if (commandName === "additem") {
+      const name = interaction.options.getString("name");
+      const type = interaction.options.getString("type");
+      const price = interaction.options.getInteger("price");
+
+      const res = await shop.addItem(name, type, price);
+
+      return interaction.reply({ content: res.reply, ephemeral: true });
     }
 
-    if (interaction.commandName === "viewxml") {
-      return shop.viewXML(interaction);
+    /* ---------------- BUY ITEM ---------------- */
+    if (commandName === "buy") {
+      const item = interaction.options.getString("item");
+      const qty = interaction.options.getInteger("quantity");
+      const x = interaction.options.getInteger("x");
+      const z = interaction.options.getInteger("z");
+
+      const res = await shop.buyItem(item, qty, x, z);
+
+      return interaction.reply({ content: res.reply, ephemeral: true });
+    }
+
+    /* ---------------- DELETE ITEM ---------------- */
+    if (commandName === "deleteshopitem") {
+      const name = interaction.options.getString("name");
+
+      const res = await shop.deleteItem(name);
+
+      return interaction.reply({ content: res.reply, ephemeral: true });
+    }
+
+    /* ---------------- QUEUE ---------------- */
+    if (commandName === "queue") {
+      const orders = shop.getOrders();
+
+      const msg = orders.length
+        ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z})`).join("\n")
+        : "No orders queued";
+
+      return interaction.reply({ content: msg, ephemeral: true });
+    }
+
+    /* ---------------- BUILD XML ---------------- */
+    if (commandName === "build") {
+      const xml = await deploy.deploy();
+
+      return interaction.reply({ content: xml, ephemeral: true });
     }
 
   } catch (err) {
     console.error("[INTERACTION ERROR]", err);
-
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content: "Error occurred", flags: 64 });
-    } else {
-      await interaction.reply({ content: "Error occurred", flags: 64 });
-    }
+    if (interaction.replied || interaction.deferred) return;
+    return interaction.reply({ content: "Error executing command", ephemeral: true });
   }
 });
 
-client.login(process.env.TOKEN);
+client.login(process.env.DISCORD_TOKEN);
