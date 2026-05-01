@@ -1,34 +1,30 @@
 const fs = require("fs");
 const db = require("../services/db");
 
-const EVENTS_PATH = "./custom/shopevents.xml";
-const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
+const EVENT_FILE = "./custom/shopevents.xml";
+const SPAWN_FILE = "./custom/cfgeventspawns.xml";
 
-function makeEventName() {
-    return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-}
-
-function ensureDir() {
-    if (!fs.existsSync("./custom")) {
-        fs.mkdirSync("./custom");
-    }
+function makeName() {
+    return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 999)}`;
 }
 
 async function buildXML() {
 
-    ensureDir();
+    if (!fs.existsSync("./custom")) {
+        fs.mkdirSync("./custom");
+    }
+
+    const orders = db.getOrders();
 
     let events = [];
     let spawns = [];
-
-    const orders = db.getOrders();
 
     for (const o of orders) {
 
         if (o.status !== "queued") continue;
         if (!o.x || !o.z) continue;
 
-        const name = makeEventName();
+        const name = makeName();
 
         events.push(
 `<event name="${name}">
@@ -50,24 +46,13 @@ async function buildXML() {
 </event>`
         );
 
-        // mark built safely (NO await needed here if db is local cache)
-        await db.supabase
-            .from("orders")
-            .update({ status: "built" })
-            .eq("id", o.id);
+        o.status = "built";
     }
 
-    fs.writeFileSync(
-        EVENTS_PATH,
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><events>${events.join("")}</events>`
-    );
+    fs.writeFileSync(EVENT_FILE, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><events>${events.join("")}</events>`);
+    fs.writeFileSync(SPAWN_FILE, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><eventposdef>${spawns.join("")}</eventposdef>`);
 
-    fs.writeFileSync(
-        SPAWNS_PATH,
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><eventposdef>${spawns.join("")}</eventposdef>`
-    );
-
-    await db.loadData();
+    await db.saveOrders(orders);
 }
 
 module.exports = { buildXML };
