@@ -3,13 +3,15 @@ const {
     GatewayIntentBits,
     REST,
     Routes,
-    SlashCommandBuilder
+    SlashCommandBuilder,
+    InteractionType,
+    MessageFlags
 } = require("discord.js");
 
 const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
-// ---------------- DISCORD CLIENT ----------------
+// ---------------- DISCORD ----------------
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
@@ -20,47 +22,79 @@ const supabase = createClient(
     process.env.SUPABASE_KEY
 );
 
-// ---------------- MEMORY CACHE ----------------
+// ---------------- CACHE ----------------
 let shopCache = [];
 let orderCache = [];
 
-// ---------------- FAST LOAD ----------------
+// ---------------- LOAD DATA ----------------
 async function loadData() {
-    const { data: shop } = await supabase.from("shop").select("*");
-    const { data: orders } = await supabase.from("orders").select("*");
+    console.log("[DB] Loading data...");
 
-    shopCache = shop || [];
-    orderCache = orders || [];
+    const shopRes = await supabase.from("shop").select("*");
+    const orderRes = await supabase.from("orders").select("*");
+
+    if (shopRes.error) console.error("[SHOP LOAD ERROR]", shopRes.error);
+    if (orderRes.error) console.error("[ORDER LOAD ERROR]", orderRes.error);
+
+    shopCache = shopRes.data || [];
+    orderCache = orderRes.data || [];
+
+    console.log(`[DB] Shop items: ${shopCache.length}`);
+    console.log(`[DB] Orders: ${orderCache.length}`);
 }
 
-// ---------------- CACHE ACCESS ----------------
+// ---------------- HELPERS ----------------
 const getShop = () => shopCache;
 const getOrders = () => orderCache;
 
-// ---------------- SAVE HELPERS ----------------
+// ---------------- INSERT SHOP ITEM ----------------
 async function saveShopItem(item) {
-    await supabase.from("shop").upsert(item);
+    console.log("[DB] Adding shop item:", item);
+
+    const res = await supabase.from("shop").insert([item]);
+
+    if (res.error) {
+        console.error("[SHOP INSERT ERROR]", res.error);
+        return false;
+    }
+
     await loadData();
+    return true;
 }
 
+// ---------------- INSERT ORDER ----------------
 async function saveOrder(order) {
-    await supabase.from("orders").upsert(order);
+    console.log("[DB] Adding order:", order);
+
+    const res = await supabase.from("orders").insert([order]);
+
+    if (res.error) {
+        console.error("[ORDER INSERT ERROR]", res.error);
+        return false;
+    }
+
     await loadData();
+    return true;
 }
 
-// ---------------- BOT READY ----------------
+// ---------------- READY ----------------
 client.once("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}`);
 
     await loadData();
 
-    // optional refresh loop
-    setInterval(loadData, 10000);
+    setInterval(loadData, 15000);
 });
 
-// ---------------- SLASH COMMANDS ----------------
+// ---------------- COMMANDS ----------------
 const commands = [
-    new SlashCommandBuilder().setName("shop").setDescription("View shop"),
+    new SlashCommandBuilder()
+        .setName("shop")
+        .setDescription("View shop"),
+
+    new SlashCommandBuilder()
+        .setName("additem")
+        .setDescription("Add test item to shop"),
 
     new SlashCommandBuilder()
         .setName("buy")
@@ -69,24 +103,26 @@ const commands = [
             o.setName("item").setDescription("Item name").setRequired(true)
         )
         .addIntegerOption(o =>
-            o.setName("x").setDescription("X coordinate").setRequired(true)
+            o.setName("x").setDescription("X").setRequired(true)
         )
         .addIntegerOption(o =>
-            o.setName("z").setDescription("Z coordinate").setRequired(true)
+            o.setName("z").setDescription("Z").setRequired(true)
         ),
 
-    new SlashCommandBuilder().setName("status").setDescription("View order status"),
-
-    new SlashCommandBuilder().setName("additem").setDescription("Add test item")
+    new SlashCommandBuilder()
+        .setName("status")
+        .setDescription("View system status")
 ];
 
-// ---------------- INTERACTION HANDLER ----------------
+// ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (interaction) => {
+
+    console.log("[INTERACTION]", interaction.type, interaction.commandName);
 
     if (!interaction.isChatInputCommand()) return;
 
-    // 🔥 ALWAYS ACK FAST (prevents "not responding")
-    await interaction.deferReply({ ephemeral: true });
+    // ALWAYS ACK FAST (fixes "not responding")
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     // ---------------- SHOP ----------------
     if (interaction.commandName === "shop") {
@@ -99,19 +135,37 @@ client.on("interactionCreate", async (interaction) => {
         );
     }
 
+    // ---------------- ADD ITEM ----------------
+    if (interaction.commandName === "additem") {
+
+        const item = {
+            id: Date.now().toString(),
+            type: "m4",
+            displayName: "M4 Rifle",
+            price: 3500
+        };
+
+        const ok = await saveShopItem(item);
+
+        return interaction.editReply(
+            ok ? "Item added successfully" : "FAILED to add item (check logs)"
+        );
+    }
+
     // ---------------- BUY ----------------
     if (interaction.commandName === "buy") {
 
         const shop = getShop();
-
         const input = interaction.options.getString("item").toLowerCase();
+
+        console.log("[BUY INPUT]", input);
 
         const item = shop.find(i =>
             (i.displayName || "").toLowerCase() === input
         );
 
         if (!item) {
-            return interaction.editReply("Item not found in shop");
+            return interaction.editReply("Item not found");
         }
 
         const order = {
@@ -123,10 +177,10 @@ client.on("interactionCreate", async (interaction) => {
             status: "pending"
         };
 
-        await saveOrder(order);
+        const ok = await saveOrder(order);
 
         return interaction.editReply(
-            `Order placed: ${item.displayName} @ ${order.x}, ${order.z}`
+            ok ? `Order placed: ${item.displayName}` : "Order failed"
         );
     }
 
@@ -138,34 +192,24 @@ client.on("interactionCreate", async (interaction) => {
         const count = (s) => orders.filter(o => o.status === s).length;
 
         return interaction.editReply(
-`Pending: ${count("pending")}
+`SHOP DEBUG:
+Items: ${shopCache.length}
+
+ORDERS:
+Pending: ${count("pending")}
 Queued: ${count("queued")}
 Built: ${count("built")}
 Completed: ${count("completed")}`
         );
     }
-
-    // ---------------- ADD ITEM (TEST ONLY) ----------------
-    if (interaction.commandName === "additem") {
-
-        const item = {
-            id: Date.now().toString(),
-            type: "m4",
-            displayName: "M4 Rifle",
-            price: 3500
-        };
-
-        await saveShopItem(item);
-
-        return interaction.editReply("Test item added");
-    }
-
 });
 
 // ---------------- REGISTER COMMANDS ----------------
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
-async function registerCommands() {
+async function register() {
+    console.log("[DISCORD] Registering commands...");
+
     await rest.put(
         Routes.applicationGuildCommands(
             process.env.CLIENT_ID,
@@ -173,8 +217,11 @@ async function registerCommands() {
         ),
         { body: commands }
     );
+
+    console.log("[DISCORD] Commands registered");
 }
 
 // ---------------- START ----------------
-registerCommands()
-    .then(() => client.login(process.env.DISCORD_TOKEN));
+register()
+    .then(() => client.login(process.env.DISCORD_TOKEN))
+    .catch(console.error);
