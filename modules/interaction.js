@@ -16,32 +16,32 @@ module.exports = async (interaction) => {
 
             const items = db.getShop()
                 .filter(i =>
-                    i.displayName.toLowerCase().includes(focused)
+                    i.displayName?.toLowerCase().includes(focused)
                 )
                 .slice(0, 5)
                 .map(i => ({
-                    name: i.displayName,
+                    name: `${i.displayName} ($${i.price})`,
                     value: i.displayName
                 }));
 
             return interaction.respond(items);
         }
 
-        // ---------------- COMMANDS ONLY ----------------
+        // ---------------- IGNORE NON COMMANDS ----------------
         if (!interaction.isChatInputCommand()) return;
 
-        // Always defer first (prevents timeout + double reply issues)
+        // ALWAYS defer first (prevents timeout + double reply issues)
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         const cmd = interaction.commandName;
 
         // ---------------- SHOP ----------------
         if (cmd === "shop") {
-            const shopItems = db.getShop();
+            const items = db.getShop();
 
             return interaction.editReply(
-                shopItems.length
-                    ? shopItems.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
+                items.length
+                    ? items.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
                     : "Shop is empty"
             );
         }
@@ -49,14 +49,24 @@ module.exports = async (interaction) => {
         // ---------------- BUY ----------------
         if (cmd === "buy") {
 
-            const itemName = interaction.options.getString("item");
+            const name = interaction.options.getString("item");
             const x = interaction.options.getInteger("x");
             const z = interaction.options.getInteger("z");
 
-            const item = shop.findItem(itemName);
+            if (!name) {
+                return interaction.editReply("No item selected.");
+            }
+
+            const item = db.getShop().find(i =>
+                i.displayName?.toLowerCase().trim() === name.toLowerCase().trim()
+            );
 
             if (!item) {
                 return interaction.editReply("Item not found in shop.");
+            }
+
+            if (x == null || z == null) {
+                return interaction.editReply("Missing coordinates (x/z).");
             }
 
             await orders.createOrder(item, x, z);
@@ -73,7 +83,9 @@ module.exports = async (interaction) => {
 
             return interaction.editReply(
                 list.length
-                    ? list.map(o => `• ${o.displayName} [${o.status}]`).join("\n")
+                    ? list.map(o =>
+                        `• ${o.displayName} @ ${o.x ?? "?"},${o.z ?? "?"} [${o.status}]`
+                      ).join("\n")
                     : "No orders"
             );
         }
@@ -84,7 +96,7 @@ module.exports = async (interaction) => {
             return interaction.editReply("Queued orders");
         }
 
-        // ---------------- BUILD XML ----------------
+        // ---------------- BUILD ----------------
         if (cmd === "build") {
             await xml.buildXML();
             return interaction.editReply("XML built");
@@ -100,7 +112,6 @@ module.exports = async (interaction) => {
         if (cmd === "viewxml") {
 
             const fs = require("fs");
-
             const path = "./custom/shopevents.xml";
 
             if (!fs.existsSync(path)) {
@@ -109,18 +120,26 @@ module.exports = async (interaction) => {
 
             const data = fs.readFileSync(path, "utf8");
 
-            return interaction.editReply("```xml\n" + data.slice(0, 1900) + "\n```");
+            return interaction.editReply(
+                "```xml\n" + data.slice(0, 1900) + "\n```"
+            );
         }
 
     } catch (err) {
+
         console.error("[INTERACTION ERROR]", err);
 
+        const msg =
+            err?.message ||
+            err?.code ||
+            "Unknown error occurred";
+
         if (interaction.deferred || interaction.replied) {
-            return interaction.editReply("Error executing command.");
+            return interaction.editReply(`❌ ${msg}`);
         }
 
         return interaction.reply({
-            content: "Error executing command.",
+            content: `❌ ${msg}`,
             flags: MessageFlags.Ephemeral
         });
     }
