@@ -9,67 +9,100 @@ const {
 } = require("discord.js");
 
 // =========================
-// COMMANDS
+// SLASH COMMAND DEFINITIONS
 // =========================
 module.exports.commands = [
-    { name: "shop", description: "View shop" },
+    { name: "shop", description: "View shop items" },
 
     {
         name: "buy",
         description: "Buy item",
         options: [
-            { name: "item", description: "Item", type: 3, required: true, autocomplete: true },
-            { name: "x", description: "X", type: 4, required: true },
-            { name: "z", description: "Z", type: 4, required: true },
-            { name: "quantity", description: "Amount", type: 4, required: false }
+            {
+                name: "item",
+                description: "Select item",
+                type: 3,
+                required: true,
+                autocomplete: true
+            },
+            {
+                name: "x",
+                description: "X coordinate",
+                type: 4,
+                required: true
+            },
+            {
+                name: "z",
+                description: "Z coordinate",
+                type: 4,
+                required: true
+            },
+            {
+                name: "quantity",
+                description: "Amount",
+                type: 4,
+                required: false
+            }
         ]
     },
 
-    { name: "additem", description: "Add item" },
+    { name: "additem", description: "Add shop item" },
 
     {
         name: "deleteshopitem",
         description: "Remove item",
         options: [
-            { name: "item", description: "Item", type: 3, required: true, autocomplete: true }
+            {
+                name: "item",
+                description: "Item name",
+                type: 3,
+                required: true,
+                autocomplete: true
+            }
         ]
     },
 
-    { name: "deleteshophistory", description: "Clear orders" },
-    { name: "build", description: "Build XML" },
-    { name: "viewxml", description: "View XML" }
+    { name: "deleteshophistory", description: "Clear orders only" },
+    { name: "build", description: "Build XML files" },
+    { name: "viewxml", description: "View XML output" }
 ];
 
 // =========================
 // SHOP VIEW
 // =========================
 module.exports.shop = async (interaction) => {
+
     const shop = db.getShop();
 
+    const output = shop.length
+        ? shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
+        : "Shop is empty";
+
     return interaction.reply({
-        content: shop.length
-            ? shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
-            : "Empty shop",
+        content: output,
         ephemeral: true
     });
 };
 
 // =========================
-// BUY
+// BUY ITEM
 // =========================
 module.exports.buy = async (interaction) => {
 
     const shop = db.getShop();
 
-    const name = interaction.options.getString("item");
+    const itemName = interaction.options.getString("item");
     const x = interaction.options.getInteger("x");
     const z = interaction.options.getInteger("z");
     const qty = interaction.options.getInteger("quantity") || 1;
 
-    const item = shop.find(i => i.displayName === name);
+    const item = shop.find(i => i.displayName === itemName);
 
     if (!item) {
-        return interaction.reply({ content: "Not found", ephemeral: true });
+        return interaction.reply({
+            content: "Item not found",
+            ephemeral: true
+        });
     }
 
     const orders = db.getOrders();
@@ -77,6 +110,7 @@ module.exports.buy = async (interaction) => {
     orders.push({
         displayName: item.displayName,
         type: item.type,
+        price: item.price,
         x,
         z,
         quantity: qty,
@@ -86,34 +120,37 @@ module.exports.buy = async (interaction) => {
     db.saveOrders(orders);
 
     return interaction.reply({
-        content: `Bought ${qty}x ${item.displayName}`,
+        content: `Purchased ${qty}x ${item.displayName}`,
         ephemeral: true
     });
 };
 
 // =========================
-// ADD ITEM MODAL
+// ADD ITEM (MODAL OPEN)
 // =========================
 module.exports.additem = async (interaction) => {
 
     const modal = new ModalBuilder()
         .setCustomId("additem_modal")
-        .setTitle("Add Item");
+        .setTitle("Add Shop Item");
 
     const name = new TextInputBuilder()
         .setCustomId("name")
         .setLabel("Display Name")
-        .setStyle(TextInputStyle.Short);
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
 
     const type = new TextInputBuilder()
         .setCustomId("type")
-        .setLabel("DayZ Type")
-        .setStyle(TextInputStyle.Short);
+        .setLabel("DayZ Type (M4A1 etc)")
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
 
     const price = new TextInputBuilder()
         .setCustomId("price")
         .setLabel("Price")
-        .setStyle(TextInputStyle.Short);
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
 
     modal.addComponents(
         new ActionRowBuilder().addComponents(name),
@@ -131,8 +168,6 @@ module.exports.handleModal = async (interaction) => {
 
     if (interaction.customId !== "additem_modal") return;
 
-    const db = require("../services/db");
-
     const shop = db.getShop();
 
     shop.push({
@@ -144,9 +179,31 @@ module.exports.handleModal = async (interaction) => {
     db.saveShop(shop);
 
     return interaction.reply({
-        content: "Item added",
+        content: "Item added successfully",
         ephemeral: true
     });
+};
+
+// =========================
+// AUTOCOMPLETE FIX (IMPORTANT)
+// =========================
+module.exports.autocomplete = async (interaction) => {
+
+    const shop = db.getShop();
+
+    const focused = interaction.options.getFocused();
+
+    const results = shop
+        .filter(i =>
+            i.displayName.toLowerCase().includes(focused.toLowerCase())
+        )
+        .slice(0, 25)
+        .map(i => ({
+            name: i.displayName,
+            value: i.displayName
+        }));
+
+    return interaction.respond(results);
 };
 
 // =========================
@@ -154,11 +211,9 @@ module.exports.handleModal = async (interaction) => {
 // =========================
 module.exports.deleteshopitem = async (interaction) => {
 
-    const db = require("../services/db");
+    const name = interaction.options.getString("item");
 
     let shop = db.getShop();
-
-    const name = interaction.options.getString("item");
 
     shop = shop.filter(i => i.displayName !== name);
 
@@ -171,16 +226,14 @@ module.exports.deleteshopitem = async (interaction) => {
 };
 
 // =========================
-// CLEAR HISTORY
+// CLEAR ORDERS ONLY
 // =========================
 module.exports.deleteshophistory = async (interaction) => {
-
-    const db = require("../services/db");
 
     db.saveOrders([]);
 
     return interaction.reply({
-        content: "Orders cleared",
+        content: "Order history cleared",
         ephemeral: true
     });
 };
@@ -190,13 +243,10 @@ module.exports.deleteshophistory = async (interaction) => {
 // =========================
 module.exports.build = async (interaction) => {
 
-    const db = require("../services/db");
-    const xml = require("./xml");
-
     xml.buildXML(db);
 
     return interaction.reply({
-        content: "XML built",
+        content: "XML rebuilt successfully",
         ephemeral: true
     });
 };
@@ -209,10 +259,9 @@ const fs = require("fs");
 module.exports.viewxml = async (interaction) => {
 
     const events = fs.readFileSync("./custom/shopevents.xml", "utf8");
-    const spawns = fs.readFileSync("./custom/cfgeventspawns.xml", "utf8");
 
     return interaction.reply({
-        content: "XML sent to console",
+        content: "XML sent to logs (too large for Discord preview)",
         ephemeral: true
     });
 };
