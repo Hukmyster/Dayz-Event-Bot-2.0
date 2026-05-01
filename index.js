@@ -18,8 +18,6 @@ client.once("clientReady", async () => {
 
     console.log(`Logged in as ${client.user.tag}`);
 
-    const commands = shop.commands;
-
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
     await rest.put(
@@ -27,7 +25,7 @@ client.once("clientReady", async () => {
             process.env.CLIENT_ID,
             process.env.GUILD_ID
         ),
-        { body: commands }
+        { body: shop.commands }
     );
 
     console.log("[DISCORD] Commands registered");
@@ -75,7 +73,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
     } catch (err) {
-        console.error("[BRAIN ERROR]", err);
+        console.error("[ERROR]", err);
 
         if (interaction.deferred || interaction.replied) {
             return interaction.editReply("Error: " + err.message);
