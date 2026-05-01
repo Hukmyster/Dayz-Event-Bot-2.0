@@ -1,119 +1,143 @@
-const {
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ActionRowBuilder
-} = require("discord.js");
+const fs = require("fs");
+const path = require("path");
 
-const db = require("../services/db");
-const xml = require("./xml");
+const SHOP_FILE = path.join(__dirname, "../data/shop.json");
 
-// --- SHOW MODAL ---
-function showAddModal(interaction) {
-  const modal = new ModalBuilder()
-    .setCustomId("add_item_modal")
-    .setTitle("Add Shop Item");
+let shop = loadShop();
+let orders = [];
 
-  const name = new TextInputBuilder()
-    .setCustomId("name")
-    .setLabel("Display Name")
-    .setStyle(TextInputStyle.Short);
-
-  const type = new TextInputBuilder()
-    .setCustomId("type")
-    .setLabel("Type (types.xml name)")
-    .setStyle(TextInputStyle.Short);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(name),
-    new ActionRowBuilder().addComponents(type)
-  );
-
-  return interaction.showModal(modal);
+function ensureFile() {
+  const dir = path.dirname(SHOP_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(SHOP_FILE)) fs.writeFileSync(SHOP_FILE, JSON.stringify([]));
 }
 
-// --- HANDLE MODAL ---
-function handleModal(interaction) {
-  if (interaction.customId !== "add_item_modal") return;
-
-  const name = interaction.fields.getTextInputValue("name");
-  const type = interaction.fields.getTextInputValue("type");
-
-  const shop = db.getShop();
-  shop.push({ name, type });
-
-  db.saveShop(shop);
-
-  return interaction.reply({
-    content: `Added ${name} (${type})`,
-    flags: 64
-  });
+function loadShop() {
+  ensureFile();
+  return JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8"));
 }
 
-// --- AUTOCOMPLETE ---
-function autocomplete(interaction) {
-  const focused = interaction.options.getFocused().toLowerCase();
-
-  const shop = db.getShop();
-
-  const choices = shop
-    .filter(i => i.name.toLowerCase().includes(focused))
-    .slice(0, 25)
-    .map(i => ({
-      name: i.name,
-      value: i.name
-    }));
-
-  return interaction.respond(choices);
+function saveShop() {
+  ensureFile();
+  fs.writeFileSync(SHOP_FILE, JSON.stringify(shop, null, 2));
 }
 
-// --- BUY ---
-function buy(interaction) {
-  const itemName = interaction.options.getString("item");
-  const x = interaction.options.getInteger("x");
-  const z = interaction.options.getInteger("z");
-  const quantity = interaction.options.getInteger("quantity") || 1;
+/* ---------------- SHOP ACTIONS ---------------- */
 
-  const shop = db.getShop();
+async function addItem(name, type, price) {
+  const item = { id: Date.now().toString(), name, type, price };
+  shop.push(item);
+  saveShop();
+
+  return {
+    reply: `Added ${name} (${type})`,
+  };
+}
+
+async function deleteItem(name) {
+  shop = shop.filter(i => i.name !== name);
+  saveShop();
+
+  return {
+    reply: `Deleted ${name} from shop`,
+  };
+}
+
+async function getShopList() {
+  return shop;
+}
+
+/* ---------------- BUY SYSTEM ---------------- */
+
+async function buyItem(itemName, qty, x, z) {
   const item = shop.find(i => i.name === itemName);
+  if (!item) return { reply: "Item not found" };
 
-  if (!item) {
-    return interaction.reply({ content: "Item not found", flags: 64 });
-  }
-
-  const orders = db.getOrders();
-
-  orders.push({
-    id: Date.now(),
+  const order = {
+    id: Date.now().toString(),
+    item: item.name,
     type: item.type,
+    qty,
     x,
     z,
-    quantity
-  });
+    status: "queued"
+  };
 
-  db.saveOrders(orders);
+  orders.push(order);
 
-  return interaction.reply({
-    content: `Ordered ${quantity}x ${item.name}`,
-    flags: 64
-  });
+  return {
+    reply: `Queued ${qty}x ${item.name} @ (${x},${z})`
+  };
 }
 
-// --- VIEW XML ---
-function viewXML(interaction) {
-  const orders = db.getOrders();
-  const built = xml.buildXML(orders);
+function getOrders() {
+  return orders;
+}
 
-  return interaction.reply({
-    content: "```xml\n" + built.eventsXML + "\n```",
-    flags: 64
-  });
+/* ---------------- XML GENERATION ---------------- */
+
+function buildXML() {
+  let events = "";
+  let positions = "";
+
+  for (const o of orders) {
+    const id = `ShopEvent_${o.id}`;
+
+    const eventXML = `
+<event name="${id}">
+  <nominal>1</nominal>
+  <min>${o.qty}</min>
+  <max>${o.qty}</max>
+  <lifetime>3000</lifetime>
+  <restock>3888000</restock>
+  <saferadius>0</saferadius>
+  <distanceradius>0</distanceradius>
+  <cleanupradius>0</cleanupradius>
+  <flags deletable="0" init_random="0" remove_damaged="1"/>
+  <position>fixed</position>
+  <limit>child</limit>
+  <active>1</active>
+  <children>
+    <child lootmax="0" lootmin="0" max="${o.qty}" min="${o.qty}" type="${o.type}"/>
+  </children>
+</event>`;
+
+    const posXML = `
+<event name="${id}">
+  <pos x="${o.x}" z="${o.z}" a="0"/>
+</event>`;
+
+    events += eventXML;
+    positions += posXML;
+  }
+
+  return {
+    eventsXML: `<events>${events}</events>`,
+    positionsXML: `<eventposdef>${positions}</eventposdef>`
+  };
+}
+
+/* ---------------- AUTOCOMPLETE ---------------- */
+
+function autocomplete(query) {
+  return shop
+    .filter(i => i.name.toLowerCase().includes(query.toLowerCase()))
+    .map(i => ({ name: i.name, value: i.name }));
+}
+
+/* ---------------- RESET ---------------- */
+
+function clearOrders() {
+  orders = [];
 }
 
 module.exports = {
-  showAddModal,
-  handleModal,
+  addItem,
+  deleteItem,
+  buyItem,
+  getShopList,
+  getOrders,
+  buildXML,
   autocomplete,
-  buy,
-  viewXML
+  clearOrders
 };
