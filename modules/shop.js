@@ -1,91 +1,152 @@
-const {
-    Client,
-    GatewayIntentBits,
-    REST,
-    Routes
-} = require("discord.js");
+const fs = require("fs");
+const db = require("../services/db");
+const xml = require("./xml");
 
-require("dotenv").config();
+// ---------------- COMMANDS ----------------
+module.exports.commands = [
+    { name: "shop", description: "View shop" },
+    {
+        name: "buy",
+        description: "Buy item",
+        options: [
+            { name: "item", type: 3, required: true, autocomplete: true },
+            { name: "x", type: 4, required: true },
+            { name: "z", type: 4, required: true },
+            { name: "quantity", type: 4, required: false }
+        ]
+    },
+    { name: "additem", description: "Add item" },
+    {
+        name: "deleteshopitem",
+        description: "Delete item",
+        options: [
+            { name: "item", type: 3, required: true, autocomplete: true }
+        ]
+    },
+    { name: "deleteshophistory", description: "Clear orders" },
+    { name: "queue", description: "Queue orders" },
+    { name: "build", description: "Build XML" },
+    { name: "shopcycle", description: "Force cycle" },
+    { name: "viewxml", description: "View XML" }
+];
 
-const shop = require("./modules/shop");
+// ---------------- AUTOCOMPLETE ----------------
+module.exports.autocomplete = async (i) => {
 
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds]
-});
+    const shop = db.getShop();
 
-// ---------------- READY ----------------
-client.once("clientReady", async () => {
+    return i.respond(
+        shop.map(x => ({
+            name: x.displayName,
+            value: x.displayName
+        }))
+    );
+};
 
-    console.log(`Logged in as ${client.user.tag}`);
+// ---------------- VIEW ----------------
+module.exports.view = async (i) => {
+    return i.reply({
+        content: db.getShop().map(x =>
+            `• ${x.displayName} ($${x.price})`
+        ).join("\n") || "Empty",
+        ephemeral: true
+    });
+};
 
-    const commands = shop.commands;
+// ---------------- BUY ----------------
+module.exports.buy = async (i) => {
 
-    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+    const shop = db.getShop();
 
-    await rest.put(
-        Routes.applicationGuildCommands(
-            process.env.CLIENT_ID,
-            process.env.GUILD_ID
-        ),
-        { body: commands }
+    const name = i.options.getString("item");
+    const x = i.options.getInteger("x");
+    const z = i.options.getInteger("z");
+    const qty = i.options.getInteger("quantity") || 1;
+
+    const item = shop.find(x =>
+        x.displayName === name
     );
 
-    console.log("[DISCORD] Commands registered");
-});
+    if (!item)
+        return i.reply({ content: "Not found", ephemeral: true });
 
-// ---------------- ROUTER ----------------
-client.on("interactionCreate", async (interaction) => {
+    const orders = db.getOrders();
 
-    try {
+    orders.push({
+        displayName: item.displayName,
+        type: item.type,
+        x, z,
+        quantity: qty,
+        status: "queued"
+    });
 
-        if (interaction.isAutocomplete()) {
-            return shop.autocomplete(interaction);
-        }
+    db.saveOrders(orders);
 
-        if (!interaction.isChatInputCommand()) return;
+    return i.reply({
+        content: `Ordered ${qty}x ${item.displayName}`,
+        ephemeral: true
+    });
+};
 
-        switch (interaction.commandName) {
+// ---------------- ADD ITEM ----------------
+module.exports.add = async (i) => {
+    return i.reply({ content: "Use DB file add (next upgrade will add modal)", ephemeral: true });
+};
 
-            case "shop":
-                return shop.view(interaction);
+// ---------------- DELETE ITEM ----------------
+module.exports.remove = async (i) => {
 
-            case "buy":
-                return shop.buy(interaction);
+    let shop = db.getShop();
 
-            case "additem":
-                return shop.add(interaction);
+    const name = i.options.getString("item");
 
-            case "deleteshopitem":
-                return shop.remove(interaction);
+    shop = shop.filter(x => x.displayName !== name);
 
-            case "deleteshophistory":
-                return shop.clearOrders(interaction);
+    db.saveShop(shop);
 
-            case "queue":
-                return shop.queue(interaction);
+    return i.reply({ content: "Removed", ephemeral: true });
+};
 
-            case "build":
-                return shop.build(interaction);
+// ---------------- ORDERS ----------------
+module.exports.clearOrders = async (i) => {
+    db.saveOrders([]);
+    fs.writeFileSync("./custom/shopevents.xml", "<events></events>");
+    fs.writeFileSync("./custom/cfgeventspawns.xml", "<eventposdef></eventposdef>");
 
-            case "shopcycle":
-                return shop.forceCycle(interaction);
+    return i.reply({ content: "Cleared", ephemeral: true });
+};
 
-            case "viewxml":
-                return shop.viewXML(interaction);
-        }
+// ---------------- QUEUE ----------------
+module.exports.queue = async (i) => {
+    return i.reply({ content: "Queued (placeholder)", ephemeral: true });
+};
 
-    } catch (err) {
-        console.error("[BRAIN ERROR]", err);
+// ---------------- BUILD ----------------
+module.exports.build = async (i) => {
+    await xml.buildXML(db);
+    return i.reply({ content: "Built", ephemeral: true });
+};
 
-        if (interaction.deferred || interaction.replied) {
-            return interaction.editReply("Error: " + err.message);
-        }
+// ---------------- FORCE CYCLE ----------------
+module.exports.forceCycle = async (i) => {
+    const orders = db.getOrders();
 
-        return interaction.reply({
-            content: "Error: " + err.message,
-            ephemeral: true
-        });
-    }
-});
+    orders.forEach(o => o.status = "queued");
 
-client.login(process.env.DISCORD_TOKEN);
+    db.saveOrders(orders);
+    await xml.buildXML(db);
+
+    return i.reply({ content: "Cycled", ephemeral: true });
+};
+
+// ---------------- VIEW XML ----------------
+module.exports.viewXML = async (i) => {
+
+    const event = fs.readFileSync("./custom/shopevents.xml", "utf8");
+    const spawn = fs.readFileSync("./custom/cfgeventspawns.xml", "utf8");
+
+    return i.reply({
+        content: "EVENT:\n```xml\n" + event + "\n```\nSPAWN:\n```xml\n" + spawn + "\n```",
+        ephemeral: true
+    });
+};
