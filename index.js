@@ -1,11 +1,5 @@
-const {
-    Client,
-    GatewayIntentBits,
-    REST,
-    Routes
-} = require("discord.js");
-
-require("dotenv").config();
+const fs = require("fs");
+const { Client, GatewayIntentBits, Collection } = require("discord.js");
 
 const shop = require("./modules/shop");
 
@@ -13,77 +7,56 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// ---------------- READY ----------------
-client.once("clientReady", async () => {
+client.commands = new Collection();
 
+// =========================
+// REGISTER COMMANDS
+// =========================
+client.on("ready", async () => {
     console.log(`Logged in as ${client.user.tag}`);
 
-    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+    const commands = shop.commands;
 
-    await rest.put(
-        Routes.applicationGuildCommands(
-            process.env.CLIENT_ID,
-            process.env.GUILD_ID
-        ),
-        { body: shop.commands }
-    );
+    await client.application.commands.set(commands);
 
     console.log("[DISCORD] Commands registered");
 });
 
-// ---------------- ROUTER ----------------
+// =========================
+// INTERACTIONS
+// =========================
 client.on("interactionCreate", async (interaction) => {
 
     try {
 
+        // ===== AUTOCOMPLETE =====
         if (interaction.isAutocomplete()) {
             return shop.autocomplete(interaction);
         }
 
+        // ===== MODALS =====
+        if (interaction.isModalSubmit()) {
+            return shop.handleModal(interaction);
+        }
+
         if (!interaction.isChatInputCommand()) return;
 
-        switch (interaction.commandName) {
+        const cmd = interaction.commandName;
 
-            case "shop":
-                return shop.view(interaction);
-
-            case "buy":
-                return shop.buy(interaction);
-
-            case "additem":
-                return shop.add(interaction);
-
-            case "deleteshopitem":
-                return shop.remove(interaction);
-
-            case "deleteshophistory":
-                return shop.clearOrders(interaction);
-
-            case "queue":
-                return shop.queue(interaction);
-
-            case "build":
-                return shop.build(interaction);
-
-            case "shopcycle":
-                return shop.forceCycle(interaction);
-
-            case "viewxml":
-                return shop.viewXML(interaction);
+        if (shop[cmd]) {
+            return await shop[cmd](interaction);
         }
 
     } catch (err) {
-        console.error("[ERROR]", err);
+        console.log("[INTERACTION ERROR]", err);
 
-        if (interaction.deferred || interaction.replied) {
-            return interaction.editReply("Error: " + err.message);
+        if (!interaction.replied) {
+            return interaction.reply({
+                content: "Error executing command",
+                ephemeral: true
+            });
         }
-
-        return interaction.reply({
-            content: "Error: " + err.message,
-            ephemeral: true
-        });
     }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.TOKEN);
