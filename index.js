@@ -111,14 +111,12 @@ async function handleCommand(interaction) {
     }, cmd);
   }
 
-  const send = (res, label = cmd) =>
-    replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
+  const send = (res, label = cmd) => replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
 
   if (cmd === "shoplist") {
     const items = shop.getShopList() || [];
     return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
   }
-
   if (cmd === "shopadditem") return send(await shop.addItem(interaction.options.getString("name"), interaction.options.getString("type"), interaction.options.getInteger("price")));
   if (cmd === "shopbuyitem") return send(await shop.buyItem(interaction.options.getString("item"), interaction.options.getInteger("quantity"), interaction.options.getInteger("x"), interaction.options.getInteger("z")));
   if (cmd === "shopremoveitem") return send(await shop.deleteItem(interaction.options.getString("name")));
@@ -149,11 +147,14 @@ client.once(Events.ClientReady, async () => {
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
   try {
-    console.log("[DISCORD] Clearing old GUILD commands...");
-    await rest.put(Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID), { body: [] });
+    const appId = client.user.id;
+    console.log("[DISCORD] Clearing GUILD commands...");
+    await rest.put(Routes.applicationGuildCommands(appId, process.env.GUILD_ID), { body: [] });
+    console.log("[DISCORD] Clearing GLOBAL commands...");
+    await rest.put(Routes.applicationCommands(appId), { body: [] });
     console.log("[DISCORD] Registering GUILD commands...");
-    await rest.put(Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID), { body: commands });
-    const cmds = await rest.get(Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID));
+    await rest.put(Routes.applicationGuildCommands(appId, process.env.GUILD_ID), { body: commands });
+    const cmds = await rest.get(Routes.applicationGuildCommands(appId, process.env.GUILD_ID));
     console.log("[DEBUG] ACTIVE COMMANDS:");
     console.log(JSON.stringify(cmds, null, 2));
     console.log("[DISCORD] Commands registered");
