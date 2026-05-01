@@ -15,7 +15,7 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// ---------------- SLASH COMMANDS ----------------
+// ---------------- COMMANDS ----------------
 const commands = [
 
     new SlashCommandBuilder()
@@ -27,7 +27,7 @@ const commands = [
         .setDescription("Buy item")
         .addStringOption(o =>
             o.setName("item")
-                .setDescription("Item (search enabled)")
+                .setDescription("Item name")
                 .setRequired(true)
                 .setAutocomplete(true)
         )
@@ -40,31 +40,36 @@ const commands = [
             o.setName("z")
                 .setDescription("Z coordinate")
                 .setRequired(true)
+        )
+        .addIntegerOption(o =>
+            o.setName("quantity")
+                .setDescription("Quantity")
+                .setRequired(false)
         ),
 
     new SlashCommandBuilder()
         .setName("additem")
-        .setDescription("Add item to shop"),
+        .setDescription("Add shop item"),
 
     new SlashCommandBuilder()
         .setName("viewxml")
-        .setDescription("View generated XML"),
+        .setDescription("View XML output"),
 
     new SlashCommandBuilder()
         .setName("deleteshophistory")
-        .setDescription("Clear ONLY orders (keep shop items)"),
+        .setDescription("Clear ONLY orders"),
 
     new SlashCommandBuilder()
         .setName("orders")
-        .setDescription("View all orders"),
+        .setDescription("View orders"),
 
     new SlashCommandBuilder()
         .setName("queue")
-        .setDescription("Queue pending orders"),
+        .setDescription("Queue orders"),
 
     new SlashCommandBuilder()
         .setName("build")
-        .setDescription("Build XML files")
+        .setDescription("Build XML")
 ];
 
 // ---------------- READY ----------------
