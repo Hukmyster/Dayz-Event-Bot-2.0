@@ -14,7 +14,7 @@ module.exports = async (interaction) => {
 
     try {
 
-        // ================= BUY AUTOCOMPLETE =================
+        // ================= AUTOCOMPLETE =================
         if (interaction.isAutocomplete()) {
 
             const focused = interaction.options.getFocused();
@@ -48,7 +48,7 @@ module.exports = async (interaction) => {
 
             const type = new TextInputBuilder()
                 .setCustomId("type")
-                .setLabel("XML Type (child type=...)")
+                .setLabel("XML Type (M4A1 etc)")
                 .setStyle(TextInputStyle.Short)
                 .setRequired(true);
 
@@ -67,7 +67,7 @@ module.exports = async (interaction) => {
             return interaction.showModal(modal);
         }
 
-        // ================= MODAL SUBMIT =================
+        // ================= ADD ITEM SUBMIT =================
         if (interaction.isModalSubmit() && interaction.customId === "additem_modal") {
 
             const name = interaction.fields.getTextInputValue("name");
@@ -86,7 +86,7 @@ module.exports = async (interaction) => {
             await db.saveShop(shop);
 
             return interaction.reply({
-                content: `Added: ${name}`,
+                content: `Added ${name}`,
                 ephemeral: true
             });
         }
@@ -96,16 +96,13 @@ module.exports = async (interaction) => {
 
             await interaction.deferReply({ ephemeral: true });
 
-            const eventFile = "./custom/shopevents.xml";
-            const spawnFile = "./custom/cfgeventspawns.xml";
+            const eventXML = fs.existsSync("./custom/shopevents.xml")
+                ? fs.readFileSync("./custom/shopevents.xml", "utf8")
+                : "Missing";
 
-            const eventXML = fs.existsSync(eventFile)
-                ? fs.readFileSync(eventFile, "utf8")
-                : "Missing XML";
-
-            const spawnXML = fs.existsSync(spawnFile)
-                ? fs.readFileSync(spawnFile, "utf8")
-                : "Missing XML";
+            const spawnXML = fs.existsSync("./custom/cfgeventspawns.xml")
+                ? fs.readFileSync("./custom/cfgeventspawns.xml", "utf8")
+                : "Missing";
 
             return interaction.editReply(
                 "EVENT XML:\n```xml\n" +
@@ -120,7 +117,6 @@ module.exports = async (interaction) => {
         if (interaction.isChatInputCommand() && interaction.commandName === "deleteshophistory") {
 
             const ordersList = db.getOrders();
-
             ordersList.length = 0;
             await db.saveOrders(ordersList);
 
@@ -128,7 +124,7 @@ module.exports = async (interaction) => {
             fs.writeFileSync("./custom/cfgeventspawns.xml", "");
 
             return interaction.reply({
-                content: "Orders cleared ONLY (shop preserved)",
+                content: "Orders cleared ONLY",
                 ephemeral: true
             });
         }
@@ -152,26 +148,35 @@ module.exports = async (interaction) => {
         // BUY
         if (cmd === "buy") {
 
-            const itemName = interaction.options.getString("item");
+            const name = interaction.options.getString("item");
             const x = interaction.options.getInteger("x");
             const z = interaction.options.getInteger("z");
+            const qty = interaction.options.getInteger("quantity") || 1;
 
             const item = db.getShop().find(i =>
-                i.displayName.toLowerCase().includes(itemName.toLowerCase())
+                i.displayName.toLowerCase().includes(name.toLowerCase())
             );
 
             if (!item) return interaction.editReply("Item not found");
 
-            await orders.createOrder(item, x, z);
+            const totalPrice = item.price * qty;
 
-            return interaction.editReply(`Order placed: ${item.displayName}`);
+            await orders.createOrder({
+                ...item,
+                quantity: qty,
+                totalPrice
+            }, x, z);
+
+            return interaction.editReply(
+                `Order: ${item.displayName} x${qty} ($${totalPrice})`
+            );
         }
 
         // ORDERS
         if (cmd === "orders") {
             return interaction.editReply(
                 db.getOrders().map(o =>
-                    `• ${o.displayName} [${o.status}]`
+                    `• ${o.displayName} x${o.quantity || 1} [${o.status}]`
                 ).join("\n") || "No orders"
             );
         }
