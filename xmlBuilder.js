@@ -6,10 +6,7 @@ const EVENTS_FILE = path.join(CUSTOM_DIR, "shopevents.xml");
 const POS_FILE = path.join(CUSTOM_DIR, "eventposdef.xml");
 
 function ensureDir() {
-  if (!fs.existsSync(CUSTOM_DIR)) {
-    fs.mkdirSync(CUSTOM_DIR, { recursive: true });
-    console.log("[XML] Created /custom directory");
-  }
+  if (!fs.existsSync(CUSTOM_DIR)) fs.mkdirSync(CUSTOM_DIR, { recursive: true });
 }
 
 function escapeXml(value) {
@@ -21,11 +18,12 @@ function escapeXml(value) {
     .replace(/'/g, "&apos;");
 }
 
-async function buildAllXML(orders = []) {
+function buildAllXML(orders = []) {
   ensureDir();
 
-  let eventsXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<events>\n`;
-  let posXML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<eventposdef>\n`;
+  const nl = "\r\n";
+  const events = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<events>'];
+  const pos = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<eventposdef>'];
 
   for (const order of orders) {
     const eventName = `ShopEvent_${order.id}`;
@@ -34,38 +32,37 @@ async function buildAllXML(orders = []) {
     const x = Number(order.x) || 0;
     const z = Number(order.z) || 0;
 
-    eventsXML += `
-  <event name="${eventName}">
-    <nominal>1</nominal>
-    <min>1</min>
-    <max>1</max>
-    <lifetime>3000</lifetime>
-    <restock>3888000</restock>
-    <saferadius>0</saferadius>
-    <distanceradius>0</distanceradius>
-    <cleanupradius>0</cleanupradius>
-    <flags deletable="0" init_random="0" remove_damaged="1"/>
-    <position>fixed</position>
-    <limit>child</limit>
-    <active>1</active>
-    <children>
-      <child lootmax="0" lootmin="0" max="${qty}" min="${qty}" type="${type}"/>
-    </children>
-  </event>`;
+    events.push(`  <event name="${eventName}">`);
+    events.push(`   <nominal>1</nominal>`);
+    events.push(`   <min>1</min>`);
+    events.push(`   <max>1</max>`);
+    events.push(`   <lifetime>3000</lifetime>`);
+    events.push(`   <restock>3888000</restock>`);
+    events.push(`   <saferadius>0</saferadius>`);
+    events.push(`   <distanceradius>0</distanceradius>`);
+    events.push(`   <cleanupradius>0</cleanupradius>`);
+    events.push(`   <flags deletable="0" init_random="0" remove_damaged="1"/>`);
+    events.push(`   <position>fixed</position>`);
+    events.push(`   <limit>child</limit>`);
+    events.push(`   <active>1</active>`);
+    events.push(`   <children>`);
+    events.push(`     <child lootmax="0" lootmin="0" max="${qty}" min="${qty}" type="${type}"/>`);
+    events.push(`   </children>`);
+    events.push(`  </event>`);
 
-    posXML += `
-  <event name="${eventName}">
-    <pos x="${x}" z="${z}" a="0" />
-  </event>`;
+    pos.push(`    <event name="${eventName}">`);
+    pos.push(`        <pos x="${x}" z="${z}" a="0" />`);
+    pos.push(`    </event>`);
   }
 
-  eventsXML += "\n</events>\n";
-  posXML += "\n</eventposdef>\n";
+  events.push('</events>');
+  pos.push('</eventposdef>');
+
+  const eventsXML = events.join(nl);
+  const posXML = pos.join(nl);
 
   fs.writeFileSync(EVENTS_FILE, eventsXML);
   fs.writeFileSync(POS_FILE, posXML);
-
-  console.log("[XML] Shop + Position XML rebuilt");
 
   return { eventsXML, posXML, eventsFile: EVENTS_FILE, posFile: POS_FILE };
 }
