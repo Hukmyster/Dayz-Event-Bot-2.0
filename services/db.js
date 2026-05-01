@@ -1,34 +1,45 @@
 const fs = require("fs");
 
-const SHOP_FILE = "./shop.json";
-const ORDER_FILE = "./orders.json";
+const shopFile = "./data/shop.json";
+const orderFile = "./data/orders.json";
 
-function load(file, fallback) {
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file));
+// =========================
+// SAFE LOAD
+// =========================
+function load(file) {
+    if (!fs.existsSync(file)) return [];
+    return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
 function save(file, data) {
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+// =========================
+// SHOP
+// =========================
+function getShop() {
+    return load(shopFile);
+}
+
+function saveShop(data) {
+    save(shopFile, data);
+}
+
+// =========================
+// ORDERS
+// =========================
+function getOrders() {
+    return load(orderFile);
+}
+
+function saveOrders(data) {
+    save(orderFile, data);
+}
+
 module.exports = {
-
-    loadData() {},
-
-    getShop() {
-        return load(SHOP_FILE, []);
-    },
-
-    saveShop(data) {
-        save(SHOP_FILE, data);
-    },
-
-    getOrders() {
-        return load(ORDER_FILE, []);
-    },
-
-    saveOrders(data) {
-        save(ORDER_FILE, data);
-    }
+    getShop,
+    saveShop,
+    getOrders,
+    saveOrders
 };
