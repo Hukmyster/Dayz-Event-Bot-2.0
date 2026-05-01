@@ -52,6 +52,16 @@ const commands = [
         .setDescription("Add shop item"),
 
     new SlashCommandBuilder()
+        .setName("deleteshopitem")
+        .setDescription("Delete item from shop")
+        .addStringOption(o =>
+            o.setName("item")
+                .setDescription("Item name")
+                .setRequired(true)
+                .setAutocomplete(true)
+        ),
+
+    new SlashCommandBuilder()
         .setName("viewxml")
         .setDescription("View XML output"),
 
@@ -66,6 +76,10 @@ const commands = [
     new SlashCommandBuilder()
         .setName("queue")
         .setDescription("Queue orders"),
+
+    new SlashCommandBuilder()
+        .setName("shopcycle")
+        .setDescription("Force complete all orders + rebuild XML"),
 
     new SlashCommandBuilder()
         .setName("build")
@@ -92,7 +106,7 @@ client.once("clientReady", async () => {
     console.log("[DISCORD] Commands registered");
 });
 
-// ---------------- INTERACTIONS ----------------
+// ---------------- HANDLER ----------------
 client.on("interactionCreate", interactionHandler);
 
 client.login(process.env.DISCORD_TOKEN);
