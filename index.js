@@ -13,16 +13,23 @@ const {
 } = require("discord.js");
 
 const { createClient } = require("@supabase/supabase-js");
+const fs = require("fs");
 require("dotenv").config();
 
+// ---------------- DISCORD ----------------
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
+// ---------------- SUPABASE ----------------
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_KEY
 );
+
+// ---------------- PATHS ----------------
+const EVENTS_PATH = "./custom/shopevents.xml";
+const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
 
 // ---------------- CACHE ----------------
 let shopCache = [];
@@ -41,31 +48,76 @@ async function loadData() {
 
 // ---------------- SAVE ----------------
 async function saveShopItem(item) {
-    const res = await supabase.from("shop").insert([item]);
-    if (res.error) return console.error(res.error);
+    await supabase.from("shop").insert([item]);
     await loadData();
 }
 
-async function deleteItem(displayName) {
-    const res = await supabase.from("shop").delete().eq("displayName", displayName);
-    if (res.error) return console.error(res.error);
+async function deleteItem(name) {
+    await supabase.from("shop").delete().eq("displayName", name);
     await loadData();
 }
 
-async function updatePrice(displayName, price) {
-    const res = await supabase
-        .from("shop")
-        .update({ price })
-        .eq("displayName", displayName);
-
-    if (res.error) return console.error(res.error);
+async function updatePrice(name, price) {
+    await supabase.from("shop").update({ price }).eq("displayName", name);
     await loadData();
 }
 
 async function saveOrder(order) {
-    const res = await supabase.from("orders").insert([order]);
-    if (res.error) return console.error(res.error);
+    await supabase.from("orders").insert([order]);
     await loadData();
+}
+
+// ---------------- XML BUILDER ----------------
+function makeEventName() {
+    return `ShopEvent_${Date.now()}_${Math.floor(Math.random()*1000)}`;
+}
+
+function ensureDir() {
+    if (!fs.existsSync("./custom")) fs.mkdirSync("./custom");
+}
+
+async function buildXML() {
+
+    ensureDir();
+
+    let events = [];
+    let spawns = [];
+
+    for (let o of orderCache) {
+
+        if (o.status !== "queued") continue;
+
+        const name = makeEventName();
+
+        events.push(`<event name="${name}">
+<nominal>1</nominal><min>1</min><max>1</max>
+<lifetime>11000</lifetime><restock>0</restock>
+<saferadius>0</saferadius><distanceradius>0</distanceradius>
+<cleanupradius>0</cleanupradius>
+<flags deletable="0" init_random="0" remove_damaged="1"/>
+<position>fixed</position><limit>child</limit><active>1</active>
+<children><child lootmax="0" lootmin="0" max="1" min="1" type="${o.itemType}"/></children>
+</event>`);
+
+        spawns.push(`<event name="${name}">
+<pos x="${o.x}" z="${o.z}" a="0" />
+</event>`);
+
+        await supabase
+            .from("orders")
+            .update({ status: "built" })
+            .eq("id", o.id);
+    }
+
+    fs.writeFileSync(EVENTS_PATH,
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><events>${events.join("")}</events>`);
+
+    fs.writeFileSync(SPAWNS_PATH,
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><eventposdef>${spawns.join("")}</eventposdef>`);
+
+    await loadData();
+
+    console.log("XML BUILT");
 }
 
 // ---------------- READY ----------------
@@ -79,87 +131,61 @@ client.once("clientReady", async () => {
 const commands = [
 
     new SlashCommandBuilder().setName("shop").setDescription("View shop"),
-
     new SlashCommandBuilder().setName("additem").setDescription("Add item"),
 
     new SlashCommandBuilder()
         .setName("removeitem")
         .setDescription("Remove item")
-        .addStringOption(o =>
-            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
-        ),
+        .addStringOption(o => o.setName("item").setAutocomplete(true).setRequired(true)),
 
     new SlashCommandBuilder()
         .setName("setprice")
-        .setDescription("Update item price")
-        .addStringOption(o =>
-            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
-        )
-        .addIntegerOption(o =>
-            o.setName("price").setDescription("New price").setRequired(true)
-        ),
+        .setDescription("Set price")
+        .addStringOption(o => o.setName("item").setAutocomplete(true).setRequired(true))
+        .addIntegerOption(o => o.setName("price").setRequired(true)),
 
     new SlashCommandBuilder()
         .setName("buy")
         .setDescription("Buy item")
-        .addStringOption(o =>
-            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
-        )
-        .addIntegerOption(o =>
-            o.setName("x").setDescription("X").setRequired(true)
-        )
-        .addIntegerOption(o =>
-            o.setName("z").setDescription("Z").setRequired(true)
-        ),
+        .addStringOption(o => o.setName("item").setAutocomplete(true).setRequired(true))
+        .addIntegerOption(o => o.setName("x").setRequired(true))
+        .addIntegerOption(o => o.setName("z").setRequired(true)),
 
     new SlashCommandBuilder().setName("orders").setDescription("View orders"),
-
-    new SlashCommandBuilder().setName("queue").setDescription("Queue orders")
+    new SlashCommandBuilder().setName("queue").setDescription("Queue orders"),
+    new SlashCommandBuilder().setName("build").setDescription("Build XML"),
+    new SlashCommandBuilder().setName("cycle").setDescription("Complete orders")
 ];
 
 // ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (interaction) => {
 
-    // AUTOCOMPLETE
     if (interaction.isAutocomplete()) {
-        const focused = interaction.options.getFocused().toLowerCase();
-
-        const results = shopCache
-            .filter(i => (i.displayName || "").toLowerCase().includes(focused))
-            .slice(0, 5);
+        const f = interaction.options.getFocused().toLowerCase();
 
         return interaction.respond(
-            results.map(i => ({
-                name: i.displayName,
-                value: i.displayName
-            }))
+            shopCache
+                .filter(i => i.displayName.toLowerCase().includes(f))
+                .slice(0, 5)
+                .map(i => ({ name: i.displayName, value: i.displayName }))
         );
     }
 
-    // MODAL SUBMIT
     if (interaction.type === InteractionType.ModalSubmit &&
         interaction.customId === "additem_modal") {
 
-        const type = interaction.fields.getTextInputValue("type");
-        const name = interaction.fields.getTextInputValue("name");
-        const price = parseInt(interaction.fields.getTextInputValue("price"));
-
         await saveShopItem({
             id: Date.now().toString(),
-            type,
-            displayName: name,
-            price
+            type: interaction.fields.getTextInputValue("type"),
+            displayName: interaction.fields.getTextInputValue("name"),
+            price: parseInt(interaction.fields.getTextInputValue("price"))
         });
 
-        return interaction.reply({
-            content: "Item added",
-            flags: MessageFlags.Ephemeral
-        });
+        return interaction.reply({ content: "Item added", flags: MessageFlags.Ephemeral });
     }
 
     if (!interaction.isChatInputCommand()) return;
 
-    // ---------------- ADD ITEM ----------------
     if (interaction.commandName === "additem") {
 
         const modal = new ModalBuilder()
@@ -168,25 +194,13 @@ client.on("interactionCreate", async (interaction) => {
 
         modal.addComponents(
             new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId("type")
-                    .setLabel("DayZ Type")
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
+                new TextInputBuilder().setCustomId("type").setLabel("Type").setStyle(TextInputStyle.Short)
             ),
             new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId("name")
-                    .setLabel("Display Name")
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
+                new TextInputBuilder().setCustomId("name").setLabel("Name").setStyle(TextInputStyle.Short)
             ),
             new ActionRowBuilder().addComponents(
-                new TextInputBuilder()
-                    .setCustomId("price")
-                    .setLabel("Price")
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true)
+                new TextInputBuilder().setCustomId("price").setLabel("Price").setStyle(TextInputStyle.Short)
             )
         );
 
@@ -195,41 +209,26 @@ client.on("interactionCreate", async (interaction) => {
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-    // ---------------- SHOP ----------------
     if (interaction.commandName === "shop") {
-        return interaction.editReply(
-            shopCache.map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty"
-        );
+        return interaction.editReply(shopCache.map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty");
     }
 
-    // ---------------- REMOVE ITEM ----------------
     if (interaction.commandName === "removeitem") {
-
-        const item = interaction.options.getString("item");
-
-        await deleteItem(item);
-
-        return interaction.editReply(`Removed: ${item}`);
+        await deleteItem(interaction.options.getString("item"));
+        return interaction.editReply("Removed");
     }
 
-    // ---------------- SET PRICE ----------------
     if (interaction.commandName === "setprice") {
-
-        const item = interaction.options.getString("item");
-        const price = interaction.options.getInteger("price");
-
-        await updatePrice(item, price);
-
-        return interaction.editReply(`Updated ${item} → $${price}`);
+        await updatePrice(
+            interaction.options.getString("item"),
+            interaction.options.getInteger("price")
+        );
+        return interaction.editReply("Updated");
     }
 
-    // ---------------- BUY ----------------
     if (interaction.commandName === "buy") {
 
-        const selected = interaction.options.getString("item");
-        const item = shopCache.find(i => i.displayName === selected);
-
-        if (!item) return interaction.editReply("Not found");
+        const item = shopCache.find(i => i.displayName === interaction.options.getString("item"));
 
         await saveOrder({
             id: Date.now(),
@@ -240,59 +239,53 @@ client.on("interactionCreate", async (interaction) => {
             status: "pending"
         });
 
-        return interaction.editReply(`Ordered: ${item.displayName}`);
+        return interaction.editReply(`Ordered ${item.displayName}`);
     }
 
-    // ---------------- ORDERS ----------------
     if (interaction.commandName === "orders") {
-
-        return interaction.editReply(
-            orderCache.length
-                ? orderCache.map(o => `• ${o.displayName} [${o.status}]`).join("\n")
-                : "No orders"
-        );
+        return interaction.editReply(orderCache.map(o => `• ${o.displayName} [${o.status}]`).join("\n") || "None");
     }
 
-    // ---------------- QUEUE ----------------
     if (interaction.commandName === "queue") {
-
-        let moved = 0;
 
         for (let o of orderCache) {
             if (o.status === "pending") {
-                o.status = "queued";
-                moved++;
+                await supabase.from("orders").update({ status: "queued" }).eq("id", o.id);
             }
-        }
-
-        for (let o of orderCache) {
-            await supabase
-                .from("orders")
-                .update({ status: o.status })
-                .eq("id", o.id);
         }
 
         await loadData();
 
-        return interaction.editReply(`Queued: ${moved}`);
+        return interaction.editReply("Queued");
+    }
+
+    if (interaction.commandName === "build") {
+        await buildXML();
+        return interaction.editReply("XML Built");
+    }
+
+    if (interaction.commandName === "cycle") {
+
+        for (let o of orderCache) {
+            if (o.status === "built") {
+                await supabase.from("orders").update({ status: "completed" }).eq("id", o.id);
+            }
+        }
+
+        await loadData();
+
+        return interaction.editReply("Cycle complete");
     }
 
 });
 
-// ---------------- REGISTER ----------------
+// ---------------- START ----------------
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
-async function register() {
-    await rest.put(
-        Routes.applicationGuildCommands(
-            process.env.CLIENT_ID,
-            process.env.GUILD_ID
-        ),
-        { body: commands }
-    );
-
+rest.put(
+    Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+    { body: commands }
+).then(() => {
     console.log("Commands registered");
-}
-
-// ---------------- START ----------------
-register().then(() => client.login(process.env.DISCORD_TOKEN));
+    client.login(process.env.DISCORD_TOKEN);
+});
