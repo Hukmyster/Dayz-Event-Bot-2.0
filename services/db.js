@@ -2,36 +2,26 @@ const fs = require("fs");
 
 const DATA_DIR = "./data";
 const SHOP_FILE = `${DATA_DIR}/shop.json`;
-const ORDER_FILE = `${DATA_DIR}/orders.json`;
+const ORDERS_FILE = `${DATA_DIR}/orders.json`;
 
-function init() {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-    if (!fs.existsSync(SHOP_FILE))
-        fs.writeFileSync(SHOP_FILE, JSON.stringify([], null, 2));
-
-    if (!fs.existsSync(ORDER_FILE))
-        fs.writeFileSync(ORDER_FILE, JSON.stringify([], null, 2));
+function ensure() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+  if (!fs.existsSync(SHOP_FILE)) fs.writeFileSync(SHOP_FILE, "[]");
+  if (!fs.existsSync(ORDERS_FILE)) fs.writeFileSync(ORDERS_FILE, "[]");
 }
 
-init();
-
-function read(file) {
-    try {
-        return JSON.parse(fs.readFileSync(file, "utf8"));
-    } catch {
-        return [];
-    }
+function load(file) {
+  ensure();
+  return JSON.parse(fs.readFileSync(file));
 }
 
-function write(file, data) {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+function save(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
 module.exports = {
-    getShop: () => read(SHOP_FILE),
-    saveShop: (d) => write(SHOP_FILE, d),
-
-    getOrders: () => read(ORDER_FILE),
-    saveOrders: (d) => write(ORDER_FILE, d)
+  getShop: () => load(SHOP_FILE),
+  saveShop: (d) => save(SHOP_FILE, d),
+  getOrders: () => load(ORDERS_FILE),
+  saveOrders: (d) => save(ORDERS_FILE, d)
 };
