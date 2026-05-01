@@ -1,18 +1,11 @@
 const fs = require("fs");
 const db = require("../services/db");
 
-const EVENT_FILE = "./custom/shopevents.xml";
-const SPAWN_FILE = "./custom/cfgeventspawns.xml";
-
-function makeName() {
-    return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 999)}`;
+function makeEventName() {
+    return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 }
 
 async function buildXML() {
-
-    if (!fs.existsSync("./custom")) {
-        fs.mkdirSync("./custom");
-    }
 
     const orders = db.getOrders();
 
@@ -22,37 +15,63 @@ async function buildXML() {
     for (const o of orders) {
 
         if (o.status !== "queued") continue;
-        if (!o.x || !o.z) continue;
 
-        const name = makeName();
+        const eventName = makeEventName();
 
-        events.push(
-`<event name="${name}">
-<nominal>1</nominal><min>1</min><max>1</max>
-<lifetime>11000</lifetime><restock>0</restock>
-<saferadius>0</saferadius><distanceradius>0</distanceradius>
-<cleanupradius>0</cleanupradius>
-<flags deletable="0" init_random="0" remove_damaged="1"/>
-<position>fixed</position><limit>child</limit><active>1</active>
-<children>
-<child lootmax="0" lootmin="0" max="1" min="1" type="${o.itemType}"/>
-</children>
-</event>`
-        );
+        const lifetime = 3000;
+        const restock = 3888000;
 
-        spawns.push(
-`<event name="${name}">
-<pos x="${o.x}" z="${o.z}" a="0" />
-</event>`
-        );
+        const qty = o.quantity || 1;
+
+        // ---------------- EVENT XML ----------------
+        events.push(`
+    <event name="${eventName}">
+        <nominal>1</nominal>
+        <min>1</min>
+        <max>1</max>
+        <lifetime>${lifetime}</lifetime>
+        <restock>${restock}</restock>
+        <saferadius>0</saferadius>
+        <distanceradius>0</distanceradius>
+        <cleanupradius>0</cleanupradius>
+        <flags deletable="0" init_random="0" remove_damaged="1"/>
+        <position>fixed</position>
+        <limit>child</limit>
+        <active>1</active>
+        <children>
+            <child lootmax="0" lootmin="0" max="${qty}" min="${qty}" type="${o.itemType}"/>
+        </children>
+    </event>
+        `.trim());
+
+        // ---------------- SPAWN XML ----------------
+        spawns.push(`
+    <event name="${eventName}">
+        <pos x="${o.x}" z="${o.z}" a="0" />
+    </event>
+        `.trim());
 
         o.status = "built";
     }
 
-    fs.writeFileSync(EVENT_FILE, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><events>${events.join("")}</events>`);
-    fs.writeFileSync(SPAWN_FILE, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><eventposdef>${spawns.join("")}</eventposdef>`);
+    const eventXML =
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<events>
+${events.join("\n")}
+</events>`;
 
-    await db.saveOrders(orders);
+    const spawnXML =
+`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<eventposdef>
+${spawns.join("\n")}
+</eventposdef>`;
+
+    fs.writeFileSync("./custom/shopevents.xml", eventXML);
+    fs.writeFileSync("./custom/cfgeventspawns.xml", spawnXML);
+
+    db.saveOrders(orders);
+
+    console.log("[XML] Built clean structured XML");
 }
 
 module.exports = { buildXML };
