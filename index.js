@@ -36,31 +36,34 @@ function ensureFiles() {
     if (!fs.existsSync(SHOP_PATH)) fs.writeFileSync(SHOP_PATH, "[]");
 }
 
+// ---------------- LOAD/SAVE ----------------
 function load(path) {
-    return JSON.parse(fs.readFileSync(path, "utf-8"));
+    try {
+        return JSON.parse(fs.readFileSync(path, "utf-8"));
+    } catch {
+        return [];
+    }
 }
 
 function save(path, data) {
     fs.writeFileSync(path, JSON.stringify(data, null, 2));
 }
 
-// ---------------- DATA ----------------
 const getShop = () => load(SHOP_PATH);
 const getOrders = () => load(DB_PATH);
 
-// ---------------- EVENT NAME ----------------
+// ---------------- XML ----------------
 function makeEventName() {
     return `ShopEvent_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
 }
 
-// ---------------- XML BUILD (FIXED) ----------------
 function buildXML() {
-    const allOrders = getOrders();
+    const orders = getOrders();
 
     let events = [];
     let spawns = [];
 
-    for (const o of allOrders) {
+    for (const o of orders) {
 
         if (o.status !== "queued") continue;
 
@@ -86,24 +89,18 @@ function buildXML() {
 </event>`
         );
 
-        // ✅ FIXED: persists properly now
         o.status = "built";
     }
 
-    const eventsXML =
-`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<events>${events.join("")}</events>`;
+    fs.writeFileSync(EVENTS_PATH,
+`<?xml version="1.0" encoding="UTF-8"?><events>${events.join("")}</events>`);
 
-    const spawnsXML =
-`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<eventposdef>${spawns.join("")}</eventposdef>`;
+    fs.writeFileSync(SPAWNS_PATH,
+`<?xml version="1.0" encoding="UTF-8"?><eventposdef>${spawns.join("")}</eventposdef>`);
 
-    fs.writeFileSync(EVENTS_PATH, eventsXML);
-    fs.writeFileSync(SPAWNS_PATH, spawnsXML);
+    save(DB_PATH, orders);
 
-    save(DB_PATH, allOrders);
-
-    console.log("XML BUILT (STATUS UPDATED)");
+    console.log("XML BUILT + STATUS UPDATED");
 }
 
 // ---------------- COMMANDS ----------------
@@ -111,18 +108,15 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName("buy")
-        .setDescription("Purchase an item")
+        .setDescription("Purchase item")
         .addStringOption(o =>
-            o.setName("item")
-                .setDescription("Select item")
-                .setAutocomplete(true)
-                .setRequired(true)
+            o.setName("item").setDescription("Select item").setAutocomplete(true).setRequired(true)
         )
         .addIntegerOption(o =>
-            o.setName("x").setDescription("X coordinate").setRequired(true)
+            o.setName("x").setDescription("X coord").setRequired(true)
         )
         .addIntegerOption(o =>
-            o.setName("z").setDescription("Z coordinate").setRequired(true)
+            o.setName("z").setDescription("Z coord").setRequired(true)
         ),
 
     new SlashCommandBuilder().setName("additem").setDescription("Add item to shop"),
@@ -131,18 +125,15 @@ const commands = [
         .setName("removeitem")
         .setDescription("Remove item from shop")
         .addStringOption(o =>
-            o.setName("item")
-                .setDescription("Select item to remove")
-                .setAutocomplete(true)
-                .setRequired(true)
+            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
         ),
 
     new SlashCommandBuilder().setName("shop").setDescription("View shop"),
-    new SlashCommandBuilder().setName("orders").setDescription("View all orders"),
+    new SlashCommandBuilder().setName("orders").setDescription("View orders"),
     new SlashCommandBuilder().setName("queue").setDescription("Move pending → queued"),
-    new SlashCommandBuilder().setName("build").setDescription("Build XML from queued"),
-    new SlashCommandBuilder().setName("cycle").setDescription("Simulate restart"),
-    new SlashCommandBuilder().setName("status").setDescription("View system status"),
+    new SlashCommandBuilder().setName("build").setDescription("Build XML"),
+    new SlashCommandBuilder().setName("cycle").setDescription("Complete restart cycle"),
+    new SlashCommandBuilder().setName("status").setDescription("System status"),
     new SlashCommandBuilder().setName("viewxml").setDescription("View XML"),
     new SlashCommandBuilder().setName("dumpshop").setDescription("Debug shop"),
     new SlashCommandBuilder().setName("dumporders").setDescription("Debug orders"),
@@ -161,6 +152,7 @@ async function register() {
 
 // ---------------- READY ----------------
 client.once("clientReady", () => {
+    ensureFiles();
     console.log(`Logged in as ${client.user.tag}`);
 });
 
@@ -185,155 +177,174 @@ client.on("interactionCreate", async (interaction) => {
         );
     }
 
-    if (!interaction.isChatInputCommand()) return;
+    // ---------------- COMMANDS ----------------
+    if (interaction.isChatInputCommand()) {
 
-    // BUY
-    if (interaction.commandName === "buy") {
-        const shop = getShop();
-        const item = shop.find(i => i.id === interaction.options.getString("item"));
+        // ADD ITEM
+        if (interaction.commandName === "additem") {
 
-        if (!item) return interaction.reply({ content: "Item not found", flags: 64 });
+            const modal = new ModalBuilder()
+                .setCustomId("addItemModal")
+                .setTitle("Add Item");
 
-        const orders = getOrders();
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder().setCustomId("type").setLabel("types.xml name").setStyle(TextInputStyle.Short)
+                ),
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder().setCustomId("name").setLabel("Display name").setStyle(TextInputStyle.Short)
+                ),
+                new ActionRowBuilder().addComponents(
+                    new TextInputBuilder().setCustomId("price").setLabel("Price").setStyle(TextInputStyle.Short)
+                )
+            );
 
-        orders.push({
-            id: Date.now(),
-            itemType: item.type,
-            displayName: item.displayName,
-            x: interaction.options.getInteger("x"),
-            z: interaction.options.getInteger("z"),
-            status: "pending"
-        });
-
-        save(DB_PATH, orders);
-
-        console.log("ORDER SAVED:", orders[orders.length - 1]);
-
-        return interaction.reply({
-            content: `✅ ${item.displayName} @ ${interaction.options.getInteger("x")},${interaction.options.getInteger("z")} (pending)`,
-            flags: 64
-        });
-    }
-
-    // REMOVE ITEM
-    if (interaction.commandName === "removeitem") {
-        const id = interaction.options.getString("item");
-        let shop = getShop();
-
-        shop = shop.filter(i => i.id !== id);
-        save(SHOP_PATH, shop);
-
-        return interaction.reply({ content: "Item removed", flags: 64 });
-    }
-
-    // QUEUE
-    if (interaction.commandName === "queue") {
-        const orders = getOrders();
-        let moved = 0;
-
-        for (const o of orders) {
-            if (o.status === "pending" && moved < 10) {
-                o.status = "queued";
-                moved++;
-            }
+            return interaction.showModal(modal);
         }
 
-        save(DB_PATH, orders);
+        // BUY
+        if (interaction.commandName === "buy") {
+            const shop = getShop();
+            const item = shop.find(i => i.id === interaction.options.getString("item"));
 
-        return interaction.reply({ content: `Queued ${moved}`, flags: 64 });
-    }
+            if (!item) return interaction.reply({ content: "Item not found", flags: 64 });
 
-    // BUILD
-    if (interaction.commandName === "build") {
-        buildXML();
-        return interaction.reply({ content: "XML built", flags: 64 });
-    }
+            const orders = getOrders();
 
-    // CYCLE
-    if (interaction.commandName === "cycle") {
-        const orders = getOrders();
-        let done = 0;
+            orders.push({
+                id: Date.now(),
+                itemType: item.type,
+                displayName: item.displayName,
+                x: interaction.options.getInteger("x"),
+                z: interaction.options.getInteger("z"),
+                status: "pending"
+            });
 
-        for (const o of orders) {
-            if (o.status === "built") {
-                o.status = "completed";
-                done++;
-            }
+            save(DB_PATH, orders);
+
+            console.log("ORDER SAVED:", orders[orders.length - 1]);
+
+            return interaction.reply({
+                content: `✅ ${item.displayName} @ ${interaction.options.getInteger("x")},${interaction.options.getInteger("z")} (pending)`,
+                flags: 64
+            });
         }
 
-        save(DB_PATH, orders);
+        // REMOVE ITEM
+        if (interaction.commandName === "removeitem") {
+            const id = interaction.options.getString("item");
+            let shop = getShop();
 
-        return interaction.reply({ content: `Completed ${done}`, flags: 64 });
-    }
+            shop = shop.filter(i => i.id !== id);
+            save(SHOP_PATH, shop);
 
-    // STATUS
-    if (interaction.commandName === "status") {
-        const orders = getOrders();
+            return interaction.reply({ content: "Item removed", flags: 64 });
+        }
 
-        const count = s => orders.filter(o => o.status === s).length;
+        // SHOP
+        if (interaction.commandName === "shop") {
+            const shop = getShop();
+            return interaction.reply({
+                content: shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty",
+                flags: 64
+            });
+        }
 
-        return interaction.reply({
-            content:
+        // ORDERS
+        if (interaction.commandName === "orders") {
+            const orders = getOrders();
+            return interaction.reply({
+                content: orders.map(o => `• ${o.displayName} [${o.status}]`).join("\n") || "None",
+                flags: 64
+            });
+        }
+
+        // QUEUE
+        if (interaction.commandName === "queue") {
+            const orders = getOrders();
+            let moved = 0;
+
+            for (const o of orders) {
+                if (o.status === "pending" && moved < 10) {
+                    o.status = "queued";
+                    moved++;
+                }
+            }
+
+            save(DB_PATH, orders);
+
+            return interaction.reply({ content: `Queued ${moved}`, flags: 64 });
+        }
+
+        // BUILD
+        if (interaction.commandName === "build") {
+            buildXML();
+            return interaction.reply({ content: "XML built", flags: 64 });
+        }
+
+        // CYCLE
+        if (interaction.commandName === "cycle") {
+            const orders = getOrders();
+            let done = 0;
+
+            for (const o of orders) {
+                if (o.status === "built") {
+                    o.status = "completed";
+                    done++;
+                }
+            }
+
+            save(DB_PATH, orders);
+
+            return interaction.reply({ content: `Completed ${done}`, flags: 64 });
+        }
+
+        // STATUS
+        if (interaction.commandName === "status") {
+            const orders = getOrders();
+            const count = s => orders.filter(o => o.status === s).length;
+
+            return interaction.reply({
+                content:
 `Pending: ${count("pending")}
 Queued: ${count("queued")}
 Built: ${count("built")}
 Completed: ${count("completed")}`,
-            flags: 64
-        });
-    }
-
-    // SHOP
-    if (interaction.commandName === "shop") {
-        const shop = getShop();
-
-        return interaction.reply({
-            content: shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty",
-            flags: 64
-        });
-    }
-
-    // ORDERS
-    if (interaction.commandName === "orders") {
-        const orders = getOrders();
-
-        return interaction.reply({
-            content: orders.map(o => `• ${o.displayName} [${o.status}]`).join("\n") || "None",
-            flags: 64
-        });
-    }
-
-    // VIEW XML
-    if (interaction.commandName === "viewxml") {
-        try {
-            const xml = fs.readFileSync(EVENTS_PATH, "utf-8");
-            return interaction.reply({
-                content: "```xml\n" + xml.slice(0, 1800) + "\n```",
                 flags: 64
             });
-        } catch {
-            return interaction.reply({ content: "No XML yet", flags: 64 });
         }
-    }
 
-    // DEBUG
-    if (interaction.commandName === "dumpshop") {
-        return interaction.reply({
-            content: "```json\n" + JSON.stringify(getShop(), null, 2).slice(0, 1800),
-            flags: 64
-        });
-    }
+        // VIEW XML
+        if (interaction.commandName === "viewxml") {
+            try {
+                const xml = fs.readFileSync(EVENTS_PATH, "utf-8");
+                return interaction.reply({
+                    content: "```xml\n" + xml.slice(0, 1800) + "\n```",
+                    flags: 64
+                });
+            } catch {
+                return interaction.reply({ content: "No XML yet", flags: 64 });
+            }
+        }
 
-    if (interaction.commandName === "dumporders") {
-        return interaction.reply({
-            content: "```json\n" + JSON.stringify(getOrders(), null, 2).slice(0, 1800),
-            flags: 64
-        });
-    }
+        // DEBUG
+        if (interaction.commandName === "dumpshop") {
+            return interaction.reply({
+                content: "```json\n" + JSON.stringify(getShop(), null, 2).slice(0, 1800),
+                flags: 64
+            });
+        }
 
-    // LIST COMMANDS
-    if (interaction.commandName === "listcommands") {
-        return interaction.reply({
-            content:
+        if (interaction.commandName === "dumporders") {
+            return interaction.reply({
+                content: "```json\n" + JSON.stringify(getOrders(), null, 2).slice(0, 1800),
+                flags: 64
+            });
+        }
+
+        if (interaction.commandName === "listcommands") {
+            return interaction.reply({
+                content:
 `/buy
 /additem
 /removeitem
@@ -347,52 +358,36 @@ Completed: ${count("completed")}`,
 /dumpshop
 /dumporders
 /listcommands`,
-            flags: 64
-        });
+                flags: 64
+            });
+        }
     }
 
-    // ADD ITEM MODAL
-    if (interaction.commandName === "additem") {
-
-        const modal = new ModalBuilder()
-            .setCustomId("addItemModal")
-            .setTitle("Add Item");
-
-        modal.addComponents(
-            new ActionRowBuilder().addComponents(
-                new TextInputBuilder().setCustomId("type").setLabel("types.xml name").setStyle(TextInputStyle.Short)
-            ),
-            new ActionRowBuilder().addComponents(
-                new TextInputBuilder().setCustomId("name").setLabel("Display name").setStyle(TextInputStyle.Short)
-            ),
-            new ActionRowBuilder().addComponents(
-                new TextInputBuilder().setCustomId("price").setLabel("Price").setStyle(TextInputStyle.Short)
-            )
-        );
-
-        return interaction.showModal(modal);
-    }
-
-    // MODAL SUBMIT
+    // ---------------- MODAL FIX ----------------
     if (interaction.isModalSubmit()) {
 
-        const shop = getShop();
+        if (interaction.customId === "addItemModal") {
 
-        shop.push({
-            id: Date.now().toString(),
-            type: interaction.fields.getTextInputValue("type"),
-            displayName: interaction.fields.getTextInputValue("name"),
-            price: Number(interaction.fields.getTextInputValue("price"))
-        });
+            const shop = getShop();
 
-        save(SHOP_PATH, shop);
+            const item = {
+                id: Date.now().toString(),
+                type: interaction.fields.getTextInputValue("type"),
+                displayName: interaction.fields.getTextInputValue("name"),
+                price: Number(interaction.fields.getTextInputValue("price"))
+            };
 
-        return interaction.reply({
-            content: "Item added",
-            flags: 64
-        });
+            shop.push(item);
+            save(SHOP_PATH, shop);
+
+            console.log("ITEM ADDED:", item);
+
+            return interaction.reply({
+                content: "Item added",
+                flags: 64
+            });
+        }
     }
-
 });
 
 // ---------------- START ----------------
