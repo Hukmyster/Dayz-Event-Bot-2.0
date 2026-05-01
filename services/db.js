@@ -1,17 +1,44 @@
 const fs = require("fs");
 
-const shopFile = "./data/shop.json";
-const orderFile = "./data/orders.json";
+// =========================
+// FILE PATHS
+// =========================
+const DATA_DIR = "./data";
+const SHOP_FILE = `${DATA_DIR}/shop.json`;
+const ORDER_FILE = `${DATA_DIR}/orders.json`;
 
 // =========================
-// SAFE LOAD
+// INIT STORAGE (CRITICAL FIX)
 // =========================
-function load(file) {
-    if (!fs.existsSync(file)) return [];
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+function init() {
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+
+    if (!fs.existsSync(SHOP_FILE)) {
+        fs.writeFileSync(SHOP_FILE, "[]");
+    }
+
+    if (!fs.existsSync(ORDER_FILE)) {
+        fs.writeFileSync(ORDER_FILE, "[]");
+    }
 }
 
-function save(file, data) {
+// run immediately on load
+init();
+
+// =========================
+// HELPERS
+// =========================
+function read(file) {
+    try {
+        return JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+        return [];
+    }
+}
+
+function write(file, data) {
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
@@ -19,27 +46,36 @@ function save(file, data) {
 // SHOP
 // =========================
 function getShop() {
-    return load(shopFile);
+    return read(SHOP_FILE);
 }
 
 function saveShop(data) {
-    save(shopFile, data);
+    write(SHOP_FILE, data);
 }
 
 // =========================
 // ORDERS
 // =========================
 function getOrders() {
-    return load(orderFile);
+    return read(ORDER_FILE);
 }
 
 function saveOrders(data) {
-    save(orderFile, data);
+    write(ORDER_FILE, data);
+}
+
+// =========================
+// CLEAR ALL DATA (SAFE RESET)
+// =========================
+function resetAll() {
+    write(SHOP_FILE, []);
+    write(ORDER_FILE, []);
 }
 
 module.exports = {
     getShop,
     saveShop,
     getOrders,
-    saveOrders
+    saveOrders,
+    resetAll
 };
