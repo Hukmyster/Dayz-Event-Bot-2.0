@@ -3,6 +3,7 @@ require("dotenv").config();
 
 const shop = require("./modules/shop");
 const logger = require("./utils/logger");
+const debug = require("./utils/debug");
 
 if (!process.env.DISCORD_TOKEN) {
   console.error("[FATAL] DISCORD_TOKEN missing");
@@ -70,37 +71,63 @@ const commands = [
   { name: "shopreload", description: "Reload shop data from disk" }
 ];
 
-async function safeReply(interaction, payload) {
+async function safeReply(interaction, payload, label = "reply") {
   try {
     const data = { ...payload };
+
     if (data.ephemeral) {
       delete data.ephemeral;
       data.flags = MessageFlags.Ephemeral;
     }
-    if (interaction.replied || interaction.deferred) return interaction.followUp(data);
+
+    debug.step(label, {
+      action: "attempt",
+      command: interaction.commandName,
+      replied: interaction.replied,
+      deferred: interaction.deferred
+    });
+
+    if (interaction.replied || interaction.deferred) {
+      return interaction.followUp(data);
+    }
+
     return interaction.reply(data);
   } catch (err) {
     logger.error("REPLY ERROR", err);
+    debug.fail(label, err, { command: interaction.commandName });
   }
 }
 
 client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
+  debug.start("startup", { bot: client.user.tag });
+
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
   try {
     console.log("[DISCORD] Clearing old GUILD commands...");
-    await rest.put(Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID), { body: [] });
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
+      { body: [] }
+    );
 
     console.log("[DISCORD] Registering GUILD commands...");
-    await rest.put(Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID), { body: commands });
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
+      { body: commands }
+    );
 
-    const cmds = await rest.get(Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID));
+    const cmds = await rest.get(
+      Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID)
+    );
+
     console.log("[DEBUG] ACTIVE COMMANDS:");
     console.log(JSON.stringify(cmds, null, 2));
     console.log("[DISCORD] Commands registered");
+    debug.ok("startup", { commands: cmds.map(c => c.name) });
   } catch (err) {
     console.error("[COMMAND REGISTER ERROR]", err);
+    debug.fail("startup", err);
   }
 });
 
@@ -108,6 +135,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (!interaction.guild) {
       console.log("[IGNORED] DM interaction");
+      debug.step("dm", { user: interaction.user?.tag });
       return;
     }
 
@@ -115,29 +143,42 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const focused = interaction.options.getFocused();
       const query = typeof focused === "string" ? focused : "";
       const results = shop.autocomplete(query);
+
       logger.interaction({ type: "autocomplete", query, results });
-      return interaction.respond(results.slice(0, 25)).catch(console.error);
+      debug.step("autocomplete", { query, resultsCount: results.length });
+
+      return interaction.respond(results.slice(0, 25)).catch(err => {
+        logger.error("AUTOCOMPLETE ERROR", err);
+        debug.fail("autocomplete", err, { query });
+      });
     }
 
     if (!interaction.isChatInputCommand()) return;
 
     const cmd = interaction.commandName;
+
     logger.interaction({ type: "command", cmd, user: interaction.user?.tag });
+    debug.start(cmd, { user: interaction.user?.tag });
 
     if (cmd === "shoplist") {
       const items = shop.getShopList() || [];
       const msg = items.length
         ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
         : "Shop empty";
-      return safeReply(interaction, { content: msg, ephemeral: true });
+
+      debug.ok(cmd, { items: items.length });
+      return safeReply(interaction, { content: msg, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopadditem") {
       const name = interaction.options.getString("name");
       const type = interaction.options.getString("type");
       const price = interaction.options.getInteger("price");
+
       const res = await shop.addItem(name, type, price);
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { name, type, price, reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopbuyitem") {
@@ -145,28 +186,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const qty = interaction.options.getInteger("quantity");
       const x = interaction.options.getInteger("x");
       const z = interaction.options.getInteger("z");
+
       const res = await shop.buyItem(item, qty, x, z);
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { item, qty, x, z, reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopremoveitem") {
       const name = interaction.options.getString("name");
       const res = await shop.deleteItem(name);
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { name, reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopeditprice") {
       const name = interaction.options.getString("name");
       const price = interaction.options.getInteger("price");
       const res = await shop.editPrice(name, price);
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { name, price, reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopeditname") {
       const name = interaction.options.getString("name");
       const newname = interaction.options.getString("newname");
       const res = await shop.editName(name, newname);
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { name, newname, reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopqueue") {
@@ -174,27 +224,37 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const msg = orders.length
         ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z}) [${o.status}]`).join("\n")
         : "No orders";
-      return safeReply(interaction, { content: msg, ephemeral: true });
+
+      debug.ok(cmd, { orders: orders.length });
+      return safeReply(interaction, { content: msg, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopclearqueue") {
       const res = await shop.clearOrders();
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopbuildxml") {
       const res = await shop.buildXML();
-      return safeReply(interaction, { content: res.reply || "XML built successfully", ephemeral: true });
+
+      debug.ok(cmd, { reply: res.reply });
+      return safeReply(interaction, { content: res.reply || "XML built successfully", ephemeral: true }, cmd);
     }
 
     if (cmd === "shopviewxml") {
       const res = await shop.viewXML();
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { replyLen: String(res.reply || "").length });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shoppushxml") {
       const res = await shop.pushXML();
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
 
     if (cmd === "shophelp") {
@@ -213,23 +273,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
         "shopstatus - show status",
         "shopreload - reload data"
       ].join("\n");
-      return safeReply(interaction, { content: msg, ephemeral: true });
+
+      debug.ok(cmd, { lines: 14 });
+      return safeReply(interaction, { content: msg, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopstatus") {
       const items = shop.getShopList() || [];
       const orders = shop.getOrders() || [];
       const msg = `Items: ${items.length}\nOrders: ${orders.length}`;
-      return safeReply(interaction, { content: msg, ephemeral: true });
+
+      debug.ok(cmd, { items: items.length, orders: orders.length });
+      return safeReply(interaction, { content: msg, ephemeral: true }, cmd);
     }
 
     if (cmd === "shopreload") {
       const res = await shop.reloadData();
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+
+      debug.ok(cmd, { reply: res.reply });
+      return safeReply(interaction, { content: res.reply, ephemeral: true }, cmd);
     }
+
+    debug.step(cmd, { note: "no handler matched" });
   } catch (err) {
     logger.error("INTERACTION ERROR", err);
-    return safeReply(interaction, { content: "Error executing command", ephemeral: true });
+    debug.fail(interaction.commandName || "unknown", err, { user: interaction.user?.tag });
+
+    return safeReply(interaction, { content: "Error executing command", ephemeral: true }, interaction.commandName || "unknown");
   }
 });
 
