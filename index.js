@@ -1,4 +1,3 @@
-const fs = require("fs");
 const { Client, GatewayIntentBits, Collection } = require("discord.js");
 
 const shop = require("./modules/shop");
@@ -10,47 +9,47 @@ const client = new Client({
 client.commands = new Collection();
 
 // =========================
-// REGISTER COMMANDS
+// READY
 // =========================
-client.on("ready", async () => {
+client.once("ready", async () => {
+
     console.log(`Logged in as ${client.user.tag}`);
 
-    const commands = shop.commands;
-
-    await client.application.commands.set(commands);
+    await client.application.commands.set(shop.commands);
 
     console.log("[DISCORD] Commands registered");
 });
 
 // =========================
-// INTERACTIONS
+// INTERACTIONS (ONLY ONE HANDLER - CLEAN)
 // =========================
 client.on("interactionCreate", async (interaction) => {
 
     try {
 
-        // ===== AUTOCOMPLETE =====
+        // AUTOCOMPLETE
         if (interaction.isAutocomplete()) {
-            return shop.autocomplete(interaction);
+            return shop.autocomplete?.(interaction);
         }
 
-        // ===== MODALS =====
+        // MODALS
         if (interaction.isModalSubmit()) {
-            return shop.handleModal(interaction);
+            return shop.handleModal?.(interaction);
         }
 
+        // SLASH COMMANDS
         if (!interaction.isChatInputCommand()) return;
 
         const cmd = interaction.commandName;
 
-        if (shop[cmd]) {
+        if (typeof shop[cmd] === "function") {
             return await shop[cmd](interaction);
         }
 
     } catch (err) {
         console.log("[INTERACTION ERROR]", err);
 
-        if (!interaction.replied) {
+        if (!interaction.replied && !interaction.deferred) {
             return interaction.reply({
                 content: "Error executing command",
                 ephemeral: true
