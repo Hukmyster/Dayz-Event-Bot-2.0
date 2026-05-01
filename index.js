@@ -10,14 +10,10 @@ require("dotenv").config();
 
 const shop = require("./modules/shop");
 
-/* ---------------- SAFETY CHECK ---------------- */
-
 if (!process.env.DISCORD_TOKEN) {
-  console.error("[FATAL] DISCORD_TOKEN missing in environment variables");
+  console.error("[FATAL] DISCORD_TOKEN missing");
   process.exit(1);
 }
-
-/* ---------------- CLIENT ---------------- */
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -87,13 +83,21 @@ const commands = [
   }
 ];
 
-/* ---------------- READY ---------------- */
+/* ---------------- READY + FORCE REFRESH ---------------- */
 
 client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+
   try {
-    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+    console.log("[DISCORD] Clearing old commands...");
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: [] }
+    );
+
+    console.log("[DISCORD] Registering commands...");
 
     await rest.put(
       Routes.applicationCommands(client.user.id),
@@ -102,7 +106,7 @@ client.once(Events.ClientReady, async () => {
 
     console.log("[DISCORD] Commands registered");
   } catch (err) {
-    console.error("[COMMAND REGISTRATION ERROR]", err);
+    console.error("[COMMAND ERROR]", err);
   }
 });
 
@@ -110,56 +114,46 @@ client.once(Events.ClientReady, async () => {
 
 async function safeReply(interaction, payload) {
   try {
-    if (interaction.deferred || interaction.replied) {
-      return await interaction.followUp(payload);
+    if (interaction.replied || interaction.deferred) {
+      return interaction.followUp(payload);
     }
-    return await interaction.reply(payload);
+    return interaction.reply(payload);
   } catch (err) {
     console.error("[REPLY ERROR]", err);
   }
 }
 
-/* ---------------- AUTOCOMPLETE ---------------- */
+/* ---------------- INTERACTION ---------------- */
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
 
-    /* ---------------- AUTOCOMPLETE ---------------- */
+    /* -------- AUTOCOMPLETE -------- */
     if (interaction.isAutocomplete()) {
-      const focused = interaction.options.getFocused(true);
+      const focused = interaction.options.getFocused();
+      const query = typeof focused === "string" ? focused : "";
 
-      const query = (focused?.value || "").toString();
+      const results = shop.autocomplete(query || "");
 
-      const results = shop.autocomplete(query)
-        .slice(0, 25)
-        .map(i => ({
-          name: i.name,
-          value: i.value
-        }));
-
-      return interaction.respond(results).catch(() => {});
+      return interaction.respond(results.slice(0, 25)).catch(() => {});
     }
 
-    /* ---------------- IGNORE NON COMMANDS ---------------- */
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
 
-    /* ---------------- SHOP ---------------- */
+    /* -------- SHOP -------- */
     if (commandName === "shop") {
-      const items = await shop.getShopList();
+      const items = shop.getShopList();
 
-      const list = items.length
+      const msg = items.length
         ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
-        : "Shop is empty";
+        : "Shop empty";
 
-      return safeReply(interaction, {
-        content: list,
-        ephemeral: true
-      });
+      return safeReply(interaction, { content: msg, ephemeral: true });
     }
 
-    /* ---------------- ADD ITEM ---------------- */
+    /* -------- ADD ITEM (FIXED VALIDATION) -------- */
     if (commandName === "additem") {
       const name = interaction.options.getString("name");
       const type = interaction.options.getString("type");
@@ -167,87 +161,49 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       if (!name || !type || price === null || price === undefined) {
         return safeReply(interaction, {
-          content: "Invalid item data (missing fields)",
+          content: "Missing item fields (Discord command issue)",
           ephemeral: true
         });
       }
 
-      const cleanName = String(name).trim();
-      const cleanType = String(type).trim();
+      const res = await shop.addItem(name, type, price);
 
-      if (!cleanName || !cleanType) {
-        return safeReply(interaction, {
-          content: "Invalid item data (empty fields)",
-          ephemeral: true
-        });
-      }
-
-      const res = await shop.addItem(cleanName, cleanType, price);
-
-      return safeReply(interaction, {
-        content: res.reply,
-        ephemeral: true
-      });
+      return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
-    /* ---------------- BUY ---------------- */
+    /* -------- BUY -------- */
     if (commandName === "buy") {
       const item = interaction.options.getString("item");
-      const qty = interaction.options.getInteger("quantity") || 1;
-      const x = interaction.options.getInteger("x") || 0;
-      const z = interaction.options.getInteger("z") || 0;
-
-      if (!item) {
-        return safeReply(interaction, {
-          content: "Invalid item",
-          ephemeral: true
-        });
-      }
+      const qty = interaction.options.getInteger("quantity");
+      const x = interaction.options.getInteger("x");
+      const z = interaction.options.getInteger("z");
 
       const res = await shop.buyItem(item, qty, x, z);
 
-      return safeReply(interaction, {
-        content: res.reply,
-        ephemeral: true
-      });
+      return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
-    /* ---------------- DELETE ITEM ---------------- */
+    /* -------- DELETE ITEM -------- */
     if (commandName === "deleteshopitem") {
       const name = interaction.options.getString("name");
 
-      if (!name) {
-        return safeReply(interaction, {
-          content: "Invalid name",
-          ephemeral: true
-        });
-      }
-
       const res = await shop.deleteItem(name);
 
-      return safeReply(interaction, {
-        content: res.reply,
-        ephemeral: true
-      });
+      return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
-    /* ---------------- QUEUE ---------------- */
+    /* -------- QUEUE -------- */
     if (commandName === "queue") {
       const orders = shop.getOrders();
 
       const msg = orders.length
-        ? orders.map(o =>
-            `• ${o.item} x${o.qty} @ (${o.x},${o.z})`
-          ).join("\n")
-        : "No queued orders";
+        ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z})`).join("\n")
+        : "No orders";
 
-      return safeReply(interaction, {
-        content: msg,
-        ephemeral: true
-      });
+      return safeReply(interaction, { content: msg, ephemeral: true });
     }
 
-    /* ---------------- BUILD ---------------- */
+    /* -------- BUILD -------- */
     if (commandName === "build") {
       const xml = shop.buildXML();
 
@@ -261,12 +217,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     console.error("[INTERACTION ERROR]", err);
 
     return safeReply(interaction, {
-      content: "Error executing command",
+      content: "Command error",
       ephemeral: true
     });
   }
 });
-
-/* ---------------- LOGIN ---------------- */
 
 client.login(process.env.DISCORD_TOKEN);
