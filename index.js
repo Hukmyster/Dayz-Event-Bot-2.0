@@ -9,7 +9,6 @@ const {
 require("dotenv").config();
 
 const shop = require("./modules/shop");
-const deploy = require("./core/deployManager");
 
 const client = new Client({
   intents: [
