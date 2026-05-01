@@ -21,8 +21,16 @@ function ensureFiles() {
 
 function loadAll() {
   ensureFiles();
-  try { shop = JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8")); } catch { shop = []; }
-  try { orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8")); } catch { orders = []; }
+  try {
+    shop = JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8"));
+  } catch {
+    shop = [];
+  }
+  try {
+    orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8"));
+  } catch {
+    orders = [];
+  }
 }
 
 function saveShop() {
@@ -124,7 +132,7 @@ function getOrders() {
 
 async function buildXML() {
   loadAll();
-  const xml = await buildAllXML(orders);
+  const xml = buildAllXML(orders);
   lastXML = xml;
   ensureCustomDir();
   if (xml.eventsXML) fs.writeFileSync(EVENTS_FILE, xml.eventsXML);
