@@ -1,22 +1,25 @@
 const {
   Client,
   GatewayIntentBits,
-  Collection,
   REST,
-  Routes
+  Routes,
+  Events
 } = require("discord.js");
 
 require("dotenv").config();
 
 const shop = require("./modules/shop");
 
+if (!process.env.DISCORD_TOKEN) {
+  console.error("[FATAL] DISCORD_TOKEN missing in environment variables");
+  process.exit(1);
+}
+
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds
-  ]
+  intents: [GatewayIntentBits.Guilds]
 });
 
-/* ---------------- COMMAND REGISTRY ---------------- */
+/* ---------------- COMMANDS ---------------- */
 
 const commands = [
   {
@@ -80,74 +83,106 @@ const commands = [
   }
 ];
 
-/* ---------------- REGISTER COMMANDS ---------------- */
+/* ---------------- READY ---------------- */
 
-client.once("ready", async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+  try {
+    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
-  await rest.put(
-    Routes.applicationCommands(client.user.id),
-    { body: commands }
-  );
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
+    );
 
-  console.log("[DISCORD] Commands registered");
+    console.log("[DISCORD] Commands registered");
+  } catch (err) {
+    console.error("[COMMAND REGISTRATION ERROR]", err);
+  }
 });
 
-/* ---------------- INTERACTION ROUTER ---------------- */
+/* ---------------- SAFE REPLY HELPER ---------------- */
 
-client.on("interactionCreate", async (interaction) => {
+async function safeReply(interaction, payload) {
   try {
+    if (interaction.replied || interaction.deferred) {
+      return await interaction.followUp(payload);
+    }
+    return await interaction.reply(payload);
+  } catch (err) {
+    console.error("[REPLY ERROR]", err);
+  }
+}
+
+/* ---------------- AUTOCOMPLETE FIX ---------------- */
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+
+    /* ---- AUTOCOMPLETE ---- */
     if (interaction.isAutocomplete()) {
       const focused = interaction.options.getFocused();
-      const results = shop.autocomplete(focused);
 
-      return interaction.respond(results);
+      const query = typeof focused === "string" ? focused : "";
+      const results = shop.autocomplete(query || "");
+
+      return interaction.respond(results.slice(0, 25)).catch(() => {});
     }
 
+    /* ---- IGNORE NON COMMANDS ---- */
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
 
-    /* ---------------- SHOP VIEW ---------------- */
+    /* ---------------- SHOP ---------------- */
     if (commandName === "shop") {
       const items = await shop.getShopList();
-      const list = items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") || "Empty shop";
 
-      return interaction.reply({ content: list, ephemeral: true });
+      const list = items.length
+        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
+        : "Shop is empty";
+
+      return safeReply(interaction, { content: list, ephemeral: true });
     }
 
     /* ---------------- ADD ITEM ---------------- */
     if (commandName === "additem") {
-      const name = interaction.options.getString("name");
-      const type = interaction.options.getString("type");
-      const price = interaction.options.getInteger("price");
+      const name = interaction.options.getString("name") || "";
+      const type = interaction.options.getString("type") || "";
+      const price = interaction.options.getInteger("price") || 0;
 
-      const res = await shop.addItem(name, type, price);
+      if (!name.trim() || !type.trim()) {
+        return safeReply(interaction, {
+          content: "Invalid item data",
+          ephemeral: true
+        });
+      }
 
-      return interaction.reply({ content: res.reply, ephemeral: true });
+      const res = await shop.addItem(name.trim(), type.trim(), price);
+
+      return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
-    /* ---------------- BUY ITEM ---------------- */
+    /* ---------------- BUY ---------------- */
     if (commandName === "buy") {
-      const item = interaction.options.getString("item");
-      const qty = interaction.options.getInteger("quantity");
-      const x = interaction.options.getInteger("x");
-      const z = interaction.options.getInteger("z");
+      const item = interaction.options.getString("item") || "";
+      const qty = interaction.options.getInteger("quantity") || 1;
+      const x = interaction.options.getInteger("x") || 0;
+      const z = interaction.options.getInteger("z") || 0;
 
-      const res = await shop.buyItem(item, qty, x, z);
+      const res = await shop.buyItem(item.trim(), qty, x, z);
 
-      return interaction.reply({ content: res.reply, ephemeral: true });
+      return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
     /* ---------------- DELETE ITEM ---------------- */
     if (commandName === "deleteshopitem") {
-      const name = interaction.options.getString("name");
+      const name = interaction.options.getString("name") || "";
 
-      const res = await shop.deleteItem(name);
+      const res = await shop.deleteItem(name.trim());
 
-      return interaction.reply({ content: res.reply, ephemeral: true });
+      return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
     /* ---------------- QUEUE ---------------- */
@@ -156,22 +191,28 @@ client.on("interactionCreate", async (interaction) => {
 
       const msg = orders.length
         ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z})`).join("\n")
-        : "No orders queued";
+        : "No queued orders";
 
-      return interaction.reply({ content: msg, ephemeral: true });
+      return safeReply(interaction, { content: msg, ephemeral: true });
     }
 
-    /* ---------------- BUILD XML ---------------- */
+    /* ---------------- BUILD ---------------- */
     if (commandName === "build") {
-      const xml = await deploy.deploy();
+      const xml = shop.buildXML();
 
-      return interaction.reply({ content: xml, ephemeral: true });
+      return safeReply(interaction, {
+        content: "XML built successfully",
+        ephemeral: true
+      });
     }
 
   } catch (err) {
     console.error("[INTERACTION ERROR]", err);
-    if (interaction.replied || interaction.deferred) return;
-    return interaction.reply({ content: "Error executing command", ephemeral: true });
+
+    return safeReply(interaction, {
+      content: "Error executing command",
+      ephemeral: true
+    });
   }
 });
 
