@@ -111,30 +111,36 @@ async function handleCommand(interaction) {
     }, cmd);
   }
 
-  const send = (res, label = cmd) => replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
+  const send = (res, label = cmd) =>
+    replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
 
   if (cmd === "shoplist") {
-    const items = shop.getShopList() || [];
+    const items = await shop.getShopList();
     return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
   }
+
   if (cmd === "shopadditem") return send(await shop.addItem(interaction.options.getString("name"), interaction.options.getString("type"), interaction.options.getInteger("price")));
   if (cmd === "shopbuyitem") return send(await shop.buyItem(interaction.options.getString("item"), interaction.options.getInteger("quantity"), interaction.options.getInteger("x"), interaction.options.getInteger("z")));
   if (cmd === "shopremoveitem") return send(await shop.deleteItem(interaction.options.getString("name")));
   if (cmd === "shopeditprice") return send(await shop.editPrice(interaction.options.getString("name"), interaction.options.getInteger("price")));
   if (cmd === "shopeditname") return send(await shop.editName(interaction.options.getString("name"), interaction.options.getString("newname")));
+
   if (cmd === "shopqueue") {
     const orders = shop.getOrders() || [];
     return send({ reply: orders.length ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z}) [${o.status}]`).join("\n") : "No orders" });
   }
+
   if (cmd === "shopclearqueue") return send(await shop.clearOrders());
   if (cmd === "shopbuildxml") return send(await shop.buildXML());
   if (cmd === "shopviewxml") return send(await shop.viewXML());
   if (cmd === "shoppushxml") return send(await shop.pushXML());
+
   if (cmd === "shopstatus") {
-    const items = shop.getShopList() || [];
+    const items = await shop.getShopList();
     const orders = shop.getOrders() || [];
     return send({ reply: `Items: ${items.length}\nOrders: ${orders.length}` });
   }
+
   if (cmd === "shopreload") return send(await shop.reloadData());
 
   debug.step(cmd, { note: "no handler matched" });
@@ -172,7 +178,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isAutocomplete()) {
       const focused = interaction.options.getFocused();
       const query = typeof focused === "string" ? focused : "";
-      const results = shop.autocomplete(query);
+      const results = await shop.autocomplete(query);
       logger.interaction({ type: "autocomplete", query, results });
       debug.step("autocomplete", { query, resultsCount: results.length });
       return interaction.respond(results.slice(0, 25)).catch(err => {
