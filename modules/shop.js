@@ -70,20 +70,13 @@ async function loadShop() {
     throw new Error("Supabase client not configured");
   }
 
-  debug.supabase("shop.loadShop", "select", {
-    table: "shop",
-    columns: ["id", "displayName", "type", "price"]
-  });
-
   const { data, error } = await supabase
     .from("shop")
     .select("id,displayName,type,price")
     .order("created_at", { ascending: true });
 
   if (error) {
-    debug.supabaseError("shop.loadShop", "select", error, {
-      table: "shop"
-    });
+    debug.supabaseError("shop.loadShop", "select", error, { table: "shop" });
     throw error;
   }
 
@@ -92,29 +85,13 @@ async function loadShop() {
 }
 
 async function findShopItemByName(name) {
-  const clean = normalizeText(name);
+  const clean = normalizeText(name).toLowerCase();
+  const items = await loadShop();
 
-  debug.supabase("shop.findShopItemByName", "select", {
-    table: "shop",
-    filter: { displayName: clean }
-  });
+  let exact = items.find(i => i.name.toLowerCase() === clean);
+  if (exact) return exact;
 
-  const { data, error } = await supabase
-    .from("shop")
-    .select("id,displayName,type,price")
-    .ilike("displayName", clean)
-    .limit(1)
-    .maybeSingle();
-
-  if (error && error.code !== "PGRST116") {
-    debug.supabaseError("shop.findShopItemByName", "select", error, {
-      name: clean
-    });
-    throw error;
-  }
-
-  debug.step("shop.findShopItemByName", { found: !!data, name: clean });
-  return data ? mapShopRow(data) : null;
+  return items.find(i => i.name.toLowerCase().includes(clean)) || null;
 }
 
 async function addItem(name, type, price) {
@@ -128,31 +105,10 @@ async function addItem(name, type, price) {
   if (price === null || price < 0) return { reply: "Price must be a valid number" };
   if (!supabase) return { reply: "Supabase is not configured" };
 
-  debug.supabase("shop.addItem", "check existing", {
-    table: "shop",
-    filter: { displayName: name }
-  });
-
-  const existing = await supabase
-    .from("shop")
-    .select("id")
-    .ilike("displayName", name)
-    .limit(1)
-    .maybeSingle();
-
-  if (existing.error && existing.error.code !== "PGRST116") {
-    debug.supabaseError("shop.addItem", "check existing", existing.error, {
-      name
-    });
-    return { reply: `Database error: ${existing.error.message}` };
+  const existing = await loadShop();
+  if (existing.some(i => i.name.toLowerCase() === name.toLowerCase())) {
+    return { reply: `Item already exists: ${name}` };
   }
-
-  if (existing.data) return { reply: `Item already exists: ${name}` };
-
-  debug.supabase("shop.addItem", "insert", {
-    table: "shop",
-    values: { displayName: name, type, price }
-  });
 
   const { data, error } = await supabase
     .from("shop")
@@ -167,7 +123,7 @@ async function addItem(name, type, price) {
   }
 
   debug.ok("shop.addItem", { inserted: data?.[0] || null });
-  return { reply: `Added ${name} (${type})` };
+  return { reply: `Added ${name}` };
 }
 
 async function editPrice(name, price) {
@@ -182,12 +138,6 @@ async function editPrice(name, price) {
 
   const item = await findShopItemByName(name);
   if (!item) return { reply: "Item not found" };
-
-  debug.supabase("shop.editPrice", "update", {
-    table: "shop",
-    id: item.id,
-    values: { price }
-  });
 
   const { data, error } = await supabase
     .from("shop")
@@ -219,32 +169,10 @@ async function editName(name, newname) {
   const item = await findShopItemByName(name);
   if (!item) return { reply: "Item not found" };
 
-  debug.supabase("shop.editName", "check existing new name", {
-    table: "shop",
-    filter: { displayName: newname }
-  });
-
-  const existing = await supabase
-    .from("shop")
-    .select("id")
-    .ilike("displayName", newname)
-    .limit(1)
-    .maybeSingle();
-
-  if (existing.error && existing.error.code !== "PGRST116") {
-    debug.supabaseError("shop.editName", "check existing new name", existing.error, {
-      newname
-    });
-    return { reply: `Database error: ${existing.error.message}` };
+  const existing = await loadShop();
+  if (existing.some(i => i.name.toLowerCase() === newname.toLowerCase())) {
+    return { reply: `An item already exists with the name ${newname}` };
   }
-
-  if (existing.data) return { reply: `An item already exists with the name ${newname}` };
-
-  debug.supabase("shop.editName", "update", {
-    table: "shop",
-    id: item.id,
-    values: { displayName: newname }
-  });
 
   const { data, error } = await supabase
     .from("shop")
@@ -275,17 +203,10 @@ async function deleteItem(name) {
   const item = await findShopItemByName(name);
   if (!item) return { reply: "Item not found" };
 
-  debug.supabase("shop.deleteItem", "delete", {
-    table: "shop",
-    id: item.id
-  });
-
   const { error } = await supabase.from("shop").delete().eq("id", item.id);
 
   if (error) {
-    debug.supabaseError("shop.deleteItem", "delete", error, {
-      id: item.id
-    });
+    debug.supabaseError("shop.deleteItem", "delete", error, { id: item.id });
     return { reply: `Database error: ${error.message}` };
   }
 
@@ -316,7 +237,7 @@ async function buyItem(itemName, qty, x, z) {
   if (x === null || z === null) return { reply: "Coordinates must be valid numbers" };
 
   const items = await getShopList();
-  const item = items.find(i => i.name.toLowerCase() === itemName.toLowerCase());
+  const item = items.find(i => i.name.toLowerCase() === itemName.toLowerCase() || i.name.toLowerCase().includes(itemName.toLowerCase()));
   if (!item) return { reply: "Item not found" };
 
   const order = {
@@ -363,8 +284,6 @@ async function buildXML() {
 
 function viewXML() {
   ensureCustomDir();
-  debug.step("shop.viewXML", { eventsExists: fs.existsSync(EVENTS_FILE), posExists: fs.existsSync(POS_FILE) });
-
   if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) return { reply: "No built XML found yet. Run /shopbuildxml first." };
   const eventsXML = fs.readFileSync(EVENTS_FILE, "utf-8");
   const posXML = fs.readFileSync(POS_FILE, "utf-8");
@@ -386,11 +305,14 @@ async function reloadData() {
 
 async function autocomplete(query) {
   const items = await getShopList();
-  query = normalizeText(query).toLowerCase();
-  debug.step("shop.autocomplete", { query, items: items.length });
+  const q = normalizeText(query).toLowerCase();
+  debug.step("shop.autocomplete", { query: q, items: items.length });
 
-  if (!query) return [];
-  return items.filter(i => i.name.toLowerCase().includes(query)).map(i => ({ name: i.name, value: i.name }));
+  if (!q) return [];
+  return items
+    .filter(i => i.name.toLowerCase().includes(q))
+    .slice(0, 25)
+    .map(i => ({ name: i.name, value: i.name }));
 }
 
 function clearOrders() {
