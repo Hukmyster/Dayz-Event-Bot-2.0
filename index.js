@@ -5,6 +5,10 @@ const {
     Routes,
     SlashCommandBuilder,
     InteractionType,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ActionRowBuilder,
     MessageFlags
 } = require("discord.js");
 
@@ -26,9 +30,9 @@ const supabase = createClient(
 let shopCache = [];
 let orderCache = [];
 
-// ---------------- LOAD DATA ----------------
+// ---------------- LOAD DB ----------------
 async function loadData() {
-    console.log("[DB] Loading data...");
+    console.log("[DB] Loading...");
 
     const shopRes = await supabase.from("shop").select("*");
     const orderRes = await supabase.from("orders").select("*");
@@ -39,17 +43,17 @@ async function loadData() {
     shopCache = shopRes.data || [];
     orderCache = orderRes.data || [];
 
-    console.log(`[DB] Shop items: ${shopCache.length}`);
-    console.log(`[DB] Orders: ${orderCache.length}`);
+    console.log(`[DB] Shop: ${shopCache.length}, Orders: ${orderCache.length}`);
 }
 
 // ---------------- HELPERS ----------------
 const getShop = () => shopCache;
 const getOrders = () => orderCache;
 
-// ---------------- INSERT SHOP ITEM ----------------
+// ---------------- INSERT SHOP ----------------
 async function saveShopItem(item) {
-    console.log("[DB] Adding shop item:", item);
+
+    console.log("[SHOP INSERT]", item);
 
     const res = await supabase.from("shop").insert([item]);
 
@@ -64,7 +68,8 @@ async function saveShopItem(item) {
 
 // ---------------- INSERT ORDER ----------------
 async function saveOrder(order) {
-    console.log("[DB] Adding order:", order);
+
+    console.log("[ORDER INSERT]", order);
 
     const res = await supabase.from("orders").insert([order]);
 
@@ -80,7 +85,6 @@ async function saveOrder(order) {
 // ---------------- READY ----------------
 client.once("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}`);
-
     await loadData();
 
     setInterval(loadData, 15000);
@@ -88,13 +92,7 @@ client.once("clientReady", async () => {
 
 // ---------------- COMMANDS ----------------
 const commands = [
-    new SlashCommandBuilder()
-        .setName("shop")
-        .setDescription("View shop"),
-
-    new SlashCommandBuilder()
-        .setName("additem")
-        .setDescription("Add test item to shop"),
+    new SlashCommandBuilder().setName("shop").setDescription("View shop"),
 
     new SlashCommandBuilder()
         .setName("buy")
@@ -109,19 +107,50 @@ const commands = [
             o.setName("z").setDescription("Z").setRequired(true)
         ),
 
+    new SlashCommandBuilder().setName("status").setDescription("System status"),
+
     new SlashCommandBuilder()
-        .setName("status")
-        .setDescription("View system status")
+        .setName("additem")
+        .setDescription("Add shop item (modal)")
 ];
 
 // ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (interaction) => {
 
-    console.log("[INTERACTION]", interaction.type, interaction.commandName);
+    console.log("[INTERACTION]", interaction.type, interaction.commandName || interaction.customId);
+
+    // ---------------- MODAL SUBMIT ----------------
+    if (interaction.type === InteractionType.ModalSubmit &&
+        interaction.customId === "additem_modal") {
+
+        const type = interaction.fields.getTextInputValue("type");
+        const name = interaction.fields.getTextInputValue("name");
+        const price = parseInt(interaction.fields.getTextInputValue("price"));
+
+        if (!type || !name || isNaN(price)) {
+            return interaction.reply({
+                content: "Invalid input",
+                flags: MessageFlags.Ephemeral
+            });
+        }
+
+        const item = {
+            id: Date.now().toString(),
+            type,
+            displayName: name,
+            price
+        };
+
+        const ok = await saveShopItem(item);
+
+        return interaction.reply({
+            content: ok ? "Item added successfully" : "Failed to add item",
+            flags: MessageFlags.Ephemeral
+        });
+    }
 
     if (!interaction.isChatInputCommand()) return;
 
-    // ALWAYS ACK FAST (fixes "not responding")
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     // ---------------- SHOP ----------------
@@ -131,24 +160,7 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(
             shop.length
                 ? shop.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
-                : "Shop is empty"
-        );
-    }
-
-    // ---------------- ADD ITEM ----------------
-    if (interaction.commandName === "additem") {
-
-        const item = {
-            id: Date.now().toString(),
-            type: "m4",
-            displayName: "M4 Rifle",
-            price: 3500
-        };
-
-        const ok = await saveShopItem(item);
-
-        return interaction.editReply(
-            ok ? "Item added successfully" : "FAILED to add item (check logs)"
+                : "Shop empty"
         );
     }
 
@@ -157,8 +169,6 @@ client.on("interactionCreate", async (interaction) => {
 
         const shop = getShop();
         const input = interaction.options.getString("item").toLowerCase();
-
-        console.log("[BUY INPUT]", input);
 
         const item = shop.find(i =>
             (i.displayName || "").toLowerCase() === input
@@ -192,19 +202,54 @@ client.on("interactionCreate", async (interaction) => {
         const count = (s) => orders.filter(o => o.status === s).length;
 
         return interaction.editReply(
-`SHOP DEBUG:
-Items: ${shopCache.length}
+`SYSTEM STATUS
 
-ORDERS:
+Shop items: ${shopCache.length}
+
+Orders:
 Pending: ${count("pending")}
 Queued: ${count("queued")}
 Built: ${count("built")}
 Completed: ${count("completed")}`
         );
     }
+
+    // ---------------- ADD ITEM (OPEN MODAL) ----------------
+    if (interaction.commandName === "additem") {
+
+        const modal = new ModalBuilder()
+            .setCustomId("additem_modal")
+            .setTitle("Add Shop Item");
+
+        const type = new TextInputBuilder()
+            .setCustomId("type")
+            .setLabel("DayZ Item Type (exact)")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+        const name = new TextInputBuilder()
+            .setCustomId("name")
+            .setLabel("Display Name")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+        const price = new TextInputBuilder()
+            .setCustomId("price")
+            .setLabel("Price")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+        modal.addComponents(
+            new ActionRowBuilder().addComponents(type),
+            new ActionRowBuilder().addComponents(name),
+            new ActionRowBuilder().addComponents(price)
+        );
+
+        return interaction.showModal(modal);
+    }
 });
 
-// ---------------- REGISTER COMMANDS ----------------
+// ---------------- REGISTER ----------------
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 async function register() {
