@@ -1,16 +1,14 @@
 const fs = require("fs");
 
-// =========================
-// FILE PATHS
-// =========================
 const DATA_DIR = "./data";
 const SHOP_FILE = `${DATA_DIR}/shop.json`;
 const ORDER_FILE = `${DATA_DIR}/orders.json`;
 
 // =========================
-// INIT STORAGE (CRITICAL FIX)
+// INIT SAFE STORAGE
 // =========================
 function init() {
+
     if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
     }
@@ -24,11 +22,10 @@ function init() {
     }
 }
 
-// run immediately on load
 init();
 
 // =========================
-// HELPERS
+// READ / WRITE SAFE
 // =========================
 function read(file) {
     try {
@@ -64,18 +61,9 @@ function saveOrders(data) {
     write(ORDER_FILE, data);
 }
 
-// =========================
-// CLEAR ALL DATA (SAFE RESET)
-// =========================
-function resetAll() {
-    write(SHOP_FILE, []);
-    write(ORDER_FILE, []);
-}
-
 module.exports = {
     getShop,
     saveShop,
     getOrders,
-    saveOrders,
-    resetAll
+    saveOrders
 };
