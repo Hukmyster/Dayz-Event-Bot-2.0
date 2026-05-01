@@ -1,47 +1,22 @@
-const db = require("../services/db");
-
 async function createOrder(item, x, z) {
 
-    await db.supabase.from("orders").insert([{
-        id: Date.now(),
+    const order = {
+        id: Date.now().toString(),
         itemType: item.type,
         displayName: item.displayName,
-        x,
-        z,
+        x: Number(x),
+        z: Number(z),
         status: "pending"
-    }]);
+    };
 
-    await db.loadData();
-}
+    const { error } = await db.supabase
+        .from("orders")
+        .insert([order]);
 
-async function queueOrders() {
-
-    for (let o of db.getOrders()) {
-        if (o.status === "pending") {
-            await db.supabase.from("orders")
-                .update({ status: "queued" })
-                .eq("id", o.id);
-        }
+    if (error) {
+        console.log("[ORDER INSERT ERROR]", error);
+        return;
     }
 
     await db.loadData();
 }
-
-async function cycleOrders() {
-
-    for (let o of db.getOrders()) {
-        if (o.status === "built") {
-            await db.supabase.from("orders")
-                .update({ status: "completed" })
-                .eq("id", o.id);
-        }
-    }
-
-    await db.loadData();
-}
-
-module.exports = {
-    createOrder,
-    queueOrders,
-    cycleOrders
-};
