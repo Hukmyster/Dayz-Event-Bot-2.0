@@ -30,9 +30,8 @@ const supabase = createClient(
 let shopCache = [];
 let orderCache = [];
 
-// ---------------- LOAD DB ----------------
+// ---------------- LOAD ----------------
 async function loadData() {
-
     const shopRes = await supabase.from("shop").select("*");
     const orderRes = await supabase.from("orders").select("*");
 
@@ -42,9 +41,8 @@ async function loadData() {
     console.log(`[DB] Shop:${shopCache.length} Orders:${orderCache.length}`);
 }
 
-// ---------------- SAVE ----------------
+// ---------------- SAVE SHOP ----------------
 async function saveShopItem(item) {
-
     const res = await supabase.from("shop").insert([item]);
 
     if (res.error) {
@@ -56,26 +54,41 @@ async function saveShopItem(item) {
     return true;
 }
 
+// ---------------- SAVE ORDER ----------------
+async function saveOrder(order) {
+    const res = await supabase.from("orders").insert([order]);
+
+    if (res.error) {
+        console.error("[ORDER ERROR]", res.error);
+        return false;
+    }
+
+    await loadData();
+    return true;
+}
+
 // ---------------- READY ----------------
 client.once("clientReady", async () => {
     console.log(`Logged in as ${client.user.tag}`);
-
     await loadData();
-
     setInterval(loadData, 15000);
 });
 
 // ---------------- COMMANDS ----------------
 const commands = [
+
     new SlashCommandBuilder().setName("shop").setDescription("View shop"),
 
-    new SlashCommandBuilder().setName("additem").setDescription("Add item"),
+    new SlashCommandBuilder().setName("additem").setDescription("Add shop item"),
 
     new SlashCommandBuilder()
         .setName("buy")
         .setDescription("Buy item")
         .addStringOption(o =>
-            o.setName("item").setDescription("Item").setRequired(true)
+            o.setName("item")
+                .setDescription("Select item")
+                .setAutocomplete(true)
+                .setRequired(true)
         )
         .addIntegerOption(o =>
             o.setName("x").setDescription("X").setRequired(true)
@@ -91,7 +104,28 @@ client.on("interactionCreate", async (interaction) => {
     console.log("[INTERACTION]", interaction.commandName || interaction.customId);
 
     // =====================================================
-    // 🚨 MODAL SUBMIT (MUST BE FIRST)
+    // AUTOCOMPLETE (🔥 NEW SYSTEM)
+    // =====================================================
+    if (interaction.isAutocomplete()) {
+
+        const focused = interaction.options.getFocused().toLowerCase();
+
+        const filtered = shopCache
+            .filter(item =>
+                (item.displayName || "").toLowerCase().includes(focused)
+            )
+            .slice(0, 5);
+
+        return interaction.respond(
+            filtered.map(item => ({
+                name: item.displayName,
+                value: item.displayName
+            }))
+        );
+    }
+
+    // =====================================================
+    // MODAL SUBMIT
     // =====================================================
     if (interaction.type === InteractionType.ModalSubmit &&
         interaction.customId === "additem_modal") {
@@ -113,12 +147,56 @@ client.on("interactionCreate", async (interaction) => {
         });
     }
 
-    // =====================================================
-    // 🚨 SLASH COMMANDS
-    // =====================================================
     if (!interaction.isChatInputCommand()) return;
 
-    // ---------------- ADD ITEM (MODAL OPEN) ----------------
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    // =====================================================
+    // SHOP
+    // =====================================================
+    if (interaction.commandName === "shop") {
+
+        return interaction.editReply(
+            shopCache.length
+                ? shopCache.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
+                : "Shop empty"
+        );
+    }
+
+    // =====================================================
+    // BUY (NOW AUTOCOMPLETE BASED)
+    // =====================================================
+    if (interaction.commandName === "buy") {
+
+        const selected = interaction.options.getString("item");
+
+        const item = shopCache.find(i => i.displayName === selected);
+
+        if (!item) {
+            return interaction.editReply("Item not found (cache mismatch)");
+        }
+
+        const order = {
+            id: Date.now(),
+            itemType: item.type,
+            displayName: item.displayName,
+            x: interaction.options.getInteger("x"),
+            z: interaction.options.getInteger("z"),
+            status: "pending"
+        };
+
+        const ok = await saveOrder(order);
+
+        return interaction.editReply(
+            ok
+                ? `Order placed: ${item.displayName}`
+                : "Order failed"
+        );
+    }
+
+    // =====================================================
+    // ADD ITEM (MODAL OPEN)
+    // =====================================================
     if (interaction.commandName === "additem") {
 
         const modal = new ModalBuilder()
@@ -127,7 +205,7 @@ client.on("interactionCreate", async (interaction) => {
 
         const type = new TextInputBuilder()
             .setCustomId("type")
-            .setLabel("Item Type (DayZ exact)")
+            .setLabel("DayZ Type (exact)")
             .setStyle(TextInputStyle.Short)
             .setRequired(true);
 
@@ -149,36 +227,7 @@ client.on("interactionCreate", async (interaction) => {
             new ActionRowBuilder().addComponents(price)
         );
 
-        // ⚠️ MUST NOT defer or reply before this
         return interaction.showModal(modal);
-    }
-
-    // ---------------- SAFE DEFER AFTER MODAL HANDLES ----------------
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-    // ---------------- SHOP ----------------
-    if (interaction.commandName === "shop") {
-        return interaction.editReply(
-            shopCache.length
-                ? shopCache.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
-                : "Empty"
-        );
-    }
-
-    // ---------------- BUY ----------------
-    if (interaction.commandName === "buy") {
-
-        const input = interaction.options.getString("item").toLowerCase();
-
-        const item = shopCache.find(i =>
-            (i.displayName || "").toLowerCase() === input
-        );
-
-        if (!item) {
-            return interaction.editReply("Not found");
-        }
-
-        return interaction.editReply(`Buying ${item.displayName}`);
     }
 });
 
@@ -186,6 +235,8 @@ client.on("interactionCreate", async (interaction) => {
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 async function register() {
+    console.log("[DISCORD] Registering commands...");
+
     await rest.put(
         Routes.applicationGuildCommands(
             process.env.CLIENT_ID,
