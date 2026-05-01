@@ -10,10 +10,14 @@ require("dotenv").config();
 
 const shop = require("./modules/shop");
 
+/* ---------------- SAFETY CHECK ---------------- */
+
 if (!process.env.DISCORD_TOKEN) {
   console.error("[FATAL] DISCORD_TOKEN missing in environment variables");
   process.exit(1);
 }
+
+/* ---------------- CLIENT ---------------- */
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -102,11 +106,11 @@ client.once(Events.ClientReady, async () => {
   }
 });
 
-/* ---------------- SAFE REPLY HELPER ---------------- */
+/* ---------------- SAFE REPLY ---------------- */
 
 async function safeReply(interaction, payload) {
   try {
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.deferred || interaction.replied) {
       return await interaction.followUp(payload);
     }
     return await interaction.reply(payload);
@@ -115,22 +119,28 @@ async function safeReply(interaction, payload) {
   }
 }
 
-/* ---------------- AUTOCOMPLETE FIX ---------------- */
+/* ---------------- AUTOCOMPLETE ---------------- */
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
 
-    /* ---- AUTOCOMPLETE ---- */
+    /* ---------------- AUTOCOMPLETE ---------------- */
     if (interaction.isAutocomplete()) {
-      const focused = interaction.options.getFocused();
+      const focused = interaction.options.getFocused(true);
 
-      const query = typeof focused === "string" ? focused : "";
-      const results = shop.autocomplete(query || "");
+      const query = (focused?.value || "").toString();
 
-      return interaction.respond(results.slice(0, 25)).catch(() => {});
+      const results = shop.autocomplete(query)
+        .slice(0, 25)
+        .map(i => ({
+          name: i.name,
+          value: i.value
+        }));
+
+      return interaction.respond(results).catch(() => {});
     }
 
-    /* ---- IGNORE NON COMMANDS ---- */
+    /* ---------------- IGNORE NON COMMANDS ---------------- */
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
@@ -143,46 +153,82 @@ client.on(Events.InteractionCreate, async (interaction) => {
         ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
         : "Shop is empty";
 
-      return safeReply(interaction, { content: list, ephemeral: true });
+      return safeReply(interaction, {
+        content: list,
+        ephemeral: true
+      });
     }
 
     /* ---------------- ADD ITEM ---------------- */
     if (commandName === "additem") {
-      const name = interaction.options.getString("name") || "";
-      const type = interaction.options.getString("type") || "";
-      const price = interaction.options.getInteger("price") || 0;
+      const name = interaction.options.getString("name");
+      const type = interaction.options.getString("type");
+      const price = interaction.options.getInteger("price");
 
-      if (!name.trim() || !type.trim()) {
+      if (!name || !type || price === null || price === undefined) {
         return safeReply(interaction, {
-          content: "Invalid item data",
+          content: "Invalid item data (missing fields)",
           ephemeral: true
         });
       }
 
-      const res = await shop.addItem(name.trim(), type.trim(), price);
+      const cleanName = String(name).trim();
+      const cleanType = String(type).trim();
 
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+      if (!cleanName || !cleanType) {
+        return safeReply(interaction, {
+          content: "Invalid item data (empty fields)",
+          ephemeral: true
+        });
+      }
+
+      const res = await shop.addItem(cleanName, cleanType, price);
+
+      return safeReply(interaction, {
+        content: res.reply,
+        ephemeral: true
+      });
     }
 
     /* ---------------- BUY ---------------- */
     if (commandName === "buy") {
-      const item = interaction.options.getString("item") || "";
+      const item = interaction.options.getString("item");
       const qty = interaction.options.getInteger("quantity") || 1;
       const x = interaction.options.getInteger("x") || 0;
       const z = interaction.options.getInteger("z") || 0;
 
-      const res = await shop.buyItem(item.trim(), qty, x, z);
+      if (!item) {
+        return safeReply(interaction, {
+          content: "Invalid item",
+          ephemeral: true
+        });
+      }
 
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+      const res = await shop.buyItem(item, qty, x, z);
+
+      return safeReply(interaction, {
+        content: res.reply,
+        ephemeral: true
+      });
     }
 
     /* ---------------- DELETE ITEM ---------------- */
     if (commandName === "deleteshopitem") {
-      const name = interaction.options.getString("name") || "";
+      const name = interaction.options.getString("name");
 
-      const res = await shop.deleteItem(name.trim());
+      if (!name) {
+        return safeReply(interaction, {
+          content: "Invalid name",
+          ephemeral: true
+        });
+      }
 
-      return safeReply(interaction, { content: res.reply, ephemeral: true });
+      const res = await shop.deleteItem(name);
+
+      return safeReply(interaction, {
+        content: res.reply,
+        ephemeral: true
+      });
     }
 
     /* ---------------- QUEUE ---------------- */
@@ -190,10 +236,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const orders = shop.getOrders();
 
       const msg = orders.length
-        ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z})`).join("\n")
+        ? orders.map(o =>
+            `• ${o.item} x${o.qty} @ (${o.x},${o.z})`
+          ).join("\n")
         : "No queued orders";
 
-      return safeReply(interaction, { content: msg, ephemeral: true });
+      return safeReply(interaction, {
+        content: msg,
+        ephemeral: true
+      });
     }
 
     /* ---------------- BUILD ---------------- */
@@ -215,5 +266,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     });
   }
 });
+
+/* ---------------- LOGIN ---------------- */
 
 client.login(process.env.DISCORD_TOKEN);
