@@ -1,5 +1,3 @@
-// FIXED PHASE 4 (NO VALIDATION ERRORS)
-
 const {
     Client,
     GatewayIntentBits,
@@ -18,18 +16,22 @@ const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
 require("dotenv").config();
 
+// ---------------- DISCORD ----------------
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
+// ---------------- SUPABASE ----------------
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_KEY
 );
 
+// ---------------- PATHS ----------------
 const EVENTS_PATH = "./custom/shopevents.xml";
 const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
 
+// ---------------- CACHE ----------------
 let shopCache = [];
 let orderCache = [];
 
@@ -101,7 +103,9 @@ async function buildXML() {
 <pos x="${o.x}" z="${o.z}" a="0" />
 </event>`);
 
-        await supabase.from("orders").update({ status: "built" }).eq("id", o.id);
+        await supabase.from("orders")
+            .update({ status: "built" })
+            .eq("id", o.id);
     }
 
     fs.writeFileSync(EVENTS_PATH,
@@ -125,13 +129,9 @@ client.once("clientReady", async () => {
 // ---------------- COMMANDS ----------------
 const commands = [
 
-    new SlashCommandBuilder()
-        .setName("shop")
-        .setDescription("View shop"),
+    new SlashCommandBuilder().setName("shop").setDescription("View shop"),
 
-    new SlashCommandBuilder()
-        .setName("additem")
-        .setDescription("Add item"),
+    new SlashCommandBuilder().setName("additem").setDescription("Add item"),
 
     new SlashCommandBuilder()
         .setName("removeitem")
@@ -163,21 +163,12 @@ const commands = [
             o.setName("z").setDescription("Z coord").setRequired(true)
         ),
 
-    new SlashCommandBuilder()
-        .setName("orders")
-        .setDescription("View orders"),
+    new SlashCommandBuilder().setName("orders").setDescription("View orders"),
+    new SlashCommandBuilder().setName("queue").setDescription("Queue orders"),
+    new SlashCommandBuilder().setName("build").setDescription("Build XML"),
+    new SlashCommandBuilder().setName("cycle").setDescription("Complete orders"),
 
-    new SlashCommandBuilder()
-        .setName("queue")
-        .setDescription("Queue orders"),
-
-    new SlashCommandBuilder()
-        .setName("build")
-        .setDescription("Build XML"),
-
-    new SlashCommandBuilder()
-        .setName("cycle")
-        .setDescription("Complete orders")
+    new SlashCommandBuilder().setName("viewxml").setDescription("View generated XML")
 ];
 
 // ---------------- INTERACTIONS ----------------
@@ -298,6 +289,32 @@ client.on("interactionCreate", async (interaction) => {
         await loadData();
 
         return interaction.editReply("Cycle complete");
+    }
+
+    // 🔥 NEW COMMAND
+    if (interaction.commandName === "viewxml") {
+
+        if (!fs.existsSync(EVENTS_PATH) || !fs.existsSync(SPAWNS_PATH)) {
+            return interaction.editReply("No XML built yet.");
+        }
+
+        const events = fs.readFileSync(EVENTS_PATH, "utf8");
+        const spawns = fs.readFileSync(SPAWNS_PATH, "utf8");
+
+        const chunk = (str, size = 1900) =>
+            str.match(new RegExp(`.{1,${size}}`, "g"));
+
+        await interaction.editReply("Shoevents XML:");
+
+        for (const part of chunk(events)) {
+            await interaction.followUp({ content: "```xml\n" + part + "\n```", flags: MessageFlags.Ephemeral });
+        }
+
+        await interaction.followUp({ content: "Spawns XML:", flags: MessageFlags.Ephemeral });
+
+        for (const part of chunk(spawns)) {
+            await interaction.followUp({ content: "```xml\n" + part + "\n```", flags: MessageFlags.Ephemeral });
+        }
     }
 
 });
