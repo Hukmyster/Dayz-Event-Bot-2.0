@@ -15,6 +15,11 @@ if (!process.env.DISCORD_TOKEN) {
   process.exit(1);
 }
 
+if (!process.env.GUILD_ID) {
+  console.error("[FATAL] GUILD_ID missing (required for instant command updates)");
+  process.exit(1);
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
 });
@@ -39,38 +44,17 @@ const commands = [
     name: "buy",
     description: "Buy item",
     options: [
-      {
-        name: "item",
-        type: 3,
-        description: "Item name",
-        required: true,
-        autocomplete: true
-      },
-      {
-        name: "quantity",
-        type: 4,
-        description: "Amount",
-        required: true
-      },
-      {
-        name: "x",
-        type: 4,
-        description: "X coord",
-        required: true
-      },
-      {
-        name: "z",
-        type: 4,
-        description: "Z coord",
-        required: true
-      }
+      { name: "item", type: 3, required: true, autocomplete: true },
+      { name: "quantity", type: 4, required: true },
+      { name: "x", type: 4, required: true },
+      { name: "z", type: 4, required: true }
     ]
   },
   {
     name: "deleteshopitem",
     description: "Remove item from shop",
     options: [
-      { name: "name", type: 3, description: "Item name", required: true }
+      { name: "name", type: 3, required: true }
     ]
   },
   {
@@ -91,12 +75,19 @@ client.once(Events.ClientReady, async () => {
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
   try {
-    console.log("[DISCORD] Registering commands...");
+    console.log("[DISCORD] Registering GUILD commands...");
 
     await rest.put(
-      Routes.applicationCommands(client.user.id),
+      Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID),
       { body: commands }
     );
+
+    const cmds = await rest.get(
+      Routes.applicationGuildCommands(client.user.id, process.env.GUILD_ID)
+    );
+
+    console.log("[DEBUG] ACTIVE COMMANDS:");
+    console.log(JSON.stringify(cmds, null, 2));
 
     console.log("[DISCORD] Commands registered");
   } catch (err) {
@@ -117,25 +108,25 @@ async function safeReply(interaction, payload) {
   }
 }
 
-/* ---------------- INTERACTION HANDLER ---------------- */
+/* ---------------- INTERACTIONS ---------------- */
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
 
-    /* ---------------- AUTOCOMPLETE ---------------- */
+    if (!interaction.guild) {
+      console.log("[IGNORED] DM interaction");
+      return;
+    }
+
     if (interaction.isAutocomplete()) {
       const focused = interaction.options.getFocused();
-
-      const query =
-        typeof focused === "string"
-          ? focused
-          : "";
+      const query = typeof focused === "string" ? focused : "";
 
       const results = shop.autocomplete(query);
 
-      return interaction.respond(results.slice(0, 25)).catch(err => {
-        console.error("[AUTOCOMPLETE ERROR]", err);
-      });
+      console.log("[AUTOCOMPLETE]", { query, results });
+
+      return interaction.respond(results.slice(0, 25)).catch(console.error);
     }
 
     if (!interaction.isChatInputCommand()) return;
@@ -144,7 +135,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     console.log(`[COMMAND] ${cmd}`);
 
-    /* ---------------- SHOP ---------------- */
     if (cmd === "shop") {
       const items = shop.getShopList() || [];
 
@@ -155,52 +145,42 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return safeReply(interaction, { content: msg, ephemeral: true });
     }
 
-    /* ---------------- ADD ITEM ---------------- */
     if (cmd === "additem") {
       const name = interaction.options.getString("name");
       const type = interaction.options.getString("type");
       const price = interaction.options.getInteger("price");
 
-      console.log("[ADD ITEM]", { name, type, price });
-
-      if (!name || !type || typeof price !== "number") {
-        return safeReply(interaction, {
-          content: "Invalid item data",
-          ephemeral: true
-        });
-      }
+      console.log("[ADD ITEM RAW]", {
+        name,
+        type,
+        price,
+        raw: interaction.options.data
+      });
 
       const res = await shop.addItem(name, type, price);
 
       return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
-    /* ---------------- BUY ---------------- */
     if (cmd === "buy") {
       const item = interaction.options.getString("item");
-      const qty = interaction.options.getInteger("quantity") ?? 1;
-      const x = interaction.options.getInteger("x") ?? 0;
-      const z = interaction.options.getInteger("z") ?? 0;
-
-      console.log("[BUY]", { item, qty, x, z });
+      const qty = interaction.options.getInteger("quantity");
+      const x = interaction.options.getInteger("x");
+      const z = interaction.options.getInteger("z");
 
       const res = await shop.buyItem(item, qty, x, z);
 
       return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
-    /* ---------------- DELETE ITEM ---------------- */
     if (cmd === "deleteshopitem") {
       const name = interaction.options.getString("name");
-
-      console.log("[DELETE ITEM]", name);
 
       const res = await shop.deleteItem(name);
 
       return safeReply(interaction, { content: res.reply, ephemeral: true });
     }
 
-    /* ---------------- QUEUE ---------------- */
     if (cmd === "queue") {
       const orders = shop.getOrders() || [];
 
@@ -211,10 +191,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return safeReply(interaction, { content: msg, ephemeral: true });
     }
 
-    /* ---------------- BUILD ---------------- */
     if (cmd === "build") {
-      console.log("[BUILD XML TRIGGERED]");
-
       const xml = shop.buildXML();
 
       return safeReply(interaction, {
@@ -224,10 +201,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
   } catch (err) {
-    console.error("[INTERACTION CRASH]", err);
+    console.error("[INTERACTION ERROR]", err);
 
     return safeReply(interaction, {
-      content: "Error (check logs)",
+      content: "Error executing command",
       ephemeral: true
     });
   }
