@@ -5,22 +5,92 @@ const supabase = createClient(
     process.env.SUPABASE_KEY
 );
 
-let shop = [];
-let orders = [];
+// ---------------- LOCAL CACHE ----------------
+let shopCache = [];
+let ordersCache = [];
 
+// ---------------- LOAD DATA ----------------
 async function loadData() {
-    const s = await supabase.from("shop").select("*");
-    const o = await supabase.from("orders").select("*");
 
-    shop = s.data || [];
-    orders = o.data || [];
+    try {
+        console.log("[DB] Loading...");
 
-    console.log(`[DB] Shop:${shop.length} Orders:${orders.length}`);
+        const { data: shop } = await supabase
+            .from("shop")
+            .select("*");
+
+        const { data: orders } = await supabase
+            .from("orders")
+            .select("*");
+
+        shopCache = shop || [];
+        ordersCache = orders || [];
+
+        console.log(`[DB] Shop:${shopCache.length} Orders:${ordersCache.length}`);
+
+    } catch (err) {
+        console.error("[DB LOAD ERROR]", err);
+    }
 }
 
+// ---------------- SHOP ----------------
+function getShop() {
+    return shopCache;
+}
+
+// ---------------- ORDERS ----------------
+function getOrders() {
+    return ordersCache;
+}
+
+// ---------------- SAVE ORDERS (FIXED) ----------------
+async function saveOrders(orders) {
+
+    try {
+        const { error } = await supabase
+            .from("orders")
+            .upsert(orders, { onConflict: "id" });
+
+        if (error) {
+            console.error("[DB SAVE ORDERS ERROR]", error);
+            throw error;
+        }
+
+        ordersCache = orders;
+
+    } catch (err) {
+        console.error("[DB SAVE ORDERS FAIL]", err);
+        throw err;
+    }
+}
+
+// ---------------- SAVE SHOP (optional future use) ----------------
+async function saveShop(shop) {
+
+    try {
+        const { error } = await supabase
+            .from("shop")
+            .upsert(shop, { onConflict: "id" });
+
+        if (error) {
+            console.error("[DB SAVE SHOP ERROR]", error);
+            throw error;
+        }
+
+        shopCache = shop;
+
+    } catch (err) {
+        console.error("[DB SAVE SHOP FAIL]", err);
+        throw err;
+    }
+}
+
+// ---------------- EXPORTS ----------------
 module.exports = {
     supabase,
-    getShop: () => shop,
-    getOrders: () => orders,
-    loadData
+    loadData,
+    getShop,
+    getOrders,
+    saveOrders,
+    saveShop
 };
