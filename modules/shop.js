@@ -1,82 +1,48 @@
 const db = require("../services/db");
-
-const {
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
-    ActionRowBuilder
-} = require("discord.js");
+const xml = require("./xml");
 
 // =========================
 // COMMANDS
 // =========================
 module.exports.commands = [
     { name: "shop", description: "View shop items" },
+    { name: "queue", description: "View queued orders" },
+    { name: "orders", description: "View all orders" },
+    { name: "build", description: "Build XML from orders" },
+    { name: "shopcycle", description: "Force all orders → XML" },
+    { name: "deleteshophistory", description: "Clear all orders" },
 
     {
         name: "buy",
         description: "Buy item",
         options: [
-            {
-                name: "item",
-                description: "Select item",
-                type: 3,
-                required: true,
-                autocomplete: true
-            },
-            {
-                name: "x",
-                description: "X coordinate",
-                type: 4,
-                required: true
-            },
-            {
-                name: "z",
-                description: "Z coordinate",
-                type: 4,
-                required: true
-            },
-            {
-                name: "quantity",
-                description: "Amount",
-                type: 4,
-                required: false
-            }
+            { name: "item", description: "Item", type: 3, required: true, autocomplete: true },
+            { name: "x", description: "X coord", type: 4, required: true },
+            { name: "z", description: "Z coord", type: 4, required: true },
+            { name: "quantity", description: "Amount", type: 4, required: false }
         ]
     },
 
     { name: "additem", description: "Add shop item" },
-    { name: "queue", description: "View queued orders" },
 
     {
         name: "deleteshopitem",
-        description: "Delete item",
+        description: "Delete shop item",
         options: [
-            {
-                name: "item",
-                description: "Item name",
-                type: 3,
-                required: true,
-                autocomplete: true
-            }
+            { name: "item", description: "Item", type: 3, required: true, autocomplete: true }
         ]
-    },
-
-    { name: "deleteshophistory", description: "Clear orders only" },
+    }
 ];
 
 // =========================
-// SHOP VIEW
+// SHOP
 // =========================
 module.exports.shop = async (interaction) => {
 
     const shop = db.getShop();
 
     if (!shop.length) {
-        return interaction.reply({
-            content: "Shop is empty",
-            ephemeral: true
-        });
+        return interaction.reply({ content: "Shop empty", ephemeral: true });
     }
 
     return interaction.reply({
@@ -86,7 +52,7 @@ module.exports.shop = async (interaction) => {
 };
 
 // =========================
-// BUY ITEM
+// BUY
 // =========================
 module.exports.buy = async (interaction) => {
 
@@ -100,10 +66,7 @@ module.exports.buy = async (interaction) => {
     const item = shop.find(i => i.displayName === itemName);
 
     if (!item) {
-        return interaction.reply({
-            content: "Item not found",
-            ephemeral: true
-        });
+        return interaction.reply({ content: "Item not found", ephemeral: true });
     }
 
     const orders = db.getOrders();
@@ -127,96 +90,14 @@ module.exports.buy = async (interaction) => {
 };
 
 // =========================
-// ADD ITEM (MODAL)
-// =========================
-module.exports.additem = async (interaction) => {
-
-    const modal = new ModalBuilder()
-        .setCustomId("additem_modal")
-        .setTitle("Add Item");
-
-    const name = new TextInputBuilder()
-        .setCustomId("name")
-        .setLabel("Display Name")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-    const type = new TextInputBuilder()
-        .setCustomId("type")
-        .setLabel("DayZ Type")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-    const price = new TextInputBuilder()
-        .setCustomId("price")
-        .setLabel("Price")
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-    modal.addComponents(
-        new ActionRowBuilder().addComponents(name),
-        new ActionRowBuilder().addComponents(type),
-        new ActionRowBuilder().addComponents(price)
-    );
-
-    return interaction.showModal(modal);
-};
-
-// =========================
-// MODAL HANDLER
-// =========================
-module.exports.handleModal = async (interaction) => {
-
-    if (interaction.customId !== "additem_modal") return;
-
-    const shop = db.getShop();
-
-    shop.push({
-        displayName: interaction.fields.getTextInputValue("name"),
-        type: interaction.fields.getTextInputValue("type"),
-        price: parseInt(interaction.fields.getTextInputValue("price"))
-    });
-
-    db.saveShop(shop);
-
-    return interaction.reply({
-        content: "Item added",
-        ephemeral: true
-    });
-};
-
-// =========================
-// AUTOCOMPLETE FIX
-// =========================
-module.exports.autocomplete = async (interaction) => {
-
-    const shop = db.getShop();
-
-    const focused = interaction.options.getFocused();
-
-    return interaction.respond(
-        shop
-            .filter(i => i.displayName.toLowerCase().includes(focused.toLowerCase()))
-            .slice(0, 25)
-            .map(i => ({
-                name: i.displayName,
-                value: i.displayName
-            }))
-    );
-};
-
-// =========================
-// QUEUE FIX (YOUR BROKEN COMMAND)
+// QUEUE (FIXED)
 // =========================
 module.exports.queue = async (interaction) => {
 
-    const orders = db.getOrders();
+    const orders = db.getOrders().filter(o => o.status === "queued");
 
     if (!orders.length) {
-        return interaction.reply({
-            content: "No queued orders",
-            ephemeral: true
-        });
+        return interaction.reply({ content: "Queue empty", ephemeral: true });
     }
 
     return interaction.reply({
@@ -228,7 +109,80 @@ module.exports.queue = async (interaction) => {
 };
 
 // =========================
-// DELETE ITEM
+// ORDERS (ALL STAGES)
+// =========================
+module.exports.orders = async (interaction) => {
+
+    const orders = db.getOrders();
+
+    if (!orders.length) {
+        return interaction.reply({ content: "No orders", ephemeral: true });
+    }
+
+    return interaction.reply({
+        content: orders.map(o =>
+            `• ${o.displayName} x${o.quantity} (${o.status})`
+        ).join("\n"),
+        ephemeral: true
+    });
+};
+
+// =========================
+// BUILD (FIXED TIMEOUT BUG)
+// =========================
+module.exports.build = async (interaction) => {
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+        xml.buildXML(db);
+
+        return interaction.editReply("XML built successfully");
+    } catch (err) {
+        console.log(err);
+        return interaction.editReply("Build failed");
+    }
+};
+
+// =========================
+// SHOP CYCLE (FORCE BUILD)
+// =========================
+module.exports.shopcycle = async (interaction) => {
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+        let orders = db.getOrders();
+
+        // force all to built
+        orders = orders.map(o => ({ ...o, status: "built" }));
+
+        db.saveOrders(orders);
+
+        xml.buildXML(db);
+
+        return interaction.editReply("Shop cycle complete (all built)");
+    } catch (err) {
+        console.log(err);
+        return interaction.editReply("Shop cycle failed");
+    }
+};
+
+// =========================
+// CLEAR ORDERS
+// =========================
+module.exports.deleteshophistory = async (interaction) => {
+
+    db.saveOrders([]);
+
+    return interaction.reply({
+        content: "Orders cleared",
+        ephemeral: true
+    });
+};
+
+// =========================
+// DELETE SHOP ITEM
 // =========================
 module.exports.deleteshopitem = async (interaction) => {
 
@@ -241,20 +195,26 @@ module.exports.deleteshopitem = async (interaction) => {
     db.saveShop(shop);
 
     return interaction.reply({
-        content: "Item deleted",
+        content: "Item removed",
         ephemeral: true
     });
 };
 
 // =========================
-// CLEAR ORDERS ONLY
+// AUTOCOMPLETE
 // =========================
-module.exports.deleteshophistory = async (interaction) => {
+module.exports.autocomplete = async (interaction) => {
 
-    db.saveOrders([]);
+    const shop = db.getShop();
+    const focused = interaction.options.getFocused();
 
-    return interaction.reply({
-        content: "Order history cleared",
-        ephemeral: true
-    });
+    return interaction.respond(
+        shop
+            .filter(i => i.displayName.toLowerCase().includes(focused.toLowerCase()))
+            .slice(0, 25)
+            .map(i => ({
+                name: i.displayName,
+                value: i.displayName
+            }))
+    );
 };
