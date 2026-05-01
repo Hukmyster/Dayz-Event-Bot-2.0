@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const debug = require("../utils/debug");
 const { createClient } = require("@supabase/supabase-js");
 const { buildAllXML } = require("../xmlBuilder");
 
@@ -25,7 +26,8 @@ function loadOrders() {
   ensureOrdersFile();
   try {
     orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8")) || [];
-  } catch {
+  } catch (err) {
+    debug.fail("shop.loadOrders", err, { file: ORDERS_FILE });
     orders = [];
   }
   if (!Array.isArray(orders)) orders = [];
@@ -34,6 +36,7 @@ function loadOrders() {
 function saveOrders() {
   ensureOrdersFile();
   fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
+  debug.ok("shop.saveOrders", { count: orders.length, file: ORDERS_FILE });
 }
 
 function ensureCustomDir() {
@@ -59,16 +62,58 @@ function mapShopRow(row) {
 }
 
 async function loadShop() {
-  if (!supabase) throw new Error("Supabase client not configured");
-  const { data, error } = await supabase.from("shop").select("id,displayName,type,price").order("created_at", { ascending: true });
-  if (error) throw error;
+  if (!supabase) {
+    debug.fail("shop.loadShop", new Error("Supabase client not configured"), {
+      hasUrl: !!supabaseUrl,
+      hasKey: !!supabaseKey
+    });
+    throw new Error("Supabase client not configured");
+  }
+
+  debug.supabase("shop.loadShop", "select", {
+    table: "shop",
+    columns: ["id", "displayName", "type", "price"]
+  });
+
+  const { data, error } = await supabase
+    .from("shop")
+    .select("id,displayName,type,price")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    debug.supabaseError("shop.loadShop", "select", error, {
+      table: "shop"
+    });
+    throw error;
+  }
+
+  debug.ok("shop.loadShop", { rows: data?.length || 0 });
   return Array.isArray(data) ? data.map(mapShopRow) : [];
 }
 
 async function findShopItemByName(name) {
   const clean = normalizeText(name);
-  const { data, error } = await supabase.from("shop").select("id,displayName,type,price").ilike("displayName", clean).limit(1).maybeSingle();
-  if (error && error.code !== "PGRST116") throw error;
+
+  debug.supabase("shop.findShopItemByName", "select", {
+    table: "shop",
+    filter: { displayName: clean }
+  });
+
+  const { data, error } = await supabase
+    .from("shop")
+    .select("id,displayName,type,price")
+    .ilike("displayName", clean)
+    .limit(1)
+    .maybeSingle();
+
+  if (error && error.code !== "PGRST116") {
+    debug.supabaseError("shop.findShopItemByName", "select", error, {
+      name: clean
+    });
+    throw error;
+  }
+
+  debug.step("shop.findShopItemByName", { found: !!data, name: clean });
   return data ? mapShopRow(data) : null;
 }
 
@@ -76,65 +121,185 @@ async function addItem(name, type, price) {
   name = normalizeText(name);
   type = normalizeText(type);
   price = normalizeNumber(price);
+
+  debug.step("shop.addItem", { name, type, price });
+
   if (!name || !type) return { reply: "Display name and type are required" };
   if (price === null || price < 0) return { reply: "Price must be a valid number" };
   if (!supabase) return { reply: "Supabase is not configured" };
 
-  const existing = await supabase.from("shop").select("id").ilike("displayName", name).limit(1).maybeSingle();
-  if (existing.error && existing.error.code !== "PGRST116") return { reply: `Database error: ${existing.error.message}` };
+  debug.supabase("shop.addItem", "check existing", {
+    table: "shop",
+    filter: { displayName: name }
+  });
+
+  const existing = await supabase
+    .from("shop")
+    .select("id")
+    .ilike("displayName", name)
+    .limit(1)
+    .maybeSingle();
+
+  if (existing.error && existing.error.code !== "PGRST116") {
+    debug.supabaseError("shop.addItem", "check existing", existing.error, {
+      name
+    });
+    return { reply: `Database error: ${existing.error.message}` };
+  }
+
   if (existing.data) return { reply: `Item already exists: ${name}` };
 
-  const { error } = await supabase.from("shop").insert([{ displayName: name, type, price }]);
-  if (error) return { reply: `Database error: ${error.message}` };
+  debug.supabase("shop.addItem", "insert", {
+    table: "shop",
+    values: { displayName: name, type, price }
+  });
+
+  const { data, error } = await supabase
+    .from("shop")
+    .insert([{ displayName: name, type, price }])
+    .select("id,displayName,type,price");
+
+  if (error) {
+    debug.supabaseError("shop.addItem", "insert", error, {
+      values: { displayName: name, type, price }
+    });
+    return { reply: `Database error: ${error.message}` };
+  }
+
+  debug.ok("shop.addItem", { inserted: data?.[0] || null });
   return { reply: `Added ${name} (${type})` };
 }
 
 async function editPrice(name, price) {
   name = normalizeText(name);
   price = normalizeNumber(price);
+
+  debug.step("shop.editPrice", { name, price });
+
   if (!name) return { reply: "Item name is required" };
   if (price === null || price < 0) return { reply: "Price must be a valid number" };
   if (!supabase) return { reply: "Supabase is not configured" };
 
   const item = await findShopItemByName(name);
   if (!item) return { reply: "Item not found" };
-  const { error } = await supabase.from("shop").update({ price }).eq("id", item.id);
-  if (error) return { reply: `Database error: ${error.message}` };
+
+  debug.supabase("shop.editPrice", "update", {
+    table: "shop",
+    id: item.id,
+    values: { price }
+  });
+
+  const { data, error } = await supabase
+    .from("shop")
+    .update({ price })
+    .eq("id", item.id)
+    .select("id,displayName,type,price");
+
+  if (error) {
+    debug.supabaseError("shop.editPrice", "update", error, {
+      id: item.id,
+      values: { price }
+    });
+    return { reply: `Database error: ${error.message}` };
+  }
+
+  debug.ok("shop.editPrice", { updated: data?.[0] || null });
   return { reply: `Updated ${item.name} price to ${price}` };
 }
 
 async function editName(name, newname) {
   name = normalizeText(name);
   newname = normalizeText(newname);
+
+  debug.step("shop.editName", { name, newname });
+
   if (!name || !newname) return { reply: "Current name and new name are required" };
   if (!supabase) return { reply: "Supabase is not configured" };
 
   const item = await findShopItemByName(name);
   if (!item) return { reply: "Item not found" };
 
-  const existing = await supabase.from("shop").select("id").ilike("displayName", newname).limit(1).maybeSingle();
-  if (existing.error && existing.error.code !== "PGRST116") return { reply: `Database error: ${existing.error.message}` };
+  debug.supabase("shop.editName", "check existing new name", {
+    table: "shop",
+    filter: { displayName: newname }
+  });
+
+  const existing = await supabase
+    .from("shop")
+    .select("id")
+    .ilike("displayName", newname)
+    .limit(1)
+    .maybeSingle();
+
+  if (existing.error && existing.error.code !== "PGRST116") {
+    debug.supabaseError("shop.editName", "check existing new name", existing.error, {
+      newname
+    });
+    return { reply: `Database error: ${existing.error.message}` };
+  }
+
   if (existing.data) return { reply: `An item already exists with the name ${newname}` };
 
-  const { error } = await supabase.from("shop").update({ displayName: newname }).eq("id", item.id);
-  if (error) return { reply: `Database error: ${error.message}` };
+  debug.supabase("shop.editName", "update", {
+    table: "shop",
+    id: item.id,
+    values: { displayName: newname }
+  });
+
+  const { data, error } = await supabase
+    .from("shop")
+    .update({ displayName: newname })
+    .eq("id", item.id)
+    .select("id,displayName,type,price");
+
+  if (error) {
+    debug.supabaseError("shop.editName", "update", error, {
+      id: item.id,
+      values: { displayName: newname }
+    });
+    return { reply: `Database error: ${error.message}` };
+  }
+
+  debug.ok("shop.editName", { updated: data?.[0] || null });
   return { reply: `Renamed item to ${newname}` };
 }
 
 async function deleteItem(name) {
   name = normalizeText(name);
+
+  debug.step("shop.deleteItem", { name });
+
   if (!name) return { reply: "Item name is required" };
   if (!supabase) return { reply: "Supabase is not configured" };
 
   const item = await findShopItemByName(name);
   if (!item) return { reply: "Item not found" };
+
+  debug.supabase("shop.deleteItem", "delete", {
+    table: "shop",
+    id: item.id
+  });
+
   const { error } = await supabase.from("shop").delete().eq("id", item.id);
-  if (error) return { reply: `Database error: ${error.message}` };
+
+  if (error) {
+    debug.supabaseError("shop.deleteItem", "delete", error, {
+      id: item.id
+    });
+    return { reply: `Database error: ${error.message}` };
+  }
+
+  debug.ok("shop.deleteItem", { deletedId: item.id, deletedName: item.name });
   return { reply: `Deleted ${item.name} (1 removed)` };
 }
 
 async function getShopList() {
-  try { return await loadShop(); } catch { return []; }
+  try {
+    return await loadShop();
+  } catch (err) {
+    debug.fail("shop.getShopList", err);
+    return [];
+  }
 }
 
 async function buyItem(itemName, qty, x, z) {
@@ -143,6 +308,9 @@ async function buyItem(itemName, qty, x, z) {
   qty = normalizeNumber(qty);
   x = normalizeNumber(x);
   z = normalizeNumber(z);
+
+  debug.step("shop.buyItem", { itemName, qty, x, z });
+
   if (!itemName) return { reply: "Item is required" };
   if (!Number.isInteger(qty) || qty <= 0) return { reply: "Quantity must be a positive integer" };
   if (x === null || z === null) return { reply: "Coordinates must be valid numbers" };
@@ -151,28 +319,52 @@ async function buyItem(itemName, qty, x, z) {
   const item = items.find(i => i.name.toLowerCase() === itemName.toLowerCase());
   if (!item) return { reply: "Item not found" };
 
-  orders.push({ id: Date.now().toString(), item: item.name, type: item.type, qty, x, z, status: "queued" });
+  const order = {
+    id: Date.now().toString(),
+    item: item.name,
+    type: item.type,
+    qty,
+    x,
+    z,
+    status: "queued"
+  };
+
+  orders.push(order);
   saveOrders();
+  debug.ok("shop.buyItem", { order });
+
   return { reply: `Queued ${qty}x ${item.name} @ (${x},${z})` };
 }
 
 function getOrders() {
   loadOrders();
+  debug.step("shop.getOrders", { count: orders.length });
   return orders;
 }
 
 async function buildXML() {
   loadOrders();
+  debug.step("shop.buildXML", { orderCount: orders.length });
+
   const xml = buildAllXML(orders);
   lastXML = xml;
   ensureCustomDir();
   if (xml.eventsXML) fs.writeFileSync(EVENTS_FILE, xml.eventsXML);
   if (xml.posXML) fs.writeFileSync(POS_FILE, xml.posXML);
+
+  debug.ok("shop.buildXML", {
+    eventsFile: EVENTS_FILE,
+    posFile: POS_FILE,
+    orders: orders.length
+  });
+
   return { reply: `XML built successfully (${orders.length} orders)`, xml };
 }
 
 function viewXML() {
   ensureCustomDir();
+  debug.step("shop.viewXML", { eventsExists: fs.existsSync(EVENTS_FILE), posExists: fs.existsSync(POS_FILE) });
+
   if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) return { reply: "No built XML found yet. Run /shopbuildxml first." };
   const eventsXML = fs.readFileSync(EVENTS_FILE, "utf-8");
   const posXML = fs.readFileSync(POS_FILE, "utf-8");
@@ -180,6 +372,7 @@ function viewXML() {
 }
 
 async function pushXML() {
+  debug.step("shop.pushXML", {});
   const res = await buildXML();
   return { reply: `XML pushed to /custom folder. ${res.xml?.eventsFile ? "Files updated." : ""}` };
 }
@@ -187,12 +380,15 @@ async function pushXML() {
 async function reloadData() {
   const items = await getShopList();
   loadOrders();
+  debug.ok("shop.reloadData", { items: items.length, orders: orders.length });
   return { reply: `Reloaded shop data. Items: ${items.length}, Orders: ${orders.length}` };
 }
 
 async function autocomplete(query) {
   const items = await getShopList();
   query = normalizeText(query).toLowerCase();
+  debug.step("shop.autocomplete", { query, items: items.length });
+
   if (!query) return [];
   return items.filter(i => i.name.toLowerCase().includes(query)).map(i => ({ name: i.name, value: i.name }));
 }
@@ -200,7 +396,22 @@ async function autocomplete(query) {
 function clearOrders() {
   orders = [];
   saveOrders();
+  debug.ok("shop.clearOrders", { cleared: true });
   return { reply: "Cleared queued purchases" };
 }
 
-module.exports = { addItem, editPrice, editName, deleteItem, buyItem, getShopList, getOrders, buildXML, viewXML, pushXML, reloadData, autocomplete, clearOrders };
+module.exports = {
+  addItem,
+  editPrice,
+  editName,
+  deleteItem,
+  buyItem,
+  getShopList,
+  getOrders,
+  buildXML,
+  viewXML,
+  pushXML,
+  reloadData,
+  autocomplete,
+  clearOrders
+};
