@@ -1,3 +1,5 @@
+// FIXED PHASE 4 (NO VALIDATION ERRORS)
+
 const {
     Client,
     GatewayIntentBits,
@@ -16,22 +18,18 @@ const { createClient } = require("@supabase/supabase-js");
 const fs = require("fs");
 require("dotenv").config();
 
-// ---------------- DISCORD ----------------
 const client = new Client({
     intents: [GatewayIntentBits.Guilds]
 });
 
-// ---------------- SUPABASE ----------------
 const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_KEY
 );
 
-// ---------------- PATHS ----------------
 const EVENTS_PATH = "./custom/shopevents.xml";
 const SPAWNS_PATH = "./custom/cfgeventspawns.xml";
 
-// ---------------- CACHE ----------------
 let shopCache = [];
 let orderCache = [];
 
@@ -67,7 +65,7 @@ async function saveOrder(order) {
     await loadData();
 }
 
-// ---------------- XML BUILDER ----------------
+// ---------------- XML ----------------
 function makeEventName() {
     return `ShopEvent_${Date.now()}_${Math.floor(Math.random()*1000)}`;
 }
@@ -103,10 +101,7 @@ async function buildXML() {
 <pos x="${o.x}" z="${o.z}" a="0" />
 </event>`);
 
-        await supabase
-            .from("orders")
-            .update({ status: "built" })
-            .eq("id", o.id);
+        await supabase.from("orders").update({ status: "built" }).eq("id", o.id);
     }
 
     fs.writeFileSync(EVENTS_PATH,
@@ -130,31 +125,59 @@ client.once("clientReady", async () => {
 // ---------------- COMMANDS ----------------
 const commands = [
 
-    new SlashCommandBuilder().setName("shop").setDescription("View shop"),
-    new SlashCommandBuilder().setName("additem").setDescription("Add item"),
+    new SlashCommandBuilder()
+        .setName("shop")
+        .setDescription("View shop"),
+
+    new SlashCommandBuilder()
+        .setName("additem")
+        .setDescription("Add item"),
 
     new SlashCommandBuilder()
         .setName("removeitem")
         .setDescription("Remove item")
-        .addStringOption(o => o.setName("item").setAutocomplete(true).setRequired(true)),
+        .addStringOption(o =>
+            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName("setprice")
-        .setDescription("Set price")
-        .addStringOption(o => o.setName("item").setAutocomplete(true).setRequired(true))
-        .addIntegerOption(o => o.setName("price").setRequired(true)),
+        .setDescription("Set item price")
+        .addStringOption(o =>
+            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
+        )
+        .addIntegerOption(o =>
+            o.setName("price").setDescription("New price").setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName("buy")
         .setDescription("Buy item")
-        .addStringOption(o => o.setName("item").setAutocomplete(true).setRequired(true))
-        .addIntegerOption(o => o.setName("x").setRequired(true))
-        .addIntegerOption(o => o.setName("z").setRequired(true)),
+        .addStringOption(o =>
+            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
+        )
+        .addIntegerOption(o =>
+            o.setName("x").setDescription("X coord").setRequired(true)
+        )
+        .addIntegerOption(o =>
+            o.setName("z").setDescription("Z coord").setRequired(true)
+        ),
 
-    new SlashCommandBuilder().setName("orders").setDescription("View orders"),
-    new SlashCommandBuilder().setName("queue").setDescription("Queue orders"),
-    new SlashCommandBuilder().setName("build").setDescription("Build XML"),
-    new SlashCommandBuilder().setName("cycle").setDescription("Complete orders")
+    new SlashCommandBuilder()
+        .setName("orders")
+        .setDescription("View orders"),
+
+    new SlashCommandBuilder()
+        .setName("queue")
+        .setDescription("Queue orders"),
+
+    new SlashCommandBuilder()
+        .setName("build")
+        .setDescription("Build XML"),
+
+    new SlashCommandBuilder()
+        .setName("cycle")
+        .setDescription("Complete orders")
 ];
 
 // ---------------- INTERACTIONS ----------------
