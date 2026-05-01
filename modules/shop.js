@@ -2,88 +2,147 @@ const fs = require("fs");
 const path = require("path");
 
 const SHOP_FILE = path.join(__dirname, "../data/shop.json");
+const ORDERS_FILE = path.join(__dirname, "../data/orders.json");
 
-let shop = loadShop();
+let shop = [];
 let orders = [];
 
-function ensureFile() {
+/* ---------------- FILE SAFETY ---------------- */
+
+function ensureFiles() {
   const dir = path.dirname(SHOP_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(SHOP_FILE)) fs.writeFileSync(SHOP_FILE, JSON.stringify([]));
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  if (!fs.existsSync(SHOP_FILE)) {
+    fs.writeFileSync(SHOP_FILE, JSON.stringify([]));
+  }
+
+  if (!fs.existsSync(ORDERS_FILE)) {
+    fs.writeFileSync(ORDERS_FILE, JSON.stringify([]));
+  }
 }
 
-function loadShop() {
-  ensureFile();
-  return JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8"));
+/* ---------------- LOAD / SAVE ---------------- */
+
+function loadAll() {
+  ensureFiles();
+
+  try {
+    shop = JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8"));
+  } catch {
+    shop = [];
+  }
+
+  try {
+    orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8"));
+  } catch {
+    orders = [];
+  }
 }
 
 function saveShop() {
-  ensureFile();
   fs.writeFileSync(SHOP_FILE, JSON.stringify(shop, null, 2));
 }
 
-/* ---------------- SHOP ACTIONS ---------------- */
+function saveOrders() {
+  fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
+}
 
-async function addItem(name, type, price) {
-  const item = { id: Date.now().toString(), name, type, price };
+/* auto-load on startup */
+loadAll();
+
+/* ---------------- SHOP ---------------- */
+
+function addItem(name, type, price) {
+  const item = {
+    id: Date.now().toString(),
+    name: name.trim(),
+    type: type.trim(),
+    price: Number(price)
+  };
+
   shop.push(item);
   saveShop();
 
-  return {
-    reply: `Added ${name} (${type})`,
-  };
+  return `Added ${item.name} (${item.type})`;
 }
 
-async function deleteItem(name) {
-  shop = shop.filter(i => i.name !== name);
+function deleteItem(name) {
+  const before = shop.length;
+
+  shop = shop.filter(
+    i => i.name.toLowerCase() !== name.toLowerCase()
+  );
+
   saveShop();
 
-  return {
-    reply: `Deleted ${name} from shop`,
-  };
+  return before === shop.length
+    ? `Item not found`
+    : `Deleted ${name}`;
 }
 
-async function getShopList() {
+function getShopList() {
+  loadAll();
   return shop;
 }
 
-/* ---------------- BUY SYSTEM ---------------- */
+/* ---------------- ORDERS ---------------- */
 
-async function buyItem(itemName, qty, x, z) {
-  const item = shop.find(i => i.name === itemName);
-  if (!item) return { reply: "Item not found" };
+function createOrder(itemName, qty, x, z) {
+  loadAll();
+
+  const item = shop.find(
+    i => i.name.toLowerCase() === itemName.toLowerCase()
+  );
+
+  if (!item) return { error: "Item not found" };
+
+  const quantity = Math.max(1, Number(qty || 1));
 
   const order = {
     id: Date.now().toString(),
     item: item.name,
     type: item.type,
-    qty,
+    qty: quantity,
     x,
     z,
-    status: "queued"
+    status: "queued",
+    created: Date.now()
   };
 
   orders.push(order);
+  saveOrders();
 
   return {
-    reply: `Queued ${qty}x ${item.name} @ (${x},${z})`
+    message: `Queued ${quantity}x ${item.name} @ (${x},${z})`
   };
 }
 
 function getOrders() {
+  loadAll();
   return orders;
 }
 
-/* ---------------- XML GENERATION ---------------- */
+function clearOrders() {
+  orders = [];
+  saveOrders();
+}
+
+/* ---------------- XML ---------------- */
 
 function buildXML() {
+  loadAll();
+
   let events = "";
   let positions = "";
 
   for (const o of orders) {
     const id = `ShopEvent_${o.id}`;
 
-    const eventXML = `
+    events += `
 <event name="${id}">
   <nominal>1</nominal>
   <min>${o.qty}</min>
@@ -102,39 +161,44 @@ function buildXML() {
   </children>
 </event>`;
 
-    const posXML = `
+    positions += `
 <event name="${id}">
   <pos x="${o.x}" z="${o.z}" a="0"/>
 </event>`;
-
-    events += eventXML;
-    positions += posXML;
   }
 
   return {
-    eventsXML: `<events>${events}</events>`,
-    positionsXML: `<eventposdef>${positions}</eventposdef>`
+    eventsXML: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<events>${events}
+</events>`,
+
+    positionsXML: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<eventposdef>${positions}
+</eventposdef>`
   };
 }
 
 /* ---------------- AUTOCOMPLETE ---------------- */
 
-function autocomplete(query) {
+function autocomplete(query = "") {
+  loadAll();
+
   return shop
-    .filter(i => i.name.toLowerCase().includes(query.toLowerCase()))
-    .map(i => ({ name: i.name, value: i.name }));
+    .filter(i =>
+      i.name.toLowerCase().includes(query.toLowerCase())
+    )
+    .map(i => ({
+      name: `${i.name} ($${i.price})`,
+      value: i.name
+    }));
 }
 
-/* ---------------- RESET ---------------- */
-
-function clearOrders() {
-  orders = [];
-}
+/* ---------------- EXPORT ---------------- */
 
 module.exports = {
   addItem,
   deleteItem,
-  buyItem,
+  createOrder,
   getShopList,
   getOrders,
   buildXML,
