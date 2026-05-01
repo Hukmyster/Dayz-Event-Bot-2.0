@@ -76,6 +76,12 @@ function formatMsg(content) {
   return content.length > 1900 ? content.slice(0, 1900) + "..." : content;
 }
 
+function serializeOptions(interaction) {
+  const out = {};
+  for (const opt of interaction.options.data || []) out[opt.name] = opt.value;
+  return out;
+}
+
 async function replyOnce(interaction, payload, label = "reply") {
   const data = { ...payload };
   if (data.ephemeral) {
@@ -88,7 +94,8 @@ async function replyOnce(interaction, payload, label = "reply") {
 
 async function handleCommand(interaction) {
   const cmd = interaction.commandName;
-  debug.start(cmd, { user: interaction.user?.tag });
+  const opts = serializeOptions(interaction);
+  debug.start(cmd, { user: interaction.user?.tag, options: opts });
 
   if (cmd === "shop" || cmd === "shophelp") {
     return replyOnce(interaction, {
@@ -111,11 +118,11 @@ async function handleCommand(interaction) {
     }, cmd);
   }
 
-  const send = (res, label = cmd) =>
-    replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
+  const send = (res, label = cmd) => replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
 
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
+    debug.step("shoplist", { count: items.length });
     return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
   }
 
@@ -127,6 +134,7 @@ async function handleCommand(interaction) {
 
   if (cmd === "shopqueue") {
     const orders = shop.getOrders() || [];
+    debug.step("shopqueue", { count: orders.length });
     return send({ reply: orders.length ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z}) [${o.status}]`).join("\n") : "No orders" });
   }
 
@@ -138,6 +146,7 @@ async function handleCommand(interaction) {
   if (cmd === "shopstatus") {
     const items = await shop.getShopList();
     const orders = shop.getOrders() || [];
+    debug.step("shopstatus", { items: items.length, orders: orders.length });
     return send({ reply: `Items: ${items.length}\nOrders: ${orders.length}` });
   }
 
@@ -178,6 +187,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isAutocomplete()) {
       const focused = interaction.options.getFocused();
       const query = typeof focused === "string" ? focused : "";
+      debug.step("autocomplete", { query });
       const results = await shop.autocomplete(query);
       logger.interaction({ type: "autocomplete", query, results });
       debug.step("autocomplete", { query, resultsCount: results.length });
@@ -192,12 +202,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
     logger.interaction({ type: "command", cmd: interaction.commandName, user: interaction.user?.tag });
     return handleCommand(interaction).catch(err => {
       logger.error("COMMAND ERROR", err);
-      debug.fail(interaction.commandName || "unknown", err, { user: interaction.user?.tag });
+      debug.fail(interaction.commandName || "unknown", err, { user: interaction.user?.tag, options: serializeOptions(interaction) });
       return replyOnce(interaction, { content: "Error executing command", ephemeral: true }, interaction.commandName || "unknown");
     });
   } catch (err) {
     logger.error("INTERACTION ERROR", err);
-    debug.fail(interaction.commandName || "unknown", err, { user: interaction.user?.tag });
+    debug.fail(interaction.commandName || "unknown", err, { user: interaction.user?.tag, options: serializeOptions(interaction) });
     return replyOnce(interaction, { content: "Error executing command", ephemeral: true }, interaction.commandName || "unknown");
   }
 });
