@@ -28,6 +28,7 @@ const supabase = createClient(
 let shopCache = [];
 let orderCache = [];
 
+// ---------------- LOAD ----------------
 async function loadData() {
     const shopRes = await supabase.from("shop").select("*");
     const orderRes = await supabase.from("orders").select("*");
@@ -41,14 +42,30 @@ async function loadData() {
 // ---------------- SAVE ----------------
 async function saveShopItem(item) {
     const res = await supabase.from("shop").insert([item]);
-
-    if (res.error) {
-        console.error("[SHOP ERROR]", res.error);
-        return false;
-    }
-
+    if (res.error) return console.error(res.error);
     await loadData();
-    return true;
+}
+
+async function deleteItem(displayName) {
+    const res = await supabase.from("shop").delete().eq("displayName", displayName);
+    if (res.error) return console.error(res.error);
+    await loadData();
+}
+
+async function updatePrice(displayName, price) {
+    const res = await supabase
+        .from("shop")
+        .update({ price })
+        .eq("displayName", displayName);
+
+    if (res.error) return console.error(res.error);
+    await loadData();
+}
+
+async function saveOrder(order) {
+    const res = await supabase.from("orders").insert([order]);
+    if (res.error) return console.error(res.error);
+    await loadData();
 }
 
 // ---------------- READY ----------------
@@ -60,9 +77,27 @@ client.once("clientReady", async () => {
 
 // ---------------- COMMANDS ----------------
 const commands = [
+
     new SlashCommandBuilder().setName("shop").setDescription("View shop"),
 
     new SlashCommandBuilder().setName("additem").setDescription("Add item"),
+
+    new SlashCommandBuilder()
+        .setName("removeitem")
+        .setDescription("Remove item")
+        .addStringOption(o =>
+            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
+        ),
+
+    new SlashCommandBuilder()
+        .setName("setprice")
+        .setDescription("Update item price")
+        .addStringOption(o =>
+            o.setName("item").setDescription("Item").setAutocomplete(true).setRequired(true)
+        )
+        .addIntegerOption(o =>
+            o.setName("price").setDescription("New price").setRequired(true)
+        ),
 
     new SlashCommandBuilder()
         .setName("buy")
@@ -75,21 +110,18 @@ const commands = [
         )
         .addIntegerOption(o =>
             o.setName("z").setDescription("Z").setRequired(true)
-        )
+        ),
+
+    new SlashCommandBuilder().setName("orders").setDescription("View orders"),
+
+    new SlashCommandBuilder().setName("queue").setDescription("Queue orders")
 ];
 
-// ---------------- MAIN HANDLER ----------------
+// ---------------- INTERACTIONS ----------------
 client.on("interactionCreate", async (interaction) => {
 
-    console.log("====================================");
-    console.log("[INTERACTION TYPE]", interaction.type);
-    console.log("[COMMAND]", interaction.commandName || interaction.customId);
-
-    // =====================================================
-    // 1. AUTOCOMPLETE (FIRST)
-    // =====================================================
+    // AUTOCOMPLETE
     if (interaction.isAutocomplete()) {
-
         const focused = interaction.options.getFocused().toLowerCase();
 
         const results = shopCache
@@ -104,19 +136,15 @@ client.on("interactionCreate", async (interaction) => {
         );
     }
 
-    // =====================================================
-    // 2. MODAL SUBMIT (MUST BE FIRST BEFORE ANY DEFER)
-    // =====================================================
+    // MODAL SUBMIT
     if (interaction.type === InteractionType.ModalSubmit &&
         interaction.customId === "additem_modal") {
-
-        console.log("[MODAL SUBMIT] additem");
 
         const type = interaction.fields.getTextInputValue("type");
         const name = interaction.fields.getTextInputValue("name");
         const price = parseInt(interaction.fields.getTextInputValue("price"));
 
-        const ok = await saveShopItem({
+        await saveShopItem({
             id: Date.now().toString(),
             type,
             displayName: name,
@@ -124,83 +152,131 @@ client.on("interactionCreate", async (interaction) => {
         });
 
         return interaction.reply({
-            content: ok ? "Item added" : "Failed",
+            content: "Item added",
             flags: MessageFlags.Ephemeral
         });
     }
 
-    // =====================================================
-    // 3. SLASH COMMANDS ONLY
-    // =====================================================
     if (!interaction.isChatInputCommand()) return;
 
-    console.log("[SLASH COMMAND]", interaction.commandName);
-
-    // ---------------- ADD ITEM (MODAL OPEN) ----------------
+    // ---------------- ADD ITEM ----------------
     if (interaction.commandName === "additem") {
-
-        console.log("[OPEN MODAL] additem");
 
         const modal = new ModalBuilder()
             .setCustomId("additem_modal")
-            .setTitle("Add Shop Item");
-
-        const type = new TextInputBuilder()
-            .setCustomId("type")
-            .setLabel("DayZ Type")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-        const name = new TextInputBuilder()
-            .setCustomId("name")
-            .setLabel("Display Name")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-        const price = new TextInputBuilder()
-            .setCustomId("price")
-            .setLabel("Price")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
+            .setTitle("Add Item");
 
         modal.addComponents(
-            new ActionRowBuilder().addComponents(type),
-            new ActionRowBuilder().addComponents(name),
-            new ActionRowBuilder().addComponents(price)
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId("type")
+                    .setLabel("DayZ Type")
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true)
+            ),
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId("name")
+                    .setLabel("Display Name")
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true)
+            ),
+            new ActionRowBuilder().addComponents(
+                new TextInputBuilder()
+                    .setCustomId("price")
+                    .setLabel("Price")
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true)
+            )
         );
 
-        // IMPORTANT: NO deferReply here
         return interaction.showModal(modal);
     }
 
-    // =====================================================
-    // SAFE DEFER ONLY AFTER NON-MODAL COMMANDS
-    // =====================================================
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     // ---------------- SHOP ----------------
     if (interaction.commandName === "shop") {
-
         return interaction.editReply(
-            shopCache.length
-                ? shopCache.map(i => `• ${i.displayName} ($${i.price})`).join("\n")
-                : "Empty"
+            shopCache.map(i => `• ${i.displayName} ($${i.price})`).join("\n") || "Empty"
         );
+    }
+
+    // ---------------- REMOVE ITEM ----------------
+    if (interaction.commandName === "removeitem") {
+
+        const item = interaction.options.getString("item");
+
+        await deleteItem(item);
+
+        return interaction.editReply(`Removed: ${item}`);
+    }
+
+    // ---------------- SET PRICE ----------------
+    if (interaction.commandName === "setprice") {
+
+        const item = interaction.options.getString("item");
+        const price = interaction.options.getInteger("price");
+
+        await updatePrice(item, price);
+
+        return interaction.editReply(`Updated ${item} → $${price}`);
     }
 
     // ---------------- BUY ----------------
     if (interaction.commandName === "buy") {
 
         const selected = interaction.options.getString("item");
-
         const item = shopCache.find(i => i.displayName === selected);
 
-        if (!item) {
-            return interaction.editReply("Item not found");
+        if (!item) return interaction.editReply("Not found");
+
+        await saveOrder({
+            id: Date.now(),
+            itemType: item.type,
+            displayName: item.displayName,
+            x: interaction.options.getInteger("x"),
+            z: interaction.options.getInteger("z"),
+            status: "pending"
+        });
+
+        return interaction.editReply(`Ordered: ${item.displayName}`);
+    }
+
+    // ---------------- ORDERS ----------------
+    if (interaction.commandName === "orders") {
+
+        return interaction.editReply(
+            orderCache.length
+                ? orderCache.map(o => `• ${o.displayName} [${o.status}]`).join("\n")
+                : "No orders"
+        );
+    }
+
+    // ---------------- QUEUE ----------------
+    if (interaction.commandName === "queue") {
+
+        let moved = 0;
+
+        for (let o of orderCache) {
+            if (o.status === "pending") {
+                o.status = "queued";
+                moved++;
+            }
         }
 
-        return interaction.editReply(`Order: ${item.displayName}`);
+        for (let o of orderCache) {
+            await supabase
+                .from("orders")
+                .update({ status: o.status })
+                .eq("id", o.id);
+        }
+
+        await loadData();
+
+        return interaction.editReply(`Queued: ${moved}`);
     }
+
 });
 
 // ---------------- REGISTER ----------------
@@ -215,10 +291,8 @@ async function register() {
         { body: commands }
     );
 
-    console.log("[DISCORD] Commands registered");
+    console.log("Commands registered");
 }
 
 // ---------------- START ----------------
-register()
-    .then(() => client.login(process.env.DISCORD_TOKEN))
-    .catch(console.error);
+register().then(() => client.login(process.env.DISCORD_TOKEN));
