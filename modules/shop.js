@@ -21,23 +21,19 @@ function ensureFiles() {
 
 function loadAll() {
   ensureFiles();
-  try {
-    shop = JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8"));
-  } catch {
-    shop = [];
-  }
-  try {
-    orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8"));
-  } catch {
-    orders = [];
-  }
+  try { shop = JSON.parse(fs.readFileSync(SHOP_FILE, "utf-8")) || []; } catch { shop = []; }
+  try { orders = JSON.parse(fs.readFileSync(ORDERS_FILE, "utf-8")) || []; } catch { orders = []; }
+  if (!Array.isArray(shop)) shop = [];
+  if (!Array.isArray(orders)) orders = [];
 }
 
 function saveShop() {
+  ensureFiles();
   fs.writeFileSync(SHOP_FILE, JSON.stringify(shop, null, 2));
 }
 
 function saveOrders() {
+  ensureFiles();
   fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
 }
 
@@ -47,14 +43,8 @@ function ensureCustomDir() {
 
 loadAll();
 
-function normalizeText(v) {
-  return String(v ?? "").trim();
-}
-
-function normalizeNumber(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
+function normalizeText(v) { return String(v ?? "").trim(); }
+function normalizeNumber(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
 
 async function addItem(name, type, price) {
   loadAll();
@@ -104,10 +94,7 @@ async function deleteItem(name) {
   return { reply: `Deleted ${name} (${before - shop.length} removed)` };
 }
 
-function getShopList() {
-  loadAll();
-  return shop;
-}
+function getShopList() { loadAll(); return shop; }
 
 async function buyItem(itemName, qty, x, z) {
   loadAll();
@@ -125,10 +112,7 @@ async function buyItem(itemName, qty, x, z) {
   return { reply: `Queued ${qty}x ${item.name} @ (${x},${z})` };
 }
 
-function getOrders() {
-  loadAll();
-  return orders;
-}
+function getOrders() { loadAll(); return orders; }
 
 async function buildXML() {
   loadAll();
@@ -142,13 +126,10 @@ async function buildXML() {
 
 function viewXML() {
   ensureCustomDir();
-  if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) {
-    return { reply: "No built XML found yet. Run /shopbuildxml first." };
-  }
+  if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) return { reply: "No built XML found yet. Run /shopbuildxml first." };
   const eventsXML = fs.readFileSync(EVENTS_FILE, "utf-8");
   const posXML = fs.readFileSync(POS_FILE, "utf-8");
-  const content = `--- shopevents.xml ---\n${eventsXML.slice(0, 3500)}\n\n--- eventposdef.xml ---\n${posXML.slice(0, 3500)}`;
-  return { reply: content };
+  return { reply: `--- shopevents.xml ---\n${eventsXML.slice(0, 3500)}\n\n--- eventposdef.xml ---\n${posXML.slice(0, 3500)}` };
 }
 
 async function pushXML() {
@@ -174,18 +155,4 @@ function clearOrders() {
   return { reply: "Cleared queued purchases" };
 }
 
-module.exports = {
-  addItem,
-  editPrice,
-  editName,
-  deleteItem,
-  buyItem,
-  getShopList,
-  getOrders,
-  buildXML,
-  viewXML,
-  pushXML,
-  reloadData,
-  autocomplete,
-  clearOrders
-};
+module.exports = { addItem, editPrice, editName, deleteItem, buyItem, getShopList, getOrders, buildXML, viewXML, pushXML, reloadData, autocomplete, clearOrders };
