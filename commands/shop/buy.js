@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const economy = require('../../modules/economy');
+const shop = require('../../modules/shop');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -8,67 +9,129 @@ module.exports = {
     .addStringOption(option =>
       option
         .setName('item')
-        .setDescription('The item you want to buy')
+        .setDescription('Item name')
         .setRequired(true)
+        .setAutocomplete(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('quantity')
+        .setDescription('Quantity')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('x')
+        .setDescription('X coordinate')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('z')
+        .setDescription('Z coordinate')
+        .setRequired(true)
+    )
+    .addStringOption(option =>
+      option
+        .setName('method')
+        .setDescription('Purchase method')
+        .setRequired(false)
+        .addChoices(
+          { name: 'Wallet', value: 'wallet' },
+          { name: 'Bank', value: 'bank' }
+        )
     ),
 
   async execute(interaction) {
     try {
       if (!economy.hasAccess(interaction.member)) {
         return interaction.reply({
-          content: 'You do not have the required role to use shop commands.',
+          content: 'You do not have the required role to use economy commands.',
           ephemeral: true
         });
       }
 
-      const itemName = interaction.options.getString('item', true).trim();
-      const guildId = interaction.guildId;
-      const userId = interaction.user.id;
-      const username = interaction.user.username;
+      const itemName = interaction.options.getString('item', true);
+      const quantity = interaction.options.getInteger('quantity', true);
+      const x = interaction.options.getInteger('x', true);
+      const z = interaction.options.getInteger('z', true);
+      const method = interaction.options.getString('method') || 'wallet';
 
-      const shopItem = await economy.findShopItemByName(itemName);
-
-      if (!shopItem) {
+      if (quantity <= 0) {
         return interaction.reply({
-          content: `I could not find an item called "${itemName}".`,
+          content: 'Quantity must be greater than 0.',
           ephemeral: true
         });
       }
 
-      const account = await economy.getOrCreateAccount(userId, guildId, username);
-      const price = Number(shopItem.price || 0);
-      const wallet = Number(account.wallet || 0);
+      const items = await shop.getShopList();
+      const item = items.find(i =>
+        i.name.toLowerCase() === itemName.toLowerCase() ||
+        i.name.toLowerCase().includes(itemName.toLowerCase())
+      );
 
-      if (wallet < price) {
+      if (!item) {
         return interaction.reply({
-          content: `You need ${economy.formatMoney(price)}, but you only have ${economy.formatMoney(wallet)}.`,
+          content: 'Item not found.',
           ephemeral: true
         });
       }
 
-      await economy.chargeWallet(userId, guildId, price, username, {
-        notes: `Purchased ${shopItem.name}`,
-        item_id: shopItem.id,
-        item_name: shopItem.name
-      });
+      const totalCost = Number(item.price || 0) * Number(quantity || 0);
+      const account = await economy.getOrCreateAccount(
+        interaction.user.id,
+        interaction.guildId,
+        interaction.user.username
+      );
 
-      const updatedAccount = await economy.getAccount(userId, guildId);
+      const available = method === 'bank'
+        ? Number(account.bank || 0)
+        : Number(account.wallet || 0);
+
+      if (available < totalCost) {
+        return interaction.reply({
+          content: `You cannot afford this purchase using your ${method}. Cost: ${economy.formatMoney(totalCost)}. Available: ${economy.formatMoney(available)}.`,
+          ephemeral: true
+        });
+      }
+
+      const updated = await economy.chargeByMethod(
+        interaction.user.id,
+        interaction.guildId,
+        totalCost,
+        method,
+        interaction.user.username,
+        {
+          notes: `Buy ${quantity}x ${item.name} using ${method}`,
+          item: item.name,
+          item_type: item.type,
+          quantity,
+          x,
+          z
+        }
+      );
+
+      const orderResult = await shop.buyItem(item.name, quantity, x, z);
 
       const embed = new EmbedBuilder()
-        .setTitle('Purchase successful')
-        .setDescription(`You bought **${shopItem.name}** for **${economy.formatMoney(price)}**.`)
+        .setTitle('Purchase Queued')
+        .setDescription(orderResult.reply || `Queued ${quantity}x ${item.name}.`)
         .addFields(
-          { name: 'Wallet', value: economy.formatMoney(updatedAccount.wallet), inline: true },
-          { name: 'Item', value: shopItem.name, inline: true }
+          { name: 'Item', value: item.name, inline: true },
+          { name: 'Quantity', value: String(quantity), inline: true },
+          { name: 'Total Cost', value: economy.formatMoney(totalCost), inline: true },
+          { name: 'Method', value: method, inline: true },
+          { name: 'Wallet', value: economy.formatMoney(updated.wallet), inline: true },
+          { name: 'Bank', value: economy.formatMoney(updated.bank), inline: true }
         )
-        .setColor(0x2ecc71)
+        .setColor(0x3498db)
         .setTimestamp();
 
       return interaction.reply({ embeds: [embed] });
     } catch (error) {
       console.error('buy command error:', error);
       return interaction.reply({
-        content: 'Something went wrong while processing that purchase.',
+        content: error.message || 'Something went wrong while buying the item.',
         ephemeral: true
       });
     }
