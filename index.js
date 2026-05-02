@@ -3,6 +3,7 @@ require("dotenv").config();
 
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
+const daily = require("./commands/shop/daily");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
@@ -64,6 +65,7 @@ async function handleCommand(interaction) {
         "withdraw - move money from bank to wallet",
         "send - send money to another member",
         "leaderboard - show richest players",
+        "daily - claim your daily reward",
         "account - show full account",
         "addmoney - admin add money",
         "removemoney - admin remove money",
@@ -97,12 +99,18 @@ async function handleCommand(interaction) {
   }
 
   if (cmd === "shopbuyitem") {
+    const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
+    const method = interaction.options.getString("method") || "wallet";
+    const available = method === "bank" ? Number(account.bank || 0) : Number(account.wallet || 0);
+
     return send(
       await shop.buyItem(
         interaction.options.getString("item"),
         interaction.options.getInteger("quantity"),
         interaction.options.getInteger("x"),
-        interaction.options.getInteger("z")
+        interaction.options.getInteger("z"),
+        method,
+        available
       )
     );
   }
@@ -222,6 +230,10 @@ async function handleCommand(interaction) {
         ? sorted.map((u, i) => `${i + 1}. ${u.username} - ${economy.formatMoney(u.total)}`).join("\n")
         : "No economy accounts found yet."
     });
+  }
+
+  if (cmd === "daily") {
+    return send(await daily.execute(interaction));
   }
 
   if (cmd === "account") {
