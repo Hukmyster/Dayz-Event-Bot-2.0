@@ -1,505 +1,504 @@
+require("dotenv").config();
+const { SlashCommandBuilder, hyperlink } = require("@discordjs/builders");
 const fs = require("fs");
+const ini = require("ini");
+const { Client, Intents, MessageEmbed } = require("discord.js");
+const axios = require("axios");
 const path = require("path");
-const { Client } = require("basic-ftp");
+const readline = require("readline");
+const colors = require("colors");
+const moment = require("moment-timezone");
 
-const LOOP_INTERVAL = Number(process.env.KILLFEED_INTERVAL_MS || 5 * 60 * 1000);
-const FTP_HOST = process.env.FTP_HOST;
-const FTP_USER = process.env.FTP_USER;
-const FTP_PASS = process.env.FTP_PASS;
-const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "true";
-const DEBUG = String(process.env.KILLFEED_DEBUG || "true").toLowerCase() === "true";
-const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
-const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
-const HUNT_DELAY_MS = Number(process.env.KILLFEED_HUNT_DELAY_MS || 8000);
-const STALE_LIMIT = Number(process.env.KILLFEED_STALE_LIMIT || 2);
+let config = ini.parse(fs.readFileSync("./config.ini", "utf-8"));
+let admRegex = null;
+let admPlat = null;
+let { GUILDID, PLATFORM, ID1, ID2, NITRATOKEN, REGION } = require("../config.json");
+const bot = new Client({ intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES, Intents.FLAGS.GUILD_MEMBERS] });
 
-const state = {
-  running: false,
-  timer: null,
-  inFlight: false,
-  cycle: 0,
-  phase: "startup",
-  currentFile: null,
-  currentLineCount: 0,
-  lastKnownLastLine: "",
-  lastEvents: new Set(),
-  lastFileMeta: null,
-  lastContentBytes: 0,
-  staleCycles: 0,
-  huntActive: false,
-  history: [],
-  lastList: [],
-  lastDecision: null,
-  lastRead: null,
-  sourceSwitches: 0,
-  huntHits: 0,
-  huntBackoff: HUNT_DELAY_MS,
-  lastSuccessfulFile: null,
-  lastSuccessfulAt: null,
-  lastFailure: null
-};
+const LOCAL_DIR = path.resolve("./logs");
+const LOCAL_LOG = path.join(LOCAL_DIR, "log.ADM");
+const STAGING_LOG = path.join(LOCAL_DIR, "serverlog.ADM");
+const options = { separator: /[\r]{0,1}\n/, fromBeginning: false, useWatchFile: true, flushAtEOF: true, fsWatchOptions: {}, follow: true, nLines: false, logger: console };
 
-function safeJson(obj) {
-  try { return JSON.stringify(obj, null, 2); } catch { return String(obj); }
-}
-
-function log(level, label, data) {
-  if (!DEBUG) return;
-  const ts = new Date().toISOString();
-  const prefix = `[killfeed][${ts}][${level}] ${label}`;
-  if (data === undefined) console.log(prefix);
-  else console.log(prefix, data);
-}
+let logStats = 0;
+let logBytes = 0;
+let logSize = 0;
+let logSizeRef = 0;
+let lineCount = 0;
+let lineRef = 0;
+let dt0 = 0;
+let valueRef = new Set();
+let iso;
+let linkLoc = " ";
+let kfChannel = " ";
+let locChannel = " ";
+let alarmChannel = " ";
+let logDt = " ";
+let dt = new Date();
+let todayRef = " ";
+let today = " ";
+let feedStart = false;
+let tail = null;
+let feedInterval = null;
+let phrases = [") killed by ", "AdminLog started on ", "from", ") bled out", ") with (MeleeFist)", ") committed suicide", "[HP: 0] hit by FallDamage", ") was teleported from:"];
 
 function trace(step, data) {
-  const entry = { ts: new Date().toISOString(), phase: state.phase, step, data };
-  state.history.push(entry);
-  if (state.history.length > 60) state.history.shift();
-  log("trace", step, data);
+  if (process.env.KILLFEED_DEBUG !== "true") return;
+  console.log(`[killfeed][${new Date().toISOString()}][trace] ${step}`, data);
 }
 
-function stamp(reason) {
-  const lines = state.history.map((h, i) => `${String(i + 1).padStart(2, "0")}. ${h.ts} | ${h.phase} | ${h.step} | ${safeJson(h.data)}`);
-  const out = [
-    "=== KILLFEED DEBUG STAMP ===",
-    `reason: ${reason}`,
-    `phase: ${state.phase}`,
-    `cycle: ${state.cycle}`,
-    `currentFile: ${state.currentFile}`,
-    `currentLineCount: ${state.currentLineCount}`,
-    `lastKnownLastLine: ${state.lastKnownLastLine}`,
-    `lastContentBytes: ${state.lastContentBytes}`,
-    `staleCycles: ${state.staleCycles}`,
-    `sourceSwitches: ${state.sourceSwitches}`,
-    `huntHits: ${state.huntHits}`,
-    `huntBackoff: ${state.huntBackoff}`,
-    `lastSuccessfulFile: ${state.lastSuccessfulFile}`,
-    `lastSuccessfulAt: ${state.lastSuccessfulAt}`,
-    `lastFailure: ${safeJson(state.lastFailure)}`,
-    "--- HISTORY ---",
-    ...lines,
-    "=== END STAMP ==="
-  ].join("\n");
-  console.log(out);
-  return out;
-}
-
-function ensureConfig() {
-  const missing = [];
-  if (!FTP_HOST) missing.push("FTP_HOST");
-  if (!FTP_USER) missing.push("FTP_USER");
-  if (!FTP_PASS) missing.push("FTP_PASS");
-  if (missing.length) throw new Error(`Missing killfeed env vars: ${missing.join(", ")}`);
-}
-
-function joinRemote(dir, name) {
-  const d = String(dir || "").replace(/[\\/]+$/, "");
-  return `${d}/${name}`;
-}
-
-async function ftpClient() {
-  const client = new Client();
-  await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
-  return client;
-}
-
-async function listAdmFiles() {
-  const client = await ftpClient();
-  try {
-    const list = await client.list(REMOTE_DIR);
-    const files = list
-      .filter(item => String(item.name || "").toUpperCase().endsWith(".ADM"))
-      .map(item => ({
-        name: item.name,
-        size: Number(item.size || 0),
-        modifiedAt: item.modifiedAt || item.modified || null,
-        fullPath: joinRemote(REMOTE_DIR, item.name)
-      }))
-      .sort((a, b) => {
-        const ta = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
-        const tb = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
-        if (tb !== ta) return tb - ta;
-        if (b.size !== a.size) return b.size - a.size;
-        return b.name.localeCompare(a.name);
-      });
-    state.lastList = files;
-    trace("ftp list", { dir: REMOTE_DIR, count: files.length, files });
-    return files;
-  } finally {
-    client.close();
+function getTimezone() {
+  switch ((REGION || "").toUpperCase()) {
+    case "FRANKFURT": return "Europe/Berlin";
+    case "LOS ANGELES": return "America/Los_Angeles";
+    case "LONDON": return "Europe/London";
+    case "MIAMI":
+    case "NEW YORK": return "America/New_York";
+    case "SINGAPORE": return "Asia/Singapore";
+    case "SYDNEY": return "Australia/Sydney";
+    case "MOSCOW": return "Europe/Moscow";
+    default: return "UTC";
   }
 }
 
-async function readRemoteFile(remotePath) {
-  const client = await ftpClient();
-  const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
-  try {
-    trace("download start", { remotePath });
-    await client.downloadTo(localTmp, remotePath);
-    const content = fs.readFileSync(localTmp, "utf8");
-    const stat = fs.statSync(localTmp);
-    const lines = content.split(/\r?\n/);
-    trace("download ok", {
-      file: remotePath,
-      bytes: stat.size,
-      totalLines: lines.length,
-      firstLine: lines[0] || "",
-      lastLine: lines[lines.length - 1] || ""
-    });
-    return { content, bytes: stat.size, lines };
-  } catch (err) {
-    state.lastFailure = { at: new Date().toISOString(), where: "readRemoteFile", remotePath, message: err.message };
-    trace("download failed", state.lastFailure);
-    throw err;
-  } finally {
-    try { fs.unlinkSync(localTmp); } catch {}
-    client.close();
-  }
+function ensureLogsDir() {
+  fs.mkdirSync(LOCAL_DIR, { recursive: true });
 }
 
-function normalizeLine(line) {
-  return String(line || "").replace(/\r$/, "").trim();
+function currentPlatformDir() {
+  if (/XBOX|xbox|Xbox/i.test(PLATFORM)) return "/noftp/dayzxb/config";
+  if (/PLAYSTATION|PS4|PS5|playstation|Playstation/i.test(PLATFORM)) return "/noftp/dayzps/config";
+  return "/ftproot/dayzstandalone/config";
 }
 
-function cleanNpcName(name) {
-  const n = String(name || "").trim();
-  if (!n || n === `"` || n === `""`) return "Unknown NPC";
-  return n;
+function currentAdmRegex() {
+  if (/XBOX|xbox|Xbox/i.test(PLATFORM)) return /^DayZServer_X1_x64_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.ADM$/;
+  if (/PLAYSTATION|PS4|PS5|playstation|Playstation/i.test(PLATFORM)) return /^DayZServer_PS4_x64_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.ADM$/;
+  return /^DayZServer_X1_x64_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.ADM$/;
 }
 
-function buildEventMessage(event) {
-  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
+async function setfeed(key, value) {
+  if (key === "kfChan") config.kfChan = String(value);
+  if (key === "locChan") config.locChan = String(value);
+  if (key === "alrmChan") config.alrmChan = String(value);
+  fs.writeFileSync("./config.ini", ini.stringify(config, { name: `${value}` }));
+  console.log(key + " Channel Set!");
 }
 
-function parseAdmKillLine(line) {
-  if (!line.includes("killed by")) return null;
-  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
-  const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
-  const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
-  const weaponMatch = line.match(/with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i);
-  return {
-    type: "kill",
-    time: timeMatch ? timeMatch[1] : "unknown time",
-    victim: cleanNpcName(victimMatch && victimMatch[1] ? victimMatch[1] : "Unknown NPC"),
-    killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
-    weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
-    distance: weaponMatch && weaponMatch[2] ? Number(weaponMatch[2]).toFixed(1) : "0.0",
-    raw: line
-  };
+function pveEmbed(e, n, o, a) {
+  const i = hyperlink("Sign-up for DayZero", "https://thecodegang.com");
+  const emb = new MessageEmbed().setColor("0xDD0000").setTitle("Killfeed Notification").setThumbnail("attachment://crown.png").setDescription(e + ` **${n}** ` + o).addFields({ name: "Get Your Free Killfeed!", value: "" + i, inline: false });
+  if (a) emb.addFields({ name: "🌐", value: "" + linkLoc + a, inline: false });
+  return emb;
 }
 
-async function safePostWebhook(payload) {
-  if (!WEBHOOK_URL) return false;
-  try {
-    const res = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    trace("webhook post", { status: res.status, ok: res.ok });
-    return res.ok;
-  } catch (err) {
-    state.lastFailure = { at: new Date().toISOString(), where: "safePostWebhook", message: err.message };
-    trace("webhook error", state.lastFailure);
-    return false;
-  }
+function pvpEmbed(e, n, o, a, i) {
+  const t = hyperlink("Sign-up for DayZero", "https://thecodegang.com");
+  const emb = new MessageEmbed().setColor("0xDD0000").setTitle("Killfeed Notification").setThumbnail("attachment://crown.png").setDescription(e + ` **${n}** Killed **${o}** ` + a).addFields({ name: "Get Your Free Killfeed!", value: "" + t, inline: false });
+  if (i) emb.addFields({ name: "🌐", value: "" + linkLoc + i, inline: false });
+  return emb;
 }
 
-function resetFileState(reason, file) {
-  trace("file reset", {
-    reason,
-    file: file?.fullPath || file?.name || null,
-    previous: {
-      currentFile: state.currentFile,
-      currentLineCount: state.currentLineCount,
-      lastKnownLastLine: state.lastKnownLastLine,
-      lastContentBytes: state.lastContentBytes,
-      lastFileMeta: state.lastFileMeta,
-      staleCycles: state.staleCycles
+function teleportEmbed(e, n, o, a) {
+  const emb = new MessageEmbed().setColor("0xDD0000").setTitle("Teleport Notification").setThumbnail("attachment://crown.png").setDescription(n + ` **${o}** ` + a);
+  e.guild.channels.cache.get(config.teleFeed).send({ embeds: [emb], files: ["./images/crown.png"] }).catch(console.log);
+}
+
+function getLocation(e) {
+  return e ? e.split(/[|" '<>(),>]/).join(";") : null;
+}
+
+function getLatestADMEntry(entries) {
+  let best = null;
+  let bestKey = null;
+  for (const a of entries || []) {
+    if (a.type !== "file" || typeof a.name !== "string") continue;
+    const m = a.name.match(admRegex);
+    if (!m) continue;
+    const key = m[1].replace(/[-_]/g, "");
+    if (bestKey === null || key > bestKey) {
+      bestKey = key;
+      best = a;
     }
+  }
+  return best;
+}
+
+async function downloadLatestToLocal() {
+  ensureLogsDir();
+  const listUrl = `https://api.nitrado.net/services/${ID1}/gameservers/file_server/list?dir=${encodeURIComponent(currentPlatformDir())}`;
+  const listRes = await axios.get(listUrl, {
+    responseType: "application/json",
+    headers: { Authorization: `Bearer ${NITRATOKEN}`, Accept: "application/json" }
   });
-  state.currentLineCount = 0;
-  state.lastKnownLastLine = "";
-  state.lastContentBytes = 0;
-  state.lastFileMeta = null;
-  state.lastEvents.clear();
-  state.staleCycles = 0;
-}
-
-function setSource(file, reason) {
-  if (state.currentFile !== file.fullPath) state.sourceSwitches += 1;
-  state.currentFile = file.fullPath;
-  resetFileState(reason, file);
-}
-
-function processFile(file, content, bytes) {
-  const lines = content.split(/\r?\n/);
-  const currentLineCount = lines.length;
-  const firstLine = normalizeLine(lines[0] || "");
-  const lastLine = normalizeLine(lines[lines.length - 1] || "");
-  const modifiedAt = file.modifiedAt || null;
-  const size = file.size || bytes || 0;
-
-  const sameFile = state.currentFile === file.fullPath;
-  const metaChanged = !state.lastFileMeta || state.lastFileMeta.fullPath !== file.fullPath || state.lastFileMeta.modifiedAt !== modifiedAt || state.lastFileMeta.size !== size;
-  const countGrew = currentLineCount > state.currentLineCount;
-  const countSame = currentLineCount === state.currentLineCount;
-  const countShrank = currentLineCount < state.currentLineCount;
-  const bytesGrew = bytes > state.lastContentBytes;
-  const lastLineChanged = lastLine !== state.lastKnownLastLine;
-  const firstLineChanged = firstLine && state.lastFileMeta && firstLine !== state.lastFileMeta.firstLine;
-
-  trace("file snapshot", {
-    file: file.fullPath,
-    sameFile,
-    metaChanged,
-    currentLineCount,
-    previousLineCount: state.currentLineCount,
-    bytes,
-    previousBytes: state.lastContentBytes,
-    firstLine,
-    lastLine,
-    modifiedAt,
-    countGrew,
-    countSame,
-    countShrank,
-    bytesGrew,
-    lastLineChanged,
-    firstLineChanged
+  const entry = getLatestADMEntry(listRes.data?.data?.entries);
+  if (!entry) throw new Error("Unable to determine logfile name!");
+  const downloadUrl = `https://api.nitrado.net/services/${ID1}/gameservers/file_server/download?file=${encodeURIComponent(currentPlatformDir() + "/" + entry.name)}`;
+  trace("latest adm chosen", { name: entry.name, downloadUrl });
+  const streamRes = await axios.get(downloadUrl, {
+    responseType: "stream",
+    headers: { Authorization: `Bearer ${NITRATOKEN}`, Accept: "application/octet-stream" }
   });
-
-  if (!sameFile) {
-    setSource(file, "switched-file");
-  } else if (countShrank || (state.lastFileMeta && state.lastFileMeta.size && size < state.lastFileMeta.size)) {
-    resetFileState("shrank-or-rotated", file);
-  }
-
-  const noAdvance = sameFile && countSame && !bytesGrew && !lastLineChanged;
-  if (noAdvance) {
-    state.staleCycles += 1;
-    trace("stale cycle", { file: file.fullPath, staleCycles: state.staleCycles, currentLineCount, bytes, modifiedAt, lastLine });
-  } else {
-    state.staleCycles = 0;
-  }
-
-  let startIndex = state.currentLineCount;
-  if (countShrank || startIndex > currentLineCount || !sameFile) startIndex = 0;
-  if (state.staleCycles >= STALE_LIMIT) startIndex = 0;
-
-  const events = [];
-  trace("scan start", { file: file.fullPath, startIndex, currentLineCount, staleCycles: state.staleCycles, phase: state.phase });
-
-  for (let i = startIndex; i < lines.length; i++) {
-    const line = normalizeLine(lines[i]);
-    if (!line) continue;
-    trace("scan line", { index: i, line });
-    const event = parseAdmKillLine(line);
-    if (!event) continue;
-
-    const dedupeKey = `${file.fullPath}|${event.raw}`;
-    if (state.lastEvents.has(dedupeKey)) {
-      trace("dedupe skip", { file: file.fullPath, index: i, line });
-      continue;
-    }
-
-    state.lastEvents.add(dedupeKey);
-    if (state.lastEvents.size > 1000) {
-      const first = state.lastEvents.values().next().value;
-      if (first) state.lastEvents.delete(first);
-    }
-
-    trace("trigger match", { file: file.fullPath, index: i, event });
-    events.push(event);
-  }
-
-  state.currentLineCount = currentLineCount;
-  state.lastKnownLastLine = lastLine;
-  state.lastContentBytes = bytes;
-  state.lastFileMeta = { fullPath: file.fullPath, modifiedAt, size, firstLine, lastLine, currentLineCount };
-
-  return { events, changed: metaChanged || countGrew || bytesGrew || lastLineChanged };
+  const tmp = fs.createWriteStream(STAGING_LOG);
+  await new Promise((resolve, reject) => {
+    streamRes.data.pipe(tmp);
+    tmp.on("finish", resolve);
+    tmp.on("error", reject);
+  });
+  fs.copyFileSync(STAGING_LOG, LOCAL_LOG);
+  const stats = fs.statSync(LOCAL_LOG);
+  logStats = stats;
+  logBytes = stats.size;
+  logSize = logBytes / 1e6;
+  trace("local log updated", { local: LOCAL_LOG, bytes: logBytes, mb: logSize, source: entry.name });
+  return { entry, localPath: LOCAL_LOG, bytes: logBytes };
 }
 
-async function handleEvents(events) {
-  for (const evt of events) {
-    const content = buildEventMessage(evt);
-    state.lastSuccessfulFile = state.currentFile;
-    state.lastSuccessfulAt = new Date().toISOString();
-    trace("event parsed", evt);
-    trace("discord payload", { content });
-    await safePostWebhook({ content });
-  }
-}
-
-async function huntForUpdates(targetFile) {
-  state.phase = "hunt";
-  state.huntActive = true;
-  trace("enter hunt", { targetFile, delayMs: HUNT_DELAY_MS });
-
-  while (state.running) {
-    state.huntHits += 1;
-    await new Promise(r => setTimeout(r, state.huntBackoff));
-
-    const files = await listAdmFiles();
-    const newest = files[0] || null;
-    trace("hunt list", { targetFile, newest, huntHits: state.huntHits, huntBackoff: state.huntBackoff, sourceSwitches: state.sourceSwitches });
-
-    if (!newest) {
-      state.huntBackoff = Math.min(30000, Math.floor(state.huntBackoff * 1.1));
-      continue;
+function parseLocalFileIntoNotifications(o) {
+  const e = readline.createInterface({ input: fs.createReadStream(LOCAL_LOG) });
+  e.on("line", async line => {
+    lineCount++;
+    lineRef = lineCount;
+    if (line.includes(phrases[1])) {
+      logDt = line.slice(20, 30);
+      todayRef = today.slice(0, 10);
+      trace("log date detected", { logDt, todayRef });
     }
-
-    if (newest.fullPath !== targetFile) {
-      trace("hunt new file", { old: targetFile, newest: newest.fullPath });
-      setSource(newest, "hunt-switch");
-    }
-
-    const currentTarget = state.currentFile || newest.fullPath;
-    const snap = await readRemoteFile(currentTarget);
-    const result = processFile({ ...newest, fullPath: currentTarget }, snap.content, snap.bytes);
-
-    trace("hunt compare", {
-      targetFile: currentTarget,
-      changed: result.changed,
-      events: result.events.length,
-      currentLineCount: state.currentLineCount,
-      lastKnownLastLine: state.lastKnownLastLine,
-      lastContentBytes: state.lastContentBytes,
-      staleCycles: state.staleCycles,
-      huntBackoff: state.huntBackoff
-    });
-
-    if (result.events.length) {
-      await handleEvents(result.events);
-      state.phase = "standby";
-      state.huntActive = false;
-      stamp("success-found-during-hunt");
-      return true;
-    }
-
-    if (result.changed) {
-      state.huntMoves += 1;
-      state.huntBackoff = Math.max(3000, Math.floor(state.huntBackoff * 0.85));
-    } else {
-      state.huntBackoff = Math.min(30000, Math.floor(state.huntBackoff * 1.15));
-    }
-
-    if (state.staleCycles >= STALE_LIMIT) {
-      state.huntBackoff = Math.max(3000, Math.floor(state.huntBackoff * 0.9));
-    }
-  }
-
-  state.huntActive = false;
-  return false;
-}
-
-async function pollOnce() {
-  if (state.inFlight) return;
-  state.inFlight = true;
-  state.cycle += 1;
-
-  try {
-    ensureConfig();
-    trace("poll start", {
-      cycle: state.cycle,
-      phase: state.phase,
-      currentFile: state.currentFile,
-      currentLineCount: state.currentLineCount,
-      lastKnownLastLine: state.lastKnownLastLine,
-      lastContentBytes: state.lastContentBytes,
-      staleCycles: state.staleCycles,
-      huntActive: state.huntActive,
-      sourceSwitches: state.sourceSwitches,
-      lastSuccessfulFile: state.lastSuccessfulFile,
-      lastSuccessfulAt: state.lastSuccessfulAt
-    });
-
-    const files = await listAdmFiles();
-    const newest = files[0] || null;
-    trace("cycle start", { cycle: state.cycle, remoteCount: files.length, newest });
-
-    if (!newest) {
-      state.lastFailure = { at: new Date().toISOString(), where: "pollOnce", message: "No ADM files found" };
-      trace("no adm files", { remoteDir: REMOTE_DIR });
-      return;
-    }
-
-    if (!state.currentFile) {
-      setSource(newest, "startup-source");
-    } else if (state.currentFile !== newest.fullPath) {
-      trace("newest file changed", { previous: state.currentFile, newest: newest.fullPath });
-      setSource(newest, "newest-file-changed");
-    }
-
-    const snap = await readRemoteFile(state.currentFile || newest.fullPath);
-    state.lastRead = {
-      at: new Date().toISOString(),
-      file: state.currentFile || newest.fullPath,
-      bytes: snap.bytes,
-      lineCount: snap.lines.length,
-      firstLine: snap.lines[0] || "",
-      lastLine: snap.lines[snap.lines.length - 1] || ""
-    };
-    trace("read summary", state.lastRead);
-
-    const result = processFile({ ...newest, fullPath: state.currentFile || newest.fullPath }, snap.content, snap.bytes);
-    trace("post-process", { file: state.currentFile || newest.fullPath, events: result.events.length, changed: result.changed, state: { currentFile: state.currentFile, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, staleCycles: state.staleCycles, phase: state.phase } });
-
-    if (result.events.length) {
-      await handleEvents(result.events);
-      state.phase = "standby";
-      stamp("success-in-poll");
-      return;
-    }
-
-    if (state.phase !== "hunt") {
-      if (!result.changed || state.staleCycles >= STALE_LIMIT) {
-        await huntForUpdates(state.currentFile || newest.fullPath);
+    if (phrases.some(p => line.includes(p) && p !== phrases[1])) {
+      if (!valueRef.has(line)) {
+        valueRef.add(line);
+        iso = line.split(/[|"'<>]/);
+        await handleKillfeedNotification(o);
       }
     }
+  });
+  e.on("close", () => {});
+  e.on("error", console.error);
+}
 
-    trace("cycle end", {
-      cycle: state.cycle,
-      phase: state.phase,
-      currentFile: state.currentFile,
-      currentLineCount: state.currentLineCount,
-      lastKnownLastLine: state.lastKnownLastLine,
-      lastContentBytes: state.lastContentBytes,
-      staleCycles: state.staleCycles,
-      sourceSwitches: state.sourceSwitches,
-      huntHits: state.huntHits
-    });
-  } catch (err) {
-    state.lastFailure = { at: new Date().toISOString(), where: "pollOnce", message: err.message, stack: err.stack };
-    console.error("[killfeed] poll error:", err);
-    trace("poll error", state.lastFailure);
-  } finally {
-    state.inFlight = false;
+async function handleKillfeedNotification(e) {
+  if (!iso) return;
+  let n, o, a, i, t, l, s, c, r, d, g, f = iso[iso.length - 1].slice(2);
+  if (iso[9] && iso[5].includes(phrases[0])) {
+    if (f.includes(phrases[2])) {
+      try {
+        const p = iso[4].toString().split(/[|" "<(),>]/);
+        const u = iso[8].toString().split(/[|" "<(),>]/);
+        const S = f;
+        const w = `${p[0]};${p[2]};${p[4]}`;
+        const y = iso[0].toString();
+        const C = iso[6].toString();
+        const D = iso[2].toString();
+        if (1 === config.showLoc) {
+          const h = pvpEmbed(y, C, D, S, w);
+          e.guild.channels.cache.get(config.kfChan).send({ embeds: [h], files: ["./images/crown.png"] });
+        } else {
+          const m = pvpEmbed(y, C, D, S);
+          e.guild.channels.cache.get(config.kfChan).send({ embeds: [m], files: ["./images/crown.png"] });
+        }
+      } catch (err) { console.error(err); }
+    } else {
+      try {
+        const p = iso[4].toString().split(/[|" "<(),>]/);
+        const u = iso[8].toString().split(/[|" "<(),>]/);
+        const S = f;
+        const w = `${p[0]};${p[2]};${p[4]}`;
+        const y = iso[0].toString();
+        const C = iso[6].toString();
+        const D = iso[2].toString();
+        if (1 === config.showLoc) {
+          const o2 = pvpEmbed(y, C, D, S, w);
+          e.guild.channels.cache.get(config.kfChan).send({ embeds: [o2], files: ["./images/crown.png"] });
+        } else {
+          const a2 = pvpEmbed(y, C, D, S);
+          e.guild.channels.cache.get(config.kfChan).send({ embeds: [a2], files: ["./images/crown.png"] });
+        }
+      } catch (err) { console.error(err); }
+    }
+  } else if (!iso[6] && iso[5].includes(phrases[0])) {
+    try {
+      const y = iso[0].toString();
+      const C = iso[2].toString();
+      const D = f;
+      const n2 = iso[iso.length - 2].split(/[|" "<(),>]/);
+      const x1 = n2[0], y1 = n2[2], z1 = n2[4];
+      const w = x1.concat(`;${y1};` + z1);
+      if (1 === config.showLoc) {
+        const i2 = pvpEmbed(y, C, D, w);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [i2], files: ["./images/crown.png"] });
+      } else {
+        const t2 = pvpEmbed(y, C, D);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [t2], files: ["./images/crown.png"] });
+      }
+    } catch (err) { console.error(err); }
+  } else if (f.includes("Spawning")) {
+    try { teleportEmbed(e, y = iso[0].toString(), C = iso[2].toString(), D = f); } catch (err) { console.error(err); }
+  } else if (f.includes("bled out")) {
+    try {
+      const y = iso[0].toString();
+      const C = iso[2].toString();
+      const D = f;
+      const n2 = iso[iso.length - 2].split(/[|" "<(),>]/);
+      const x1 = n2[0], y1 = n2[2], z1 = n2[4];
+      const w = x1.concat(`;${y1};` + z1);
+      if (1 === config.showLoc) {
+        const l2 = pveEmbed(y, C, D, w);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [l2], files: ["./images/crown.png"] });
+      } else {
+        const s2 = pveEmbed(y, C, D);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [s2], files: ["./images/crown.png"] });
+      }
+    } catch (err) { console.error(err); }
+  } else if (f.includes("hit by FallDamage")) {
+    try {
+      const y = iso[0].toString();
+      const C = iso[2].toString();
+      const D = "fell to their death";
+      const n2 = iso[iso.length - 3].split(/[|" "<(),>]/);
+      const x1 = n2[0], y1 = n2[2], z1 = n2[4];
+      const w = x1.concat(`;${y1};` + z1);
+      if (1 === config.showLoc) {
+        const c2 = pveEmbed(y, C, D, w);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [c2], files: ["./images/crown.png"] });
+      } else {
+        const r2 = pveEmbed(y, C, D);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [r2], files: ["./images/crown.png"] });
+      }
+    } catch (err) { console.error(err); }
+  } else if (f.includes("committed suicide")) {
+    try {
+      const y = iso[0].toString();
+      const C = iso[2].toString();
+      const D = f;
+      const n2 = iso[iso.length - 2].split(/[|" "<(),>]/);
+      const x1 = n2[0], y1 = n2[2], z1 = n2[4];
+      const w = x1.concat(`;${y1};` + z1);
+      if (1 === config.showLoc) {
+        const d2 = pveEmbed(y, C, D, w);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [d2], files: ["./images/crown.png"] });
+      } else {
+        const g2 = pveEmbed(y, C, D);
+        e.guild.channels.cache.get(config.kfChan).send({ embeds: [g2], files: ["./images/crown.png"] });
+      }
+    } catch (err) { console.error(err); }
   }
 }
 
-function scheduleNext() {
-  if (!state.running) return;
-  if (state.timer) clearTimeout(state.timer);
-  state.timer = setTimeout(async () => {
-    try {
-      await pollOnce();
-    } catch (err) {
-      console.error("[killfeed] scheduled poll error:", err);
-    } finally {
-      scheduleNext();
+async function handleClearCommand(e) {
+  if (e.guildId && e.guildId === GUILDID) {
+    const n = e.options.getInteger("value");
+    if (100 < n) return e.reply("The max number of messages you can delete is 100").catch(console.error);
+    await e.channel.bulkDelete(n).catch(console.error);
+    await e.reply("clearing messages...").catch(console.error);
+    await e.deleteReply().catch(console.error);
+  }
+}
+
+async function handleMapChange(e) {
+  if (e.guildId && e.guildId === GUILDID) {
+    config = ini.parse(fs.readFileSync("./config.ini", "utf-8"));
+    const n = e.options.getString("new-map");
+    if (n === "cherno") {
+      config.mapLoc = 0;
+      fs.writeFileSync("./config.ini", ini.stringify(config, { mapLoc: "0" }));
+      e.reply("Killfeed Map set to **Chernaus**").catch(console.log);
+    } else if (n === "livonia") {
+      config.mapLoc = 1;
+      fs.writeFileSync("./config.ini", ini.stringify(config, { mapLoc: "1" }));
+      e.reply("Killfeed Map set to **Livonia**").catch(console.log);
+    } else if (n === "sakhal") {
+      config.mapLoc = 2;
+      fs.writeFileSync("./config.ini", ini.stringify(config, { mapLoc: "2" }));
+      e.reply("Killfeed Map set to **Sakhal**").catch(console.log);
     }
-  }, LOOP_INTERVAL);
+  }
 }
 
-function start() {
-  if (state.running) return;
-  state.running = true;
-  trace("start", { loopInterval: LOOP_INTERVAL, debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, remoteDir: REMOTE_DIR, huntDelayMs: HUNT_DELAY_MS, staleLimit: STALE_LIMIT });
-  pollOnce().catch(err => console.error("[killfeed] initial poll error:", err)).finally(scheduleNext);
+async function handleSetupCommand(e) {
+  if (e.guildId && e.guildId === GUILDID) {
+    await e.channel.send("....").catch(console.error);
+    kfChannel = e.guild.channels.cache.find(x => x.name.includes("➖》💀-killfeed"));
+    locChannel = e.guild.channels.cache.find(x => x.name.includes("➖》👀-locations"));
+    alarmChannel = e.guild.channels.cache.find(x => x.name.includes("➖》🚨-alarm"));
+    if (null == kfChannel) {
+      await e.guild.channels.create("➖》💀-killfeed", { type: "text", permissionOverwrites: [{ id: e.guild.roles.everyone, allow: ["VIEW_CHANNEL", "SEND_MESSAGES", "READ_MESSAGE_HISTORY"], deny: ["ADMINISTRATOR"] }] }).catch(console.error);
+      kfChannel = e.guild.channels.cache.find(x => x.name.includes("➖》💀-killfeed"));
+      await setfeed("kfChan", kfChannel.id).catch(console.log);
+      await e.channel.send("Killfeed Channel Created Successfully!").catch(console.error);
+    } else {
+      await e.channel.send("Skipped Creating Killfeed Channel!").catch(console.error);
+      await setfeed("kfChan", kfChannel.id).catch(console.log);
+    }
+    if (null == locChannel) {
+      await e.guild.channels.create("➖》👀-locations", { type: "text", parent: parentCategory, permissionOverwrites: [{ id: everyoneRole, deny: ["VIEW_CHANNEL"] }] }).catch(console.log);
+      locChannel = e.guild.channels.cache.find(x => x.name.includes("➖》👀-locations"));
+      await setfeed("locChan", locChannel.id).catch(console.log);
+      await e.channel.send("Locations Channel Created Successfully!").catch(console.log);
+    } else {
+      await e.channel.send("Skipped Creating Locations Channel!").catch(console.log);
+      await setfeed("locChan", locChannel.id).catch(console.log);
+    }
+    if (null == alarmChannel) {
+      await e.guild.channels.create("➖》🚨-alarm", { type: "text", parent: parentCategory, permissionOverwrites: [{ id: adminRoleId, allow: ["VIEW_CHANNEL", "SEND_MESSAGES", "READ_MESSAGE_HISTORY"], deny: ["ADMINISTRATOR"] }] }).catch(console.log);
+      alarmChannel = e.guild.channels.cache.find(x => x.name.includes("➖》🚨-alarm"));
+      await setfeed("alrmChan", alarmChannel.id).catch(console.log);
+      await e.channel.send("Alarm Channel Created Successfully!").catch(console.log);
+    } else {
+      await e.channel.send("Skipped Creating Alarm Channel!").catch(console.log);
+      await setfeed("alrmChan", alarmChannel.id).catch(console.log);
+    }
+    setTimeout(async () => { await e.channel.bulkDelete(4).catch(console.error); }, 5000);
+    await e.reply("...").catch(console.error);
+    await e.deleteReply().catch(console.error);
+  }
 }
 
-function stop() {
-  state.running = false;
-  if (state.timer) clearTimeout(state.timer);
-  state.timer = null;
-  stamp("stop");
+async function handleStopCommand(e) {
+  if (e.guildId && e.guildId === GUILDID && feedStart) {
+    await e.reply("Terminating Project.....").catch(console.error);
+    if (feedInterval) clearInterval(feedInterval);
+    setTimeout(() => process.exit(22), 5000);
+  } else {
+    await e.reply("THE KILLFEED IS NOT CURRENTLY RUNNING!.....").catch(console.error);
+  }
 }
 
-module.exports = { start, stop, pollOnce, state };
+async function handleDeathlocCommand(e) {
+  if (e.guildId && e.guildId === GUILDID && feedStart) {
+    const n = e.options.getString("state");
+    config.showLoc = n === "on" ? 1 : 0;
+    fs.writeFileSync("./config.ini", ini.stringify(config));
+    await e.reply(`Death Locations **${n === "on" ? "Enabled" : "Disabled"}!**`).catch(console.error);
+  } else {
+    await e.reply("THE KILLFEED IS NOT CURRENTLY RUNNING!.....").catch(console.error);
+  }
+}
+
+async function handleStartCommand(e) {
+  if (!(e.guildId && e.guildId === GUILDID)) return;
+  kfChannel = e.guild.channels.cache.find(x => x.name.includes("➖》💀-killfeed"));
+  if (feedStart) {
+    await e.channel.send("THE KILLFEED IS ALREADY RUNNING!.....TRY RESETING IF YOU NEED TO RESTART").catch(console.error);
+    return;
+  }
+  await e.reply("**Starting Killfeed....**").catch(console.error);
+  feedStart = true;
+  getDetails(e).catch(console.error);
+}
+
+async function getDetails(o) {
+  ensureLogsDir();
+  tail = null;
+  if (feedInterval) clearInterval(feedInterval);
+
+  const refreshLocal = async () => {
+    if (!feedStart) return;
+    today = moment().tz(getTimezone()).format();
+    todayRef = today.slice(0, 10);
+    try {
+      const result = await downloadLatestToLocal();
+      const data = fs.statSync(LOCAL_LOG);
+      logStats = data;
+      logBytes = data.size;
+      logSize = logBytes / 1e6;
+      console.log(`Current Log Size: ${logSize} / LogRef Size: ${logSizeRef}`);
+      console.log(`Current LineRef: ${lineRef}`);
+      if (logSize < logSizeRef) {
+        logSizeRef = 0;
+        valueRef.clear();
+        lineCount = 0;
+        lineRef = 0;
+        trace("log rotation detected", { logSize, logSizeRef });
+      } else {
+        logSizeRef = logSize;
+      }
+      if (tail && tail.unwatch) {
+        try { tail.unwatch(); } catch {}
+      }
+      if (tail && tail.close) {
+        try { tail.close(); } catch {}
+      }
+      tail = new (require("tail").Tail)(LOCAL_LOG, options);
+      tail.on("line", async n => {
+        lineCount++;
+        lineRef = lineCount;
+        if (n.includes(phrases[1])) {
+          logDt = n.slice(20, 30);
+          console.log("This is the logDate: " + logDt);
+          console.log("This is the current date: " + todayRef);
+        }
+        if (phrases.some(p => n.includes(p) && p !== phrases[1])) {
+          if (!valueRef.has(n)) {
+            valueRef.add(n);
+            iso = n.split(/[|"'<>]/);
+            await handleKillfeedNotification(o);
+          }
+        }
+      });
+      tail.on("error", console.error);
+      trace("local source refreshed", { source: result.entry.name, local: LOCAL_LOG, bytes: logBytes });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  await refreshLocal();
+  feedInterval = setInterval(refreshLocal, 35000);
+}
+
+bot.once("ready", () => {
+  console.log("[OK] [debug] { message: 'debug logger initialized' }");
+  console.log("Logged in as " + bot.user.tag);
+  console.log("  loopInterval: " + LOOP_INTERVAL + ",");
+  console.log("[DEBUG] [startup] { step: 'start', debug: true, bot: '" + bot.user.tag + "', webhookEnabled: " + !!WEBHOOK_URL + ", pid: " + process.pid + ", remoteDir: '" + REMOTE_DIR + ", cwd: '" + process.cwd() + "', huntDelayMs: " + HUNT_DELAY_MS + ", staleLimit: " + STALE_LIMIT + " }");
+  console.log("[DISCORD] Bot is ready. Commands are handled from Discord now.");
+  console.log("[KILLFEED] module started");
+  console.log(`This is dt: ${dt}`);
+});
+
+bot.on("interactionCreate", async e => {
+  if (!e.isCommand()) return;
+  const n = e.options.getSubcommand();
+  config = ini.parse(fs.readFileSync("./config.ini", "utf-8"));
+  switch (n) {
+    case "clear": await handleClearCommand(e); break;
+    case "map": await handleMapChange(e); break;
+    case "setup": await handleSetupCommand(e); break;
+    case "stop": await handleStopCommand(e); break;
+    case "deathloc": await handleDeathlocCommand(e); break;
+    case "start": await handleStartCommand(e); break;
+  }
+});
+
+admPlat = /XBOX|Xbox|xbox/i.test(PLATFORM) ? "/noftp/dayzxb/config" : /PLAYSTATION|PS4|PS5|playstation|Playstation/i.test(PLATFORM) ? "/noftp/dayzps/config" : "/ftproot/dayzstandalone/config";
+if (parseInt(config.mapLoc) === 1) linkLoc = "https://www.izurvive.com/livonia/#location=";
+else if (parseInt(config.mapLoc) === 2) linkLoc = "https://www.izurvive.com/sakhal/#location=";
+else linkLoc = "https://www.izurvive.com/#location=";
+
+module.exports = {
+  data: (new SlashCommandBuilder())
+    .setName("admin")
+    .setDescription("Contains all Admin Killfeed commands")
+    .setDefaultMemberPermissions("0")
+    .addSubcommandGroup(e => e
+      .setName("killfeed")
+      .setDescription("Admin Killfeed Commands")
+      .addSubcommand(e => e.setName("stop").setDescription("Kill Project"))
+      .addSubcommand(e => e.setName("deathloc").setDescription("Toggle on display of death locations in Killfeed notifications").addStringOption(e => e.setName("state").setDescription("Select desired Alarm state").setRequired(true).addChoices({ name: "OFF", value: "off" }, { name: "ON", value: "on" })))
+      .addSubcommand(e => e.setName("start").setDescription("Start Killfeed"))
+      .addSubcommand(e => e.setName("clear").setDescription("Clear channel messages (limit 100)").addIntegerOption(e => e.setName("value").setDescription("Enter new value").setRequired(true)))
+      .addSubcommand(e => e.setName("map").setDescription("Toggle Killfeed Mission Map").addStringOption(e => e.setName("new-map").setDescription("Select Map to be displayed in notifications").setRequired(true).addChoices({ name: "Chernarus", value: "cherno" }, { name: "Livonia", value: "livonia" }, { name: "Sakhal", value: "sakhal" })))
+      .addSubcommand(e => e.setName("setup").setDescription("Set up Discord channels required by Killfeed"))),
+  async execute(e) {
+    const n = e.options.getSubcommand();
+    config = ini.parse(fs.readFileSync("./config.ini", "utf-8"));
+    switch (n) {
+      case "clear": await handleClearCommand(e); break;
+      case "map": await handleMapChange(e); break;
+      case "setup": await handleSetupCommand(e); break;
+      case "stop": await handleStopCommand(e); break;
+      case "deathloc": await handleDeathlocCommand(e); break;
+      case "start": await handleStartCommand(e); break;
+    }
+  }
+};
