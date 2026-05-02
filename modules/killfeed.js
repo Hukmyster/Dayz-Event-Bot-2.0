@@ -42,6 +42,7 @@ const state = {
 
 function log(level, label, data) {
   if (!DEBUG) return;
+  if (state.phase === "hunt" && level !== "error") return;
   const ts = new Date().toISOString();
   const payload = data === undefined ? "" : ` ${safeJson(data)}`;
   console.log(`[killfeed][${ts}][${level}] ${label}${payload}`);
