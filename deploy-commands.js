@@ -94,13 +94,7 @@ const commands = [
     ]
   },
   { name: 'leaderboard', description: 'Show the richest players in the server' },
-  {
-    name: 'account',
-    description: 'Show your full economy account',
-    options: [
-      { name: 'member', type: ApplicationCommandOptionType.User, description: 'View another member’s account', required: false }
-    ]
-  },
+  { name: 'daily', description: 'Claim your daily reward' },
 
   {
     name: 'addmoney',
