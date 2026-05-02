@@ -4,7 +4,7 @@ const shop = require('../../modules/shop');
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('buy')
+    .setName('shopbuyitem')
     .setDescription('Buy an item from the shop')
     .addStringOption(option =>
       option
@@ -102,7 +102,7 @@ module.exports = {
         method,
         interaction.user.username,
         {
-          notes: `Buy ${quantity}x ${item.name} using ${method}`,
+          notes: `Shop purchase ${quantity}x ${item.name} using ${method}`,
           item: item.name,
           item_type: item.type,
           quantity,
@@ -129,7 +129,7 @@ module.exports = {
 
       return interaction.reply({ embeds: [embed] });
     } catch (error) {
-      console.error('buy command error:', error);
+      console.error('shopbuyitem command error:', error);
       return interaction.reply({
         content: error.message || 'Something went wrong while buying the item.',
         ephemeral: true
