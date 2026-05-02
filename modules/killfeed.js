@@ -7,19 +7,18 @@ const FTP_HOST = process.env.FTP_HOST;
 const FTP_USER = process.env.FTP_USER;
 const FTP_PASS = process.env.FTP_PASS;
 const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "true";
-const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
+const DEBUG = String(process.env.KILLFEED_DEBUG || "true").toLowerCase() === "true";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
 const HUNT_DELAY_MS = Number(process.env.KILLFEED_HUNT_DELAY_MS || 8000);
 const STALE_LIMIT = Number(process.env.KILLFEED_STALE_LIMIT || 2);
-const STANDBY_AFTER_SUCCESS = String(process.env.KILLFEED_STANDBY_AFTER_SUCCESS || "true").toLowerCase() === "true";
 
 const state = {
   running: false,
   timer: null,
   inFlight: false,
   cycle: 0,
-  phase: "initial",
+  phase: "startup",
   currentFile: null,
   currentLineCount: 0,
   lastKnownLastLine: "",
@@ -28,57 +27,61 @@ const state = {
   lastContentBytes: 0,
   staleCycles: 0,
   huntActive: false,
-  successLatched: false,
   history: [],
   lastList: [],
-  lastOutcome: null,
+  lastDecision: null,
+  lastRead: null,
+  sourceSwitches: 0,
   huntHits: 0,
-  huntMoves: 0,
   huntBackoff: HUNT_DELAY_MS,
-  huntStartAt: null,
-  huntLastChangeAt: null,
-  huntLastFile: null
+  lastSuccessfulFile: null,
+  lastSuccessfulAt: null,
+  lastFailure: null
 };
-
-function log(level, label, data) {
-  if (!DEBUG) return;
-  if (state.phase === "hunt" && level !== "error") return;
-  const ts = new Date().toISOString();
-  const payload = data === undefined ? "" : ` ${safeJson(data)}`;
-  console.log(`[killfeed][${ts}][${level}] ${label}${payload}`);
-}
 
 function safeJson(obj) {
   try { return JSON.stringify(obj, null, 2); } catch { return String(obj); }
 }
 
-function record(step, data) {
+function log(level, label, data) {
+  if (!DEBUG) return;
+  const ts = new Date().toISOString();
+  const prefix = `[killfeed][${ts}][${level}] ${label}`;
+  if (data === undefined) console.log(prefix);
+  else console.log(prefix, data);
+}
+
+function trace(step, data) {
   const entry = { ts: new Date().toISOString(), phase: state.phase, step, data };
   state.history.push(entry);
-  if (state.history.length > 40) state.history.shift();
+  if (state.history.length > 60) state.history.shift();
   log("trace", step, data);
 }
 
-function historyStamp(reason) {
+function stamp(reason) {
   const lines = state.history.map((h, i) => `${String(i + 1).padStart(2, "0")}. ${h.ts} | ${h.phase} | ${h.step} | ${safeJson(h.data)}`);
-  const stamp = [
-    "=== KILLFEED HUNT STAMP ===",
+  const out = [
+    "=== KILLFEED DEBUG STAMP ===",
     `reason: ${reason}`,
     `phase: ${state.phase}`,
     `cycle: ${state.cycle}`,
     `currentFile: ${state.currentFile}`,
-    `lineCount: ${state.currentLineCount}`,
-    `bytes: ${state.lastContentBytes}`,
-    `lastLine: ${state.lastKnownLastLine}`,
+    `currentLineCount: ${state.currentLineCount}`,
+    `lastKnownLastLine: ${state.lastKnownLastLine}`,
+    `lastContentBytes: ${state.lastContentBytes}`,
+    `staleCycles: ${state.staleCycles}`,
+    `sourceSwitches: ${state.sourceSwitches}`,
     `huntHits: ${state.huntHits}`,
-    `huntMoves: ${state.huntMoves}`,
     `huntBackoff: ${state.huntBackoff}`,
+    `lastSuccessfulFile: ${state.lastSuccessfulFile}`,
+    `lastSuccessfulAt: ${state.lastSuccessfulAt}`,
+    `lastFailure: ${safeJson(state.lastFailure)}`,
     "--- HISTORY ---",
     ...lines,
     "=== END STAMP ==="
   ].join("\n");
-  console.log(stamp);
-  return stamp;
+  console.log(out);
+  return out;
 }
 
 function ensureConfig() {
@@ -120,7 +123,7 @@ async function listAdmFiles() {
         return b.name.localeCompare(a.name);
       });
     state.lastList = files;
-    record("ftp list", { dir: REMOTE_DIR, count: files.length, newest: files[0] || null });
+    trace("ftp list", { dir: REMOTE_DIR, count: files.length, files });
     return files;
   } finally {
     client.close();
@@ -131,13 +134,23 @@ async function readRemoteFile(remotePath) {
   const client = await ftpClient();
   const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
   try {
-    record("download start", { remotePath });
+    trace("download start", { remotePath });
     await client.downloadTo(localTmp, remotePath);
     const content = fs.readFileSync(localTmp, "utf8");
     const stat = fs.statSync(localTmp);
     const lines = content.split(/\r?\n/);
-    record("download ok", { file: remotePath, bytes: stat.size, totalLines: lines.length, firstLine: lines[0] || "", lastLine: lines[lines.length - 1] || "" });
+    trace("download ok", {
+      file: remotePath,
+      bytes: stat.size,
+      totalLines: lines.length,
+      firstLine: lines[0] || "",
+      lastLine: lines[lines.length - 1] || ""
+    });
     return { content, bytes: stat.size, lines };
+  } catch (err) {
+    state.lastFailure = { at: new Date().toISOString(), where: "readRemoteFile", remotePath, message: err.message };
+    trace("download failed", state.lastFailure);
+    throw err;
   } finally {
     try { fs.unlinkSync(localTmp); } catch {}
     client.close();
@@ -164,23 +177,43 @@ function parseAdmKillLine(line) {
   const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
   const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
   const weaponMatch = line.match(/with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i);
-  return { type: "kill", time: timeMatch ? timeMatch[1] : "unknown time", victim: cleanNpcName(victimMatch && victimMatch[1] ? victimMatch[1] : "Unknown NPC"), killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown", weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown", distance: weaponMatch && weaponMatch[2] ? Number(weaponMatch[2]).toFixed(1) : "0.0", raw: line };
+  return {
+    type: "kill",
+    time: timeMatch ? timeMatch[1] : "unknown time",
+    victim: cleanNpcName(victimMatch && victimMatch[1] ? victimMatch[1] : "Unknown NPC"),
+    killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
+    weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
+    distance: weaponMatch && weaponMatch[2] ? Number(weaponMatch[2]).toFixed(1) : "0.0",
+    raw: line
+  };
 }
 
 async function safePostWebhook(payload) {
   if (!WEBHOOK_URL) return false;
   try {
     const res = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    record("webhook post", { status: res.status, ok: res.ok });
+    trace("webhook post", { status: res.status, ok: res.ok });
     return res.ok;
   } catch (err) {
-    record("webhook error", { message: err.message });
+    state.lastFailure = { at: new Date().toISOString(), where: "safePostWebhook", message: err.message };
+    trace("webhook error", state.lastFailure);
     return false;
   }
 }
 
 function resetFileState(reason, file) {
-  record("file reset", { reason, file: file?.fullPath || file?.name || null, currentFile: state.currentFile, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, lastFileMeta: state.lastFileMeta, staleCycles: state.staleCycles });
+  trace("file reset", {
+    reason,
+    file: file?.fullPath || file?.name || null,
+    previous: {
+      currentFile: state.currentFile,
+      currentLineCount: state.currentLineCount,
+      lastKnownLastLine: state.lastKnownLastLine,
+      lastContentBytes: state.lastContentBytes,
+      lastFileMeta: state.lastFileMeta,
+      staleCycles: state.staleCycles
+    }
+  });
   state.currentLineCount = 0;
   state.lastKnownLastLine = "";
   state.lastContentBytes = 0;
@@ -189,11 +222,10 @@ function resetFileState(reason, file) {
   state.staleCycles = 0;
 }
 
-function phaseShift(next, reason, extra = {}) {
-  const prev = state.phase;
-  state.phase = next;
-  state.lastOutcome = { at: new Date().toISOString(), from: prev, to: next, reason, ...extra };
-  record("phase shift", state.lastOutcome);
+function setSource(file, reason) {
+  if (state.currentFile !== file.fullPath) state.sourceSwitches += 1;
+  state.currentFile = file.fullPath;
+  resetFileState(reason, file);
 }
 
 function processFile(file, content, bytes) {
@@ -205,7 +237,7 @@ function processFile(file, content, bytes) {
   const size = file.size || bytes || 0;
 
   const sameFile = state.currentFile === file.fullPath;
-  const fileChanged = !state.lastFileMeta || state.lastFileMeta.fullPath !== file.fullPath || state.lastFileMeta.modifiedAt !== modifiedAt || state.lastFileMeta.size !== size;
+  const metaChanged = !state.lastFileMeta || state.lastFileMeta.fullPath !== file.fullPath || state.lastFileMeta.modifiedAt !== modifiedAt || state.lastFileMeta.size !== size;
   const countGrew = currentLineCount > state.currentLineCount;
   const countSame = currentLineCount === state.currentLineCount;
   const countShrank = currentLineCount < state.currentLineCount;
@@ -213,11 +245,27 @@ function processFile(file, content, bytes) {
   const lastLineChanged = lastLine !== state.lastKnownLastLine;
   const firstLineChanged = firstLine && state.lastFileMeta && firstLine !== state.lastFileMeta.firstLine;
 
-  record("file snapshot", { file: file.fullPath, sameFile, fileChanged, currentLineCount, previousLineCount: state.currentLineCount, bytes, previousBytes: state.lastContentBytes, firstLine, lastLine, modifiedAt, countGrew, countSame, countShrank, bytesGrew, lastLineChanged, firstLineChanged });
+  trace("file snapshot", {
+    file: file.fullPath,
+    sameFile,
+    metaChanged,
+    currentLineCount,
+    previousLineCount: state.currentLineCount,
+    bytes,
+    previousBytes: state.lastContentBytes,
+    firstLine,
+    lastLine,
+    modifiedAt,
+    countGrew,
+    countSame,
+    countShrank,
+    bytesGrew,
+    lastLineChanged,
+    firstLineChanged
+  });
 
   if (!sameFile) {
-    state.currentFile = file.fullPath;
-    resetFileState("switched-file", file);
+    setSource(file, "switched-file");
   } else if (countShrank || (state.lastFileMeta && state.lastFileMeta.size && size < state.lastFileMeta.size)) {
     resetFileState("shrank-or-rotated", file);
   }
@@ -225,7 +273,7 @@ function processFile(file, content, bytes) {
   const noAdvance = sameFile && countSame && !bytesGrew && !lastLineChanged;
   if (noAdvance) {
     state.staleCycles += 1;
-    record("stale cycle", { file: file.fullPath, staleCycles: state.staleCycles, currentLineCount, bytes, modifiedAt, lastLine });
+    trace("stale cycle", { file: file.fullPath, staleCycles: state.staleCycles, currentLineCount, bytes, modifiedAt, lastLine });
   } else {
     state.staleCycles = 0;
   }
@@ -235,18 +283,18 @@ function processFile(file, content, bytes) {
   if (state.staleCycles >= STALE_LIMIT) startIndex = 0;
 
   const events = [];
-  record("scan start", { file: file.fullPath, startIndex, currentLineCount, staleCycles: state.staleCycles, phase: state.phase });
+  trace("scan start", { file: file.fullPath, startIndex, currentLineCount, staleCycles: state.staleCycles, phase: state.phase });
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
-    record("scan line", { index: i, line });
+    trace("scan line", { index: i, line });
     const event = parseAdmKillLine(line);
     if (!event) continue;
 
     const dedupeKey = `${file.fullPath}|${event.raw}`;
     if (state.lastEvents.has(dedupeKey)) {
-      record("dedupe skip", { file: file.fullPath, index: i, line });
+      trace("dedupe skip", { file: file.fullPath, index: i, line });
       continue;
     }
 
@@ -256,7 +304,7 @@ function processFile(file, content, bytes) {
       if (first) state.lastEvents.delete(first);
     }
 
-    record("trigger match", { file: file.fullPath, index: i, event });
+    trace("trigger match", { file: file.fullPath, index: i, event });
     events.push(event);
   }
 
@@ -265,85 +313,80 @@ function processFile(file, content, bytes) {
   state.lastContentBytes = bytes;
   state.lastFileMeta = { fullPath: file.fullPath, modifiedAt, size, firstLine, lastLine, currentLineCount };
 
-  return { events, changed: fileChanged || countGrew || bytesGrew || lastLineChanged };
+  return { events, changed: metaChanged || countGrew || bytesGrew || lastLineChanged };
 }
 
 async function handleEvents(events) {
   for (const evt of events) {
     const content = buildEventMessage(evt);
-    record("event parsed", evt);
-    record("discord payload", { content });
+    state.lastSuccessfulFile = state.currentFile;
+    state.lastSuccessfulAt = new Date().toISOString();
+    trace("event parsed", evt);
+    trace("discord payload", { content });
     await safePostWebhook({ content });
   }
 }
 
 async function huntForUpdates(targetFile) {
-  phaseShift("hunt", "enter-hunt", { targetFile, delayMs: HUNT_DELAY_MS });
+  state.phase = "hunt";
   state.huntActive = true;
-  state.huntStartAt = state.huntStartAt || new Date().toISOString();
+  trace("enter hunt", { targetFile, delayMs: HUNT_DELAY_MS });
 
-  while (state.running && !state.successLatched) {
+  while (state.running) {
     state.huntHits += 1;
-    record("hunt attempt", { attempt: state.huntHits, targetFile, delayMs: state.huntBackoff, huntMoves: state.huntMoves, phase: state.phase });
     await new Promise(r => setTimeout(r, state.huntBackoff));
 
     const files = await listAdmFiles();
-    const newest = files[0];
-    record("hunt list", { newest, targetFile, huntBackoff: state.huntBackoff, huntHits: state.huntHits, huntMoves: state.huntMoves });
+    const newest = files[0] || null;
+    trace("hunt list", { targetFile, newest, huntHits: state.huntHits, huntBackoff: state.huntBackoff, sourceSwitches: state.sourceSwitches });
 
-    if (!newest) continue;
+    if (!newest) {
+      state.huntBackoff = Math.min(30000, Math.floor(state.huntBackoff * 1.1));
+      continue;
+    }
 
     if (newest.fullPath !== targetFile) {
+      trace("hunt new file", { old: targetFile, newest: newest.fullPath });
+      setSource(newest, "hunt-switch");
+    }
+
+    const currentTarget = state.currentFile || newest.fullPath;
+    const snap = await readRemoteFile(currentTarget);
+    const result = processFile({ ...newest, fullPath: currentTarget }, snap.content, snap.bytes);
+
+    trace("hunt compare", {
+      targetFile: currentTarget,
+      changed: result.changed,
+      events: result.events.length,
+      currentLineCount: state.currentLineCount,
+      lastKnownLastLine: state.lastKnownLastLine,
+      lastContentBytes: state.lastContentBytes,
+      staleCycles: state.staleCycles,
+      huntBackoff: state.huntBackoff
+    });
+
+    if (result.events.length) {
+      await handleEvents(result.events);
+      state.phase = "standby";
+      state.huntActive = false;
+      stamp("success-found-during-hunt");
+      return true;
+    }
+
+    if (result.changed) {
       state.huntMoves += 1;
-      state.huntLastChangeAt = new Date().toISOString();
-      record("hunt found new file", { old: targetFile, newest: newest.fullPath, huntMoves: state.huntMoves });
-      const snap = await readRemoteFile(newest.fullPath);
-      const result = processFile(newest, snap.content, snap.bytes);
-      if (result.events.length) {
-        await handleEvents(result.events);
-        state.successLatched = true;
-        state.huntActive = false;
-        phaseShift("standby", "success-after-move", { file: newest.fullPath, events: result.events.length });
-        historyStamp("success-after-move");
-        return newest;
-      }
-      if (result.changed) {
-        state.huntActive = false;
-        phaseShift("standby", "new-file-no-event", { file: newest.fullPath });
-        historyStamp("new file no event");
-        return newest;
-      }
+      state.huntBackoff = Math.max(3000, Math.floor(state.huntBackoff * 0.85));
     } else {
-      const snap = await readRemoteFile(targetFile);
-      const result = processFile(newest, snap.content, snap.bytes);
-      record("hunt compare", { huntHits: state.huntHits, changed: result.changed, events: result.events.length, staleCycles: state.staleCycles, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, huntBackoff: state.huntBackoff });
-      if (result.events.length) {
-        await handleEvents(result.events);
-        state.successLatched = true;
-        state.huntActive = false;
-        phaseShift("standby", "success", { file: newest.fullPath, events: result.events.length });
-        historyStamp("success");
-        return newest;
-      }
-      if (result.changed) {
-        state.huntMoves += 1;
-        state.huntLastChangeAt = new Date().toISOString();
-        state.huntBackoff = Math.max(3000, Math.floor(state.huntBackoff * 0.85));
-        record("hunt movement", { huntMoves: state.huntMoves, huntBackoff: state.huntBackoff, file: newest.fullPath });
-      } else {
-        state.huntBackoff = Math.min(30000, Math.floor(state.huntBackoff * 1.15));
-        record("hunt no movement", { huntBackoff: state.huntBackoff, file: newest.fullPath, staleCycles: state.staleCycles });
-      }
+      state.huntBackoff = Math.min(30000, Math.floor(state.huntBackoff * 1.15));
     }
 
     if (state.staleCycles >= STALE_LIMIT) {
       state.huntBackoff = Math.max(3000, Math.floor(state.huntBackoff * 0.9));
-      record("hunt stale acceleration", { huntBackoff: state.huntBackoff, staleCycles: state.staleCycles });
     }
   }
 
   state.huntActive = false;
-  return null;
+  return false;
 }
 
 async function pollOnce() {
@@ -353,54 +396,79 @@ async function pollOnce() {
 
   try {
     ensureConfig();
-    if (state.successLatched && STANDBY_AFTER_SUCCESS) {
-      record("standby", { cycle: state.cycle, currentFile: state.currentFile, reason: "success-latched" });
-      return;
-    }
-
-    if (state.phase === "initial") phaseShift("confirm", "first-pass-done", { cycle: state.cycle });
-
-    record("poll start", { cycle: state.cycle, phase: state.phase, currentFile: state.currentFile, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, staleCycles: state.staleCycles, huntActive: state.huntActive });
+    trace("poll start", {
+      cycle: state.cycle,
+      phase: state.phase,
+      currentFile: state.currentFile,
+      currentLineCount: state.currentLineCount,
+      lastKnownLastLine: state.lastKnownLastLine,
+      lastContentBytes: state.lastContentBytes,
+      staleCycles: state.staleCycles,
+      huntActive: state.huntActive,
+      sourceSwitches: state.sourceSwitches,
+      lastSuccessfulFile: state.lastSuccessfulFile,
+      lastSuccessfulAt: state.lastSuccessfulAt
+    });
 
     const files = await listAdmFiles();
     const newest = files[0] || null;
-    record("cycle start", { cycle: state.cycle, remoteCount: files.length, newest });
+    trace("cycle start", { cycle: state.cycle, remoteCount: files.length, newest });
 
     if (!newest) {
-      record("no ADM files found", { remoteDir: REMOTE_DIR });
+      state.lastFailure = { at: new Date().toISOString(), where: "pollOnce", message: "No ADM files found" };
+      trace("no adm files", { remoteDir: REMOTE_DIR });
       return;
     }
 
-    if (state.currentFile && state.currentFile !== newest.fullPath) {
-      record("newest file changed", { previous: state.currentFile, newest: newest.fullPath });
-      resetFileState("newest-file-changed", newest);
+    if (!state.currentFile) {
+      setSource(newest, "startup-source");
+    } else if (state.currentFile !== newest.fullPath) {
+      trace("newest file changed", { previous: state.currentFile, newest: newest.fullPath });
+      setSource(newest, "newest-file-changed");
     }
 
-    const snap = await readRemoteFile(newest.fullPath);
-    const result = processFile(newest, snap.content, snap.bytes);
+    const snap = await readRemoteFile(state.currentFile || newest.fullPath);
+    state.lastRead = {
+      at: new Date().toISOString(),
+      file: state.currentFile || newest.fullPath,
+      bytes: snap.bytes,
+      lineCount: snap.lines.length,
+      firstLine: snap.lines[0] || "",
+      lastLine: snap.lines[snap.lines.length - 1] || ""
+    };
+    trace("read summary", state.lastRead);
 
-    record("post-process", { file: newest.fullPath, events: result.events.length, changed: result.changed, state: { currentFile: state.currentFile, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, staleCycles: state.staleCycles, phase: state.phase } });
+    const result = processFile({ ...newest, fullPath: state.currentFile || newest.fullPath }, snap.content, snap.bytes);
+    trace("post-process", { file: state.currentFile || newest.fullPath, events: result.events.length, changed: result.changed, state: { currentFile: state.currentFile, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, staleCycles: state.staleCycles, phase: state.phase } });
 
     if (result.events.length) {
       await handleEvents(result.events);
-      state.successLatched = true;
-      phaseShift("standby", "success", { file: newest.fullPath, events: result.events.length });
-      historyStamp("success");
+      state.phase = "standby";
+      stamp("success-in-poll");
       return;
     }
 
-    if (state.phase === "confirm") {
-      phaseShift("hunt", "secondary-pass-no-success", { file: newest.fullPath });
+    if (state.phase !== "hunt") {
+      if (!result.changed || state.staleCycles >= STALE_LIMIT) {
+        await huntForUpdates(state.currentFile || newest.fullPath);
+      }
     }
 
-    if (!result.changed || state.staleCycles >= STALE_LIMIT) {
-      await huntForUpdates(newest.fullPath);
-    }
-
-    record("cycle end", { cycle: state.cycle, phase: state.phase, currentFile: state.currentFile, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, staleCycles: state.staleCycles });
+    trace("cycle end", {
+      cycle: state.cycle,
+      phase: state.phase,
+      currentFile: state.currentFile,
+      currentLineCount: state.currentLineCount,
+      lastKnownLastLine: state.lastKnownLastLine,
+      lastContentBytes: state.lastContentBytes,
+      staleCycles: state.staleCycles,
+      sourceSwitches: state.sourceSwitches,
+      huntHits: state.huntHits
+    });
   } catch (err) {
+    state.lastFailure = { at: new Date().toISOString(), where: "pollOnce", message: err.message, stack: err.stack };
     console.error("[killfeed] poll error:", err);
-    record("poll error", { message: err.message, stack: err.stack });
+    trace("poll error", state.lastFailure);
   } finally {
     state.inFlight = false;
   }
@@ -409,7 +477,6 @@ async function pollOnce() {
 function scheduleNext() {
   if (!state.running) return;
   if (state.timer) clearTimeout(state.timer);
-
   state.timer = setTimeout(async () => {
     try {
       await pollOnce();
@@ -424,8 +491,7 @@ function scheduleNext() {
 function start() {
   if (state.running) return;
   state.running = true;
-  phaseShift("initial", "start");
-  record("start", { loopInterval: LOOP_INTERVAL, debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, remoteDir: REMOTE_DIR, huntDelayMs: HUNT_DELAY_MS, staleLimit: STALE_LIMIT, standbyAfterSuccess: STANDBY_AFTER_SUCCESS });
+  trace("start", { loopInterval: LOOP_INTERVAL, debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, remoteDir: REMOTE_DIR, huntDelayMs: HUNT_DELAY_MS, staleLimit: STALE_LIMIT });
   pollOnce().catch(err => console.error("[killfeed] initial poll error:", err)).finally(scheduleNext);
 }
 
@@ -433,7 +499,7 @@ function stop() {
   state.running = false;
   if (state.timer) clearTimeout(state.timer);
   state.timer = null;
-  historyStamp("stop");
+  stamp("stop");
 }
 
 module.exports = { start, stop, pollOnce, state };
