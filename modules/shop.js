@@ -240,6 +240,11 @@ async function buyItem(itemName, qty, x, z) {
   const item = items.find(i => i.name.toLowerCase() === itemName.toLowerCase() || i.name.toLowerCase().includes(itemName.toLowerCase()));
   if (!item) return { reply: "Item not found" };
 
+  const price = Number(item.price || 0);
+  if (!Number.isFinite(price) || price <= 0) {
+    return { reply: "This item cannot be purchased because its price is invalid." };
+  }
+
   const order = {
     id: Date.now().toString(),
     item: item.name,
@@ -287,7 +292,7 @@ function viewXML() {
   if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) return { reply: "No built XML found yet. Run /shopbuildxml first." };
   const eventsXML = fs.readFileSync(EVENTS_FILE, "utf-8");
   const posXML = fs.readFileSync(POS_FILE, "utf-8");
-  return { reply: `--- shopevents.xml ---\n${eventsXML.slice(0, 3500)}\n\n--- eventposdef.xml ---\n${posXML.slice(0, 3500)}` };
+  return { reply: `--- shopevents.xml ---\\n${eventsXML.slice(0, 3500)}\\n\\n--- eventposdef.xml ---\\n${posXML.slice(0, 3500)}` };
 }
 
 async function pushXML() {
