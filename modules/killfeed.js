@@ -10,6 +10,9 @@ const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "
 const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
+const HUNT_RETRIES = Number(process.env.KILLFEED_HUNT_RETRIES || 4);
+const HUNT_DELAY_MS = Number(process.env.KILLFEED_HUNT_DELAY_MS || 15000);
+const HUNT_STALE_CYCLES = Number(process.env.KILLFEED_HUNT_STALE_CYCLES || 2);
 
 const state = {
   running: false,
@@ -20,7 +23,13 @@ const state = {
   currentLineCount: 0,
   lastKnownLastLine: "",
   lastEvents: new Set(),
-  retryQueue: new Set()
+  retryQueue: new Set(),
+  lastFileMeta: null,
+  lastContentBytes: 0,
+  staleCycles: 0,
+  huntActive: false,
+  huntCounter: 0,
+  lastList: []
 };
 
 function log(...args) {
@@ -40,38 +49,34 @@ function joinRemote(dir, name) {
   return `${d}/${name}`;
 }
 
-async function listAdmFiles() {
+async function ftpClient() {
   const client = new Client();
-  try {
-    await client.access({
-      host: FTP_HOST,
-      user: FTP_USER,
-      password: FTP_PASS,
-      secure: FTP_SECURE
-    });
+  await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+  return client;
+}
 
+async function listAdmFiles() {
+  const client = await ftpClient();
+  try {
     const list = await client.list(REMOTE_DIR);
     const files = list
-      .filter(item => item.type === 1 || item.isFile || String(item.name || "").toUpperCase().endsWith(".ADM"))
+      .filter(item => String(item.name || "").toUpperCase().endsWith(".ADM"))
       .map(item => ({
         name: item.name,
+        size: Number(item.size || 0),
         modifiedAt: item.modifiedAt || item.modified || null,
         fullPath: joinRemote(REMOTE_DIR, item.name)
       }))
-      .filter(item => item.name.toUpperCase().endsWith(".ADM"))
       .sort((a, b) => {
         const ta = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
         const tb = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
         if (tb !== ta) return tb - ta;
+        if (b.size !== a.size) return b.size - a.size;
         return b.name.localeCompare(a.name);
       });
 
-    log("ftp list", {
-      dir: REMOTE_DIR,
-      count: files.length,
-      newest: files[0]?.fullPath || null
-    });
-
+    state.lastList = files;
+    log("ftp list", { dir: REMOTE_DIR, count: files.length, files });
     return files;
   } finally {
     client.close();
@@ -79,29 +84,24 @@ async function listAdmFiles() {
 }
 
 async function readRemoteFile(remotePath) {
-  const client = new Client();
+  const client = await ftpClient();
   const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
   try {
-    await client.access({
-      host: FTP_HOST,
-      user: FTP_USER,
-      password: FTP_PASS,
-      secure: FTP_SECURE
-    });
-
     log("ftp download start", remotePath);
     await client.downloadTo(localTmp, remotePath);
-
     const content = fs.readFileSync(localTmp, "utf8");
+    const stat = fs.statSync(localTmp);
     const lines = content.split(/\r?\n/);
 
     log("ftp download ok", {
       file: remotePath,
-      bytes: Buffer.byteLength(content, "utf8"),
-      totalLines: lines.length
+      bytes: stat.size,
+      totalLines: lines.length,
+      firstLine: lines[0] || "",
+      lastLine: lines[lines.length - 1] || ""
     });
 
-    return content;
+    return { content, bytes: stat.size, lines };
   } finally {
     try { fs.unlinkSync(localTmp); } catch {}
     client.close();
@@ -159,57 +159,112 @@ async function safePostWebhook(payload) {
   }
 }
 
-function getCurrentStateForFile(file) {
-  if (state.currentFile !== file) {
-    state.currentFile = file;
-    state.currentLineCount = 0;
-    state.lastKnownLastLine = "";
-    state.lastEvents.clear();
-    log("switched file", file);
-  }
-}
-
-function processFile(file, content) {
-  getCurrentStateForFile(file);
-
-  const lines = content.split(/\r?\n/);
-  const currentLineCount = lines.length;
-  const rotated = currentLineCount < state.currentLineCount;
-  const changedLastLine = normalizeLine(lines[lines.length - 1] || "") !== state.lastKnownLastLine;
-
-  let startIndex = state.currentLineCount;
-
-  if (rotated || startIndex > currentLineCount) {
-    startIndex = 0;
-    state.currentLineCount = 0;
-    state.lastEvents.clear();
-    log("file reset", { file, rotated, currentLineCount });
-  }
-
-  const newLines = lines.slice(startIndex);
-  const events = [];
-
-  log("file cycle", {
-    file,
-    previousLines: state.currentLineCount,
-    currentLines: currentLineCount,
-    newLines: newLines.length,
-    startIndex,
-    rotated,
-    changedLastLine,
-    lastKnownLastLine: state.lastKnownLastLine
+function resetFileState(reason, file) {
+  log("file reset", {
+    reason,
+    file: file?.fullPath || file?.name || null,
+    state: {
+      currentFile: state.currentFile,
+      currentLineCount: state.currentLineCount,
+      lastKnownLastLine: state.lastKnownLastLine,
+      lastContentBytes: state.lastContentBytes,
+      lastFileMeta: state.lastFileMeta,
+      staleCycles: state.staleCycles
+    }
   });
 
-  for (const rawLine of newLines) {
-    const line = normalizeLine(rawLine);
+  state.currentLineCount = 0;
+  state.lastKnownLastLine = "";
+  state.lastContentBytes = 0;
+  state.lastFileMeta = null;
+  state.lastEvents.clear();
+  state.staleCycles = 0;
+}
+
+function processFile(file, content, bytes) {
+  const lines = content.split(/\r?\n/);
+  const currentLineCount = lines.length;
+  const firstLine = normalizeLine(lines[0] || "");
+  const lastLine = normalizeLine(lines[lines.length - 1] || "");
+  const modifiedAt = file.modifiedAt || null;
+  const size = file.size || bytes || 0;
+
+  const sameFile = state.currentFile === file.fullPath;
+  const fileChanged = !state.lastFileMeta || state.lastFileMeta.fullPath !== file.fullPath || state.lastFileMeta.modifiedAt !== modifiedAt || state.lastFileMeta.size !== size;
+  const countGrew = currentLineCount > state.currentLineCount;
+  const countSame = currentLineCount === state.currentLineCount;
+  const countShrank = currentLineCount < state.currentLineCount;
+  const bytesGrew = bytes > state.lastContentBytes;
+  const lastLineChanged = lastLine !== state.lastKnownLastLine;
+  const firstLineChanged = firstLine && state.lastFileMeta && firstLine !== state.lastFileMeta.firstLine;
+
+  log("file snapshot", {
+    file: file.fullPath,
+    sameFile,
+    fileChanged,
+    currentLineCount,
+    previousLineCount: state.currentLineCount,
+    bytes,
+    previousBytes: state.lastContentBytes,
+    firstLine,
+    lastLine,
+    modifiedAt,
+    previousMeta: state.lastFileMeta,
+    countGrew,
+    countSame,
+    countShrank,
+    bytesGrew,
+    lastLineChanged,
+    firstLineChanged
+  });
+
+  if (!sameFile) {
+    state.currentFile = file.fullPath;
+    resetFileState("switched-file", file);
+  } else if (countShrank || (state.lastFileMeta && state.lastFileMeta.size && size < state.lastFileMeta.size)) {
+    resetFileState("shrank-or-rotated", file);
+  }
+
+  const afterResetCurrent = state.currentLineCount;
+  const noAdvance = sameFile && countSame && !bytesGrew && !lastLineChanged;
+
+  if (noAdvance) {
+    state.staleCycles += 1;
+    log("stale cycle", {
+      file: file.fullPath,
+      staleCycles: state.staleCycles,
+      currentLineCount,
+      bytes,
+      modifiedAt,
+      lastLine,
+      currentState: {
+        currentLineCount: afterResetCurrent,
+        lastKnownLastLine: state.lastKnownLastLine,
+        lastContentBytes: state.lastContentBytes
+      }
+    });
+  } else {
+    state.staleCycles = 0;
+  }
+
+  let startIndex = state.currentLineCount;
+  if (countShrank || startIndex > currentLineCount || !sameFile) startIndex = 0;
+  if (state.staleCycles >= HUNT_STALE_CYCLES) startIndex = 0;
+
+  const events = [];
+  log("scan start", { file: file.fullPath, startIndex, currentLineCount, staleCycles: state.staleCycles, huntActive: state.huntActive });
+
+  for (let i = startIndex; i < lines.length; i++) {
+    const line = normalizeLine(lines[i]);
     if (!line) continue;
 
+    log("scan line", { index: i, line });
     const event = parseAdmKillLine(line);
     if (!event) continue;
 
-    const dedupeKey = `${file}|${event.raw}`;
+    const dedupeKey = `${file.fullPath}|${event.raw}`;
     if (state.lastEvents.has(dedupeKey)) {
-      log("dedupe skip", { file, line });
+      log("dedupe skip", { file: file.fullPath, index: i, line });
       continue;
     }
 
@@ -219,13 +274,16 @@ function processFile(file, content) {
       if (first) state.lastEvents.delete(first);
     }
 
-    log("trigger match", { file, line });
+    log("trigger match", { file: file.fullPath, index: i, event });
     events.push(event);
   }
 
   state.currentLineCount = currentLineCount;
-  state.lastKnownLastLine = normalizeLine(lines[lines.length - 1] || "");
-  return events;
+  state.lastKnownLastLine = lastLine;
+  state.lastContentBytes = bytes;
+  state.lastFileMeta = { fullPath: file.fullPath, modifiedAt, size, firstLine, lastLine, currentLineCount };
+
+  return { events, changed: fileChanged || countGrew || bytesGrew || lastLineChanged };
 }
 
 async function handleEvents(events) {
@@ -237,6 +295,56 @@ async function handleEvents(events) {
   }
 }
 
+async function huntForUpdates(targetFile) {
+  state.huntActive = true;
+
+  for (let i = 1; i <= HUNT_RETRIES; i++) {
+    log("hunt attempt", { attempt: i, of: HUNT_RETRIES, targetFile, waitMs: HUNT_DELAY_MS });
+    await new Promise(r => setTimeout(r, HUNT_DELAY_MS));
+
+    const files = await listAdmFiles();
+    const newest = files[0];
+    log("hunt list", { attempt: i, newest, targetFile });
+
+    if (!newest) continue;
+
+    if (newest.fullPath !== targetFile) {
+      log("hunt found new file", { old: targetFile, newest: newest.fullPath });
+      state.huntActive = false;
+      return newest;
+    }
+
+    const snap = await readRemoteFile(targetFile);
+    const result = processFile(newest, snap.content, snap.bytes);
+
+    log("hunt compare", {
+      attempt: i,
+      changed: result.changed,
+      events: result.events.length,
+      state: {
+        currentLineCount: state.currentLineCount,
+        lastKnownLastLine: state.lastKnownLastLine,
+        lastContentBytes: state.lastContentBytes,
+        staleCycles: state.staleCycles
+      }
+    });
+
+    if (result.events.length) {
+      await handleEvents(result.events);
+      state.huntActive = false;
+      return newest;
+    }
+
+    if (result.changed) {
+      state.huntActive = false;
+      return newest;
+    }
+  }
+
+  state.huntActive = false;
+  return null;
+}
+
 async function pollOnce() {
   if (state.inFlight) return;
   state.inFlight = true;
@@ -245,43 +353,75 @@ async function pollOnce() {
   try {
     ensureConfig();
 
-    const files = await listAdmFiles();
-    const targets = new Set();
+    log("poll start", {
+      cycle: state.cycle,
+      currentFile: state.currentFile,
+      currentLineCount: state.currentLineCount,
+      lastKnownLastLine: state.lastKnownLastLine,
+      lastContentBytes: state.lastContentBytes,
+      staleCycles: state.staleCycles,
+      huntActive: state.huntActive
+    });
 
-    if (files[0]) targets.add(files[0].fullPath);
-    for (const f of state.retryQueue) targets.add(f);
-    state.retryQueue.clear();
+    const files = await listAdmFiles();
+    const newest = files[0] || null;
 
     log("cycle start", {
       cycle: state.cycle,
-      targetCount: targets.size,
-      newest: files[0]?.fullPath || null
+      remoteCount: files.length,
+      newest,
+      retryQueue: [...state.retryQueue]
     });
 
-    for (const file of targets) {
-      let content;
-      try {
-        content = await readRemoteFile(file);
-      } catch (err) {
-        log("read failed", { file, error: err.message });
-        if (String(err.message || "").includes("550")) state.retryQueue.add(file);
-        continue;
-      }
+    if (!newest) {
+      log("no ADM files found", { remoteDir: REMOTE_DIR });
+      return;
+    }
 
-      const events = processFile(file, content);
-      if (events.length) {
-        log("events found", { file, count: events.length });
-        await handleEvents(events);
-      } else {
-        log("no events", file);
+    if (state.currentFile && state.currentFile !== newest.fullPath) {
+      log("newest file changed", { previous: state.currentFile, newest: newest.fullPath });
+      resetFileState("newest-file-changed", newest);
+    }
+
+    const fileToRead = newest;
+    const snap = await readRemoteFile(fileToRead.fullPath);
+    const result = processFile(fileToRead, snap.content, snap.bytes);
+
+    log("post-process", {
+      file: fileToRead.fullPath,
+      events: result.events.length,
+      changed: result.changed,
+      state: {
+        currentFile: state.currentFile,
+        currentLineCount: state.currentLineCount,
+        lastKnownLastLine: state.lastKnownLastLine,
+        lastContentBytes: state.lastContentBytes,
+        staleCycles: state.staleCycles
+      }
+    });
+
+    if (result.events.length) await handleEvents(result.events);
+
+    if (!result.changed && state.staleCycles >= HUNT_STALE_CYCLES) {
+      const hunted = await huntForUpdates(fileToRead.fullPath);
+      if (hunted && hunted.fullPath !== fileToRead.fullPath) {
+        log("hunt switched active file", { from: fileToRead.fullPath, to: hunted.fullPath });
+        state.currentFile = hunted.fullPath;
+        resetFileState("hunt-switch", hunted);
       }
     }
 
     log("cycle end", {
       cycle: state.cycle,
-      processedFiles: targets.size,
-      retryQueue: state.retryQueue.size
+      currentFile: state.currentFile,
+      currentLineCount: state.currentLineCount,
+      lastKnownLastLine: state.lastKnownLastLine,
+      lastContentBytes: state.lastContentBytes,
+      staleCycles: state.staleCycles
     });
+  } catch (err) {
+    console.error("[killfeed] poll error:", err);
+    log("poll error", { message: err.message, stack: err.stack });
   } finally {
     state.inFlight = false;
   }
@@ -289,11 +429,13 @@ async function pollOnce() {
 
 function scheduleNext() {
   if (!state.running) return;
+  if (state.timer) clearTimeout(state.timer);
+
   state.timer = setTimeout(async () => {
     try {
       await pollOnce();
     } catch (err) {
-      console.error("[killfeed] poll error:", err);
+      console.error("[killfeed] scheduled poll error:", err);
     } finally {
       scheduleNext();
     }
@@ -308,7 +450,10 @@ function start() {
     loopInterval: LOOP_INTERVAL,
     debug: DEBUG,
     webhookEnabled: !!WEBHOOK_URL,
-    remoteDir: REMOTE_DIR
+    remoteDir: REMOTE_DIR,
+    huntRetries: HUNT_RETRIES,
+    huntDelayMs: HUNT_DELAY_MS,
+    huntStaleCycles: HUNT_STALE_CYCLES
   });
 
   pollOnce()
