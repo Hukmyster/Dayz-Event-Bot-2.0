@@ -55,7 +55,7 @@ function normalizeNumber(v) {
 function mapShopRow(row) {
   return {
     id: row.id,
-    name: row.displayName,
+    name: row.displayname,
     type: row.type,
     price: Number(row.price)
   };
@@ -72,7 +72,7 @@ async function loadShop() {
 
   const { data, error } = await supabase
     .from("shop")
-    .select("id,displayName,type,price");
+    .select("id,displayname,type,price");
 
   if (error) {
     debug.supabaseError("shop.loadShop", "select", error, { table: "shop" });
@@ -111,12 +111,12 @@ async function addItem(name, type, price) {
 
   const { data, error } = await supabase
     .from("shop")
-    .insert([{ displayName: name, type, price }])
-    .select("id,displayName,type,price");
+    .insert([{ displayname: name, type, price }])
+    .select("id,displayname,type,price");
 
   if (error) {
     debug.supabaseError("shop.addItem", "insert", error, {
-      values: { displayName: name, type, price }
+      values: { displayname: name, type, price }
     });
     return { reply: `Database error: ${error.message}` };
   }
@@ -142,7 +142,7 @@ async function editPrice(name, price) {
     .from("shop")
     .update({ price })
     .eq("id", item.id)
-    .select("id,displayName,type,price");
+    .select("id,displayname,type,price");
 
   if (error) {
     debug.supabaseError("shop.editPrice", "update", error, {
@@ -175,14 +175,14 @@ async function editName(name, newname) {
 
   const { data, error } = await supabase
     .from("shop")
-    .update({ displayName: newname })
+    .update({ displayname: newname })
     .eq("id", item.id)
-    .select("id,displayName,type,price");
+    .select("id,displayname,type,price");
 
   if (error) {
     debug.supabaseError("shop.editName", "update", error, {
       id: item.id,
-      values: { displayName: newname }
+      values: { displayname: newname }
     });
     return { reply: `Database error: ${error.message}` };
   }
