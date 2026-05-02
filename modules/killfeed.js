@@ -9,6 +9,7 @@ const FTP_PASS = process.env.FTP_PASS;
 const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "true";
 const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
+const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
 
 const state = {
   running: false,
@@ -34,18 +35,24 @@ function ensureConfig() {
   if (missing.length) throw new Error(`Missing killfeed env vars: ${missing.join(", ")}`);
 }
 
+function joinRemote(dir, name) {
+  const d = String(dir || "").replace(/\/+$|\/$/, "");
+  return `${d}/${name}`;
+}
+
 async function listAdmFiles() {
   const client = new Client();
   try {
     await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
-    const list = await client.list();
+    const list = await client.list(REMOTE_DIR);
     const files = list
       .filter(item => item.isFile)
       .map(item => item.name)
       .filter(name => name.toUpperCase().endsWith(".ADM"));
 
-    log("ftp list", { count: files.length, files });
-    return files;
+    const fullPaths = files.map(name => joinRemote(REMOTE_DIR, name));
+    log("ftp list", { dir: REMOTE_DIR, count: fullPaths.length, files: fullPaths });
+    return fullPaths;
   } finally {
     client.close();
   }
@@ -54,20 +61,13 @@ async function listAdmFiles() {
 async function readRemoteFile(remotePath) {
   const client = new Client();
   const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
-
   try {
     await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
     log("ftp download start", remotePath);
     await client.downloadTo(localTmp, remotePath);
-
     const content = fs.readFileSync(localTmp, "utf8");
     const lines = content.split(/\r?\n/);
-    log("ftp download ok", {
-      file: remotePath,
-      bytes: Buffer.byteLength(content, "utf8"),
-      totalLines: lines.length
-    });
-
+    log("ftp download ok", { file: remotePath, bytes: Buffer.byteLength(content, "utf8"), totalLines: lines.length });
     return content;
   } finally {
     try { fs.unlinkSync(localTmp); } catch {}
@@ -97,14 +97,12 @@ function getState(file) {
 
 async function safePostWebhook(payload) {
   if (!WEBHOOK_URL) return false;
-
   try {
     const res = await fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-
     log("webhook post", { status: res.status, ok: res.ok });
     return res.ok;
   } catch (err) {
@@ -146,14 +144,8 @@ function parseAdmKillLine(line) {
 function processFile(file, content) {
   const current = fingerprint(content);
   const previous = getState(file);
-
   const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
-  const reset = rotated || (
-    previous.lastLine &&
-    current.firstLine &&
-    previous.lastLine !== current.firstLine &&
-    current.lineCount <= previous.lineCount
-  );
+  const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
 
   const lines = content.split(/\r?\n/);
   const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
@@ -215,7 +207,6 @@ async function pollOnce() {
 
   try {
     ensureConfig();
-
     const remoteFiles = await listAdmFiles();
     const targets = new Set([...remoteFiles, ...state.retryQueue]);
     state.retryQueue.clear();
@@ -229,7 +220,6 @@ async function pollOnce() {
 
     for (const file of targets) {
       let content = null;
-
       try {
         content = await readRemoteFile(file);
       } catch (err) {
@@ -265,7 +255,6 @@ async function pollOnce() {
 
 function scheduleNext() {
   if (!state.running) return;
-
   state.timer = setTimeout(async () => {
     try {
       await pollOnce();
@@ -283,12 +272,10 @@ function start() {
   log("start", {
     loopInterval: LOOP_INTERVAL,
     debug: DEBUG,
-    webhookEnabled: !!WEBHOOK_URL
+    webhookEnabled: !!WEBHOOK_URL,
+    remoteDir: REMOTE_DIR
   });
-
-  pollOnce()
-    .catch(err => console.error("[killfeed] initial poll error:", err))
-    .finally(scheduleNext);
+  pollOnce().catch(err => console.error("[killfeed] initial poll error:", err)).finally(scheduleNext);
 }
 
 function stop() {
@@ -297,9 +284,4 @@ function stop() {
   state.timer = null;
 }
 
-module.exports = {
-  start,
-  stop,
-  pollOnce,
-  state
-};
+module.exports = { start, stop, pollOnce, state };
