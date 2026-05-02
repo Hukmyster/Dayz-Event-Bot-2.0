@@ -9,7 +9,6 @@ const FTP_PASS = process.env.FTP_PASS;
 const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "true";
 const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
-const LOG_EXTENSIONS = [".RPT", ".ADM"];
 
 const state = {
   running: false,
@@ -19,8 +18,8 @@ const state = {
   seenFiles: new Set(),
   fileMeta: new Map(),
   lastEvents: new Set(),
-  startedAt: new Date().toISOString(),
-  cycle: 0
+  cycle: 0,
+  startedAt: new Date().toISOString()
 };
 
 function log(...args) {
@@ -35,21 +34,15 @@ function ensureConfig() {
   if (missing.length) throw new Error(`Missing killfeed env vars: ${missing.join(", ")}`);
 }
 
-async function listFilesFromFtp() {
+async function listAdmFiles() {
   const client = new Client();
   try {
-    await client.access({
-      host: FTP_HOST,
-      user: FTP_USER,
-      password: FTP_PASS,
-      secure: FTP_SECURE
-    });
-
+    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
     const list = await client.list();
     const files = list
       .filter(item => item.isFile)
       .map(item => item.name)
-      .filter(name => LOG_EXTENSIONS.some(ext => name.toUpperCase().endsWith(ext)));
+      .filter(name => name.toUpperCase().endsWith(".ADM"));
 
     log("ftp list", { count: files.length, files });
     return files;
@@ -60,19 +53,10 @@ async function listFilesFromFtp() {
 
 async function readRemoteFile(remotePath) {
   const client = new Client();
-  const localTmp = path.join(
-    "/tmp",
-    `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.log`
-  );
+  const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
 
   try {
-    await client.access({
-      host: FTP_HOST,
-      user: FTP_USER,
-      password: FTP_PASS,
-      secure: FTP_SECURE
-    });
-
+    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
     log("ftp download start", remotePath);
     await client.downloadTo(localTmp, remotePath);
 
@@ -136,15 +120,7 @@ function cleanNpcName(name) {
 }
 
 function buildEventMessage(event) {
-  if (event.type === "lootmax") {
-    return `🔥 **Lootmax** ${event.value} | ${event.time}`;
-  }
-
-  if (event.type === "kill") {
-    return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
-  }
-
-  return "Event detected";
+  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
 }
 
 function parseAdmKillLine(line) {
@@ -163,22 +139,6 @@ function parseAdmKillLine(line) {
     killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
     weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
     distance: distanceMatch && distanceMatch[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
-    raw: line
-  };
-}
-
-function parseRptLine(line) {
-  if (!line) return null;
-
-  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
-  const lootMatch = line.match(/lootmax\s*:\s*(\d+)/i);
-
-  if (!lootMatch) return null;
-
-  return {
-    type: "lootmax",
-    value: Number(lootMatch[1]),
-    time: timeMatch ? timeMatch[1] : "unknown time",
     raw: line
   };
 }
@@ -216,10 +176,7 @@ function processFile(file, content) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
 
-    const event = file.toUpperCase().endsWith(".ADM")
-      ? parseAdmKillLine(line)
-      : parseRptLine(line);
-
+    const event = parseAdmKillLine(line);
     if (!event) continue;
 
     const dedupeKey = `${file}|${event.type}|${event.raw}`;
@@ -229,7 +186,6 @@ function processFile(file, content) {
     }
 
     state.lastEvents.add(dedupeKey);
-
     if (state.lastEvents.size > 2000) {
       const first = state.lastEvents.values().next().value;
       if (first) state.lastEvents.delete(first);
@@ -260,7 +216,7 @@ async function pollOnce() {
   try {
     ensureConfig();
 
-    const remoteFiles = await listFilesFromFtp();
+    const remoteFiles = await listAdmFiles();
     const targets = new Set([...remoteFiles, ...state.retryQueue]);
     state.retryQueue.clear();
 
@@ -272,10 +228,8 @@ async function pollOnce() {
     });
 
     for (const file of targets) {
-      const upper = file.toUpperCase();
-      if (!LOG_EXTENSIONS.some(ext => upper.endsWith(ext))) continue;
-
       let content = null;
+
       try {
         content = await readRemoteFile(file);
       } catch (err) {
