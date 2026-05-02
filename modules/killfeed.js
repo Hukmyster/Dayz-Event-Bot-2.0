@@ -1,125 +1,287 @@
-const fs = require('fs');
-const path = require('path');
-const ftp = require('basic-ftp');
+const fs = require("fs");
+const path = require("path");
+const { Client } = require("basic-ftp");
 
-const CONFIG = {
-  ftpHost: process.env.FTP_HOST,
-  ftpPort: Number(process.env.FTP_PORT || 21),
-  ftpUser: process.env.FTP_USER,
-  ftpPass: process.env.FTP_PASS,
-  ftpSecure: String(process.env.FTP_SECURE || 'false').toLowerCase() === 'true',
-  remoteDir: process.env.KILLFEED_REMOTE_DIR || 'dayzpsconfig',
-  pollIntervalMs: Number(process.env.KILLFEED_INTERNAL_MS || 300000),
-  webhookUrl: process.env.KILLFEED_WEBHOOK_URL,
-  debug: String(process.env.KILLFEED_DEBUG || 'true').toLowerCase() === 'true',
-  stateFile: path.join(__dirname, 'killfeed-state.json')
+const LOOP_INTERVAL = Number(process.env.KILLFEED_INTERVAL_MS || 5 * 60 * 1000);
+const FTP_HOST = process.env.FTP_HOST;
+const FTP_USER = process.env.FTP_USER;
+const FTP_PASS = process.env.FTP_PASS;
+const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "true";
+const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
+const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
+const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
+
+const state = {
+  running: false,
+  timer: null,
+  inFlight: false,
+  retryQueue: new Set(),
+  seenFiles: new Set(),
+  fileMeta: new Map(),
+  lastEvents: new Set(),
+  cycle: 0,
+  startedAt: new Date().toISOString()
 };
 
-function log(...args) { console.log(new Date().toISOString(), ...args); }
-function dbg(...args) { if (CONFIG.debug) log('[killfeed]', ...args); }
+function log(...args) {
+  if (DEBUG) console.log("[killfeed]", ...args);
+}
 
-function loadState() {
-  try { return JSON.parse(fs.readFileSync(CONFIG.stateFile, 'utf8')); }
-  catch { return { newestFile: null, lastLineCount: 0, initialized: false }; }
+function ensureConfig() {
+  const missing = [];
+  if (!FTP_HOST) missing.push("FTP_HOST");
+  if (!FTP_USER) missing.push("FTP_USER");
+  if (!FTP_PASS) missing.push("FTP_PASS");
+  if (missing.length) throw new Error(`Missing killfeed env vars: ${missing.join(", ")}`);
 }
-function saveState(state) { fs.writeFileSync(CONFIG.stateFile, JSON.stringify(state, null, 2)); }
-function normalizeLines(text) {
-  return text.replace(/\u0000/g, '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+function joinRemote(dir, name) {
+  const d = String(dir || "").replace(/\/+$|\/$/, "");
+  return `${d}/${name}`;
 }
-function pickNewestAdm(files) {
-  const adm = files.filter(f => f.name && f.name.toLowerCase().endsWith('.adm'));
-  if (!adm.length) return null;
-  adm.sort((a, b) => {
-    const at = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
-    const bt = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
-    if (bt !== at) return bt - at;
-    return b.name.localeCompare(a.name);
-  });
-  return adm[0].name;
-}
-function isKillLine(line) {
-  const s = line.toLowerCase();
-  return s.includes('killed by') || s.includes('was killed') || s.includes('murdered') || s.includes('suicide') || s.includes('bleeding out') || s.includes('killed');
-}
-async function sendDiscord(content) {
-  const res = await fetch(CONFIG.webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content })
-  });
-  if (!res.ok) throw new Error(`Discord webhook failed: ${res.status} ${res.statusText}`);
-}
-async function downloadRemoteFile(client, remoteFile) {
-  const chunks = [];
-  const writable = new (require('stream').Writable)({
-    write(chunk, enc, cb) { chunks.push(Buffer.from(chunk)); cb(); }
-  });
-  await client.downloadTo(writable, `${CONFIG.remoteDir}/${remoteFile}`);
-  return Buffer.concat(chunks).toString('utf8');
-}
-async function pollOnce(state) {
-  const client = new ftp.Client();
-  client.ftp.verbose = false;
+
+async function listAdmFiles() {
+  const client = new Client();
   try {
-    dbg('cycle start');
-    await client.access({
-      host: CONFIG.ftpHost,
-      port: CONFIG.ftpPort,
-      user: CONFIG.ftpUser,
-      password: CONFIG.ftpPass,
-      secure: CONFIG.ftpSecure
-    });
-    const list = await client.list(CONFIG.remoteDir);
-    dbg('ftp list count', list.length);
-    const newestFile = pickNewestAdm(list);
-    dbg('newest file', newestFile);
-    if (!newestFile) return;
-    const fileText = await downloadRemoteFile(client, newestFile);
-    const lines = normalizeLines(fileText);
-    dbg('file lines', lines.length);
-    if (state.newestFile !== newestFile) {
-      state.newestFile = newestFile;
-      state.lastLineCount = lines.length;
-      state.initialized = true;
-      saveState(state);
-      dbg('initialized new file without posting', newestFile, lines.length);
-      return;
-    }
-    if (!state.initialized) {
-      state.lastLineCount = lines.length;
-      state.initialized = true;
-      saveState(state);
-      dbg('initialized current file without posting', newestFile);
-      return;
-    }
-    if (lines.length <= state.lastLineCount) {
-      dbg('no new lines');
-      return;
-    }
-    const newLines = lines.slice(state.lastLineCount);
-    dbg('new lines detected', newLines.length);
-    for (const line of newLines) {
-      if (!isKillLine(line)) continue;
-      await sendDiscord(`**DayZ Killfeed**\n${line}`);
-      dbg('posted line', line);
-    }
-    state.lastLineCount = lines.length;
-    saveState(state);
-  } finally { client.close(); }
-}
-async function main() {
-  if (!CONFIG.ftpHost || !CONFIG.ftpUser || !CONFIG.ftpPass || !CONFIG.webhookUrl) {
-    throw new Error('Missing required env vars: FTP_HOST, FTP_USER, FTP_PASS, KILLFEED_WEBHOOK_URL');
+    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+    const list = await client.list(REMOTE_DIR);
+    const files = list
+      .filter(item => item.isFile)
+      .map(item => item.name)
+      .filter(name => name.toUpperCase().endsWith(".ADM"));
+
+    const fullPaths = files.map(name => joinRemote(REMOTE_DIR, name));
+    log("ftp list", { dir: REMOTE_DIR, count: fullPaths.length, files: fullPaths });
+    return fullPaths;
+  } finally {
+    client.close();
   }
-  log('KILLFEED module started');
-  log('poll interval', CONFIG.pollIntervalMs);
-  let state = loadState();
-  dbg('loaded state', state);
-  const run = async () => {
-    try { await pollOnce(state); }
-    catch (err) { log('[killfeed] error', err.message || err); }
-  };
-  await run();
-  setInterval(run, CONFIG.pollIntervalMs);
 }
-main().catch(err => { log('fatal', err.message || err); process.exit(1); });
+
+async function readRemoteFile(remotePath) {
+  const client = new Client();
+  const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
+  try {
+    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+    log("ftp download start", remotePath);
+    await client.downloadTo(localTmp, remotePath);
+    const content = fs.readFileSync(localTmp, "utf8");
+    const lines = content.split(/\r?\n/);
+    log("ftp download ok", { file: remotePath, bytes: Buffer.byteLength(content, "utf8"), totalLines: lines.length });
+    return content;
+  } finally {
+    try { fs.unlinkSync(localTmp); } catch {}
+    client.close();
+  }
+}
+
+function normalizeLine(line) {
+  return String(line || "").replace(/\r$/, "").trim();
+}
+
+function fingerprint(content) {
+  const lines = content.split(/\r?\n/);
+  return {
+    lineCount: lines.length,
+    lastLine: normalizeLine(lines[lines.length - 1] || ""),
+    firstLine: normalizeLine(lines[0] || "")
+  };
+}
+
+function getState(file) {
+  if (!state.fileMeta.has(file)) {
+    state.fileMeta.set(file, { lineCount: 0, lastLine: "", firstLine: "" });
+  }
+  return state.fileMeta.get(file);
+}
+
+async function safePostWebhook(payload) {
+  if (!WEBHOOK_URL) return false;
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    log("webhook post", { status: res.status, ok: res.ok });
+    return res.ok;
+  } catch (err) {
+    log("webhook error", err.message);
+    return false;
+  }
+}
+
+function cleanNpcName(name) {
+  const n = String(name || "").trim();
+  if (!n || n === `"` || n === `""`) return "Unknown NPC";
+  return n;
+}
+
+function buildEventMessage(event) {
+  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
+}
+
+function parseAdmKillLine(line) {
+  if (!line.includes("killed by")) return null;
+
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
+  const victimRaw = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
+  const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
+  const weaponMatch = line.match(/with\s+(.+?)\s+from\s+[0-9.]+\s+meters/i);
+  const distanceMatch = line.match(/from\s+([0-9.]+)\s+meters/i);
+
+  return {
+    type: "kill",
+    time: timeMatch ? timeMatch[1] : "unknown time",
+    victim: cleanNpcName(victimRaw && victimRaw[1] ? victimRaw[1] : "Unknown NPC"),
+    killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
+    weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
+    distance: distanceMatch && distanceMatch[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
+    raw: line
+  };
+}
+
+function processFile(file, content) {
+  const current = fingerprint(content);
+  const previous = getState(file);
+  const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
+  const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
+
+  const lines = content.split(/\r?\n/);
+  const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
+  const events = [];
+  const newLines = Math.max(0, lines.length - startIndex);
+
+  log("file cycle", {
+    file,
+    previousLines: previous.lineCount,
+    currentLines: current.lineCount,
+    newLines,
+    startIndex,
+    rotated,
+    reset,
+    firstLine: current.firstLine,
+    lastLine: current.lastLine
+  });
+
+  for (let i = startIndex; i < lines.length; i++) {
+    const line = normalizeLine(lines[i]);
+    if (!line) continue;
+
+    const event = parseAdmKillLine(line);
+    if (!event) continue;
+
+    const dedupeKey = `${file}|${event.type}|${event.raw}`;
+    if (state.lastEvents.has(dedupeKey)) {
+      log("dedupe skip", { file, type: event.type, line });
+      continue;
+    }
+
+    state.lastEvents.add(dedupeKey);
+    if (state.lastEvents.size > 2000) {
+      const first = state.lastEvents.values().next().value;
+      if (first) state.lastEvents.delete(first);
+    }
+
+    log("trigger match", { file, type: event.type, line });
+    events.push({ ...event, file });
+  }
+
+  state.fileMeta.set(file, current);
+  return events;
+}
+
+async function handleEvents(events) {
+  for (const evt of events) {
+    const content = buildEventMessage(evt);
+    log("event parsed", evt);
+    log("discord payload", content);
+    await safePostWebhook({ content });
+  }
+}
+
+async function pollOnce() {
+  if (state.inFlight) return;
+  state.inFlight = true;
+  state.cycle += 1;
+
+  try {
+    ensureConfig();
+    const remoteFiles = await listAdmFiles();
+    const targets = new Set([...remoteFiles, ...state.retryQueue]);
+    state.retryQueue.clear();
+
+    log("cycle start", {
+      cycle: state.cycle,
+      remoteCount: remoteFiles.length,
+      targetCount: targets.size,
+      seenFiles: state.seenFiles.size
+    });
+
+    for (const file of targets) {
+      let content = null;
+      try {
+        content = await readRemoteFile(file);
+      } catch (err) {
+        log("read failed", { file, error: err.message });
+        if (String(err.message || "").includes("550")) state.retryQueue.add(file);
+        continue;
+      }
+
+      if (!state.seenFiles.has(file)) {
+        state.seenFiles.add(file);
+        log("new file", file);
+      }
+
+      const events = processFile(file, content);
+      if (events.length) {
+        log("events found", { file, count: events.length });
+        await handleEvents(events);
+      } else {
+        log("no events", file);
+      }
+    }
+
+    log("cycle end", {
+      cycle: state.cycle,
+      processedFiles: targets.size,
+      retryQueue: state.retryQueue.size,
+      seenFiles: state.seenFiles.size
+    });
+  } finally {
+    state.inFlight = false;
+  }
+}
+
+function scheduleNext() {
+  if (!state.running) return;
+  state.timer = setTimeout(async () => {
+    try {
+      await pollOnce();
+    } catch (err) {
+      console.error("[killfeed] poll error:", err);
+    } finally {
+      scheduleNext();
+    }
+  }, LOOP_INTERVAL);
+}
+
+function start() {
+  if (state.running) return;
+  state.running = true;
+  log("start", {
+    loopInterval: LOOP_INTERVAL,
+    debug: DEBUG,
+    webhookEnabled: !!WEBHOOK_URL,
+    remoteDir: REMOTE_DIR
+  });
+  pollOnce().catch(err => console.error("[killfeed] initial poll error:", err)).finally(scheduleNext);
+}
+
+function stop() {
+  state.running = false;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = null;
+}
+
+module.exports = { start, stop, pollOnce, state };
