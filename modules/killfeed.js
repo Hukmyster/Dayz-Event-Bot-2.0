@@ -81,31 +81,65 @@ function getState(file) {
   return state.fileMeta.get(file);
 }
 
-function safePostWebhook(payload) {
-  if (!WEBHOOK_URL) return Promise.resolve(false);
-  return fetch(WEBHOOK_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  }).then(res => res.ok).catch(() => false);
+async function safePostWebhook(payload) {
+  if (!WEBHOOK_URL) return false;
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function cleanNpcName(name) {
+  const n = String(name || "").trim();
+  if (!n || n === `"` || n === `""`) return "Unknown NPC";
+  return n;
 }
 
 function buildEventMessage(event) {
-  if (event.type === "lootmax") return `🔥 RPT lootmax ${event.value}`;
-  if (event.type === "kill") return `💀 ADM kill line detected`;
-  return `Event detected`;
+  if (event.type === "lootmax") return `🔥 **Lootmax** ${event.value} | ${event.time}`;
+  if (event.type === "kill") {
+    return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
+  }
+  return "Event detected";
 }
 
-function parseAdmLine(line) {
+function parseAdmKillLine(line) {
   if (!line.includes("killed by")) return null;
-  return { type: "kill", raw: line };
+
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
+  const victimRaw = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
+  const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
+  const weaponMatch = line.match(/with\s+(.+?)\s+from\s+[0-9.]+\s+meters/i);
+  const distanceMatch = line.match(/from\s+([0-9.]+)\s+meters/i);
+
+  return {
+    type: "kill",
+    time: timeMatch ? timeMatch[1] : "unknown time",
+    victim: cleanNpcName(victimRaw && victimRaw[1] ? victimRaw[1] : "Unknown NPC"),
+    killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
+    weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
+    distance: distanceMatch && distanceMatch[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
+    raw: line
+  };
 }
 
 function parseRptLine(line) {
   if (!line) return null;
-  const match = line.match(/lootmax\s*:\s*(\d+)/i);
-  if (match) return { type: "lootmax", value: Number(match[1]), raw: line };
-  return null;
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
+  const lootMatch = line.match(/lootmax\s*:\s*(\d+)/i);
+  if (!lootMatch) return null;
+  return {
+    type: "lootmax",
+    value: Number(lootMatch[1]),
+    time: timeMatch ? timeMatch[1] : "unknown time",
+    raw: line
+  };
 }
 
 function processFile(file, content) {
@@ -120,15 +154,18 @@ function processFile(file, content) {
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
-    const event = file.toUpperCase().endsWith(".ADM") ? parseAdmLine(line) : parseRptLine(line);
+    const event = file.toUpperCase().endsWith(".ADM") ? parseAdmKillLine(line) : parseRptLine(line);
     if (!event) continue;
+
     const dedupeKey = `${file}|${event.type}|${event.raw}`;
     if (state.lastEvents.has(dedupeKey)) continue;
     state.lastEvents.add(dedupeKey);
+
     if (state.lastEvents.size > 2000) {
       const first = state.lastEvents.values().next().value;
       if (first) state.lastEvents.delete(first);
     }
+
     events.push({ ...event, file });
   }
 
@@ -147,6 +184,7 @@ async function handleEvents(events) {
 async function pollOnce() {
   if (state.inFlight) return;
   state.inFlight = true;
+
   try {
     ensureConfig();
     const remoteFiles = await listFilesFromFtp();
@@ -195,7 +233,9 @@ function scheduleNext() {
 function start() {
   if (state.running) return;
   state.running = true;
-  pollOnce().catch(err => console.error("[killfeed] initial poll error:", err)).finally(scheduleNext);
+  pollOnce()
+    .catch(err => console.error("[killfeed] initial poll error:", err))
+    .finally(scheduleNext);
 }
 
 function stop() {
@@ -204,4 +244,9 @@ function stop() {
   state.timer = null;
 }
 
-module.exports = { start, stop, pollOnce, state };
+module.exports = {
+  start,
+  stop,
+  pollOnce,
+  state
+};
