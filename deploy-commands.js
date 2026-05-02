@@ -26,7 +26,17 @@ const commands = [
       { name: 'item', type: ApplicationCommandOptionType.String, description: 'Item name', required: true, autocomplete: true },
       { name: 'quantity', type: ApplicationCommandOptionType.Integer, description: 'Quantity', required: true },
       { name: 'x', type: ApplicationCommandOptionType.Integer, description: 'X coordinate', required: true },
-      { name: 'z', type: ApplicationCommandOptionType.Integer, description: 'Z coordinate', required: true }
+      { name: 'z', type: ApplicationCommandOptionType.Integer, description: 'Z coordinate', required: true },
+      {
+        name: 'method',
+        type: ApplicationCommandOptionType.String,
+        description: 'Purchase method',
+        required: false,
+        choices: [
+          { name: 'Wallet', value: 'wallet' },
+          { name: 'Bank', value: 'bank' }
+        ]
+      }
     ]
   },
   {
@@ -49,7 +59,7 @@ const commands = [
     name: 'shopeditprice',
     description: 'Change the price of an item',
     options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true },
+      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true, autocomplete: true },
       { name: 'price', type: ApplicationCommandOptionType.Integer, description: 'New price', required: true }
     ]
   },
@@ -57,7 +67,7 @@ const commands = [
     name: 'shopeditname',
     description: 'Rename an item',
     options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Current item display name', required: true },
+      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Current item display name', required: true, autocomplete: true },
       { name: 'newname', type: ApplicationCommandOptionType.String, description: 'New display name', required: true }
     ]
   },
