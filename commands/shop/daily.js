@@ -22,10 +22,11 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      const claimData = await economy.getDailyClaim(interaction.guildId, interaction.user.id);
+      const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
+      const lastClaimValue = account.last_daily_claim_at;
 
-      if (claimData?.last_daily_claim_at) {
-        const lastClaim = new Date(claimData.last_daily_claim_at).getTime();
+      if (lastClaimValue) {
+        const lastClaim = new Date(lastClaimValue).getTime();
         const elapsed = Date.now() - lastClaim;
 
         if (elapsed < DAILY_COOLDOWN_MS) {
