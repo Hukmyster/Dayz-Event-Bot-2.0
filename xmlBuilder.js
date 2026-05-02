@@ -55,8 +55,8 @@ function buildAllXML(orders = []) {
     pos.push(`    </event>`);
   }
 
-  events.push('</events>');
-  pos.push('</eventposdef>');
+  events.push("</events>");
+  pos.push("</eventposdef>");
 
   const eventsXML = events.join(nl);
   const posXML = pos.join(nl);
