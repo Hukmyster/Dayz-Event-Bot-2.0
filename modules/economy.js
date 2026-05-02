@@ -10,9 +10,16 @@ const CURRENCY_NAME = 'dollars';
 
 const ACCOUNT_TABLE = 'economy_accounts';
 const TRANSACTION_TABLE = 'economy_transactions';
+const SHOP_TABLE = 'shop';
 
 function hasAccess(member) {
   return member?.roles?.cache?.has(ECONOMY_ROLE_ID) || false;
+}
+
+function ensureEconomyRole(member) {
+  if (!hasAccess(member)) {
+    throw new Error('You do not have the required role to use economy commands.');
+  }
 }
 
 function formatMoney(amount) {
@@ -109,7 +116,7 @@ async function addWallet(userId, guildId, amount, username = null, meta = {}) {
     guildId,
     userId,
     username,
-    type: amount >= 0 ? 'wallet_add' : 'wallet_remove',
+    type: Number(amount) >= 0 ? 'wallet_add' : 'wallet_remove',
     amount: Number(amount),
     balanceAfter: newWallet,
     notes: meta.notes || null,
@@ -128,7 +135,7 @@ async function addBank(userId, guildId, amount, username = null, meta = {}) {
     guildId,
     userId,
     username,
-    type: amount >= 0 ? 'bank_add' : 'bank_remove',
+    type: Number(amount) >= 0 ? 'bank_add' : 'bank_remove',
     amount: Number(amount),
     balanceAfter: newBank,
     notes: meta.notes || null,
@@ -232,10 +239,25 @@ async function adminAdjustBank(userId, guildId, amount, username = null, meta = 
   });
 }
 
-function ensureEconomyRole(member) {
-  if (!hasAccess(member)) {
-    throw new Error('You do not have the required role to use economy commands.');
-  }
+async function getShopItems() {
+  const { data, error } = await supabase
+    .from(SHOP_TABLE)
+    .select('*')
+    .order('name', { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function findShopItemByName(name) {
+  const { data, error } = await supabase
+    .from(SHOP_TABLE)
+    .select('*')
+    .ilike('name', name)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
 }
 
 module.exports = {
@@ -244,6 +266,7 @@ module.exports = {
   CURRENCY_NAME,
   ACCOUNT_TABLE,
   TRANSACTION_TABLE,
+  SHOP_TABLE,
   hasAccess,
   ensureEconomyRole,
   formatMoney,
@@ -258,5 +281,7 @@ module.exports = {
   transferBankToWallet,
   chargeWallet,
   adminAdjustWallet,
-  adminAdjustBank
+  adminAdjustBank,
+  getShopItems,
+  findShopItemByName
 };
