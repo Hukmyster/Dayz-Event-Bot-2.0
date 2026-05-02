@@ -2,7 +2,7 @@ const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_KEY
 );
 
 const ECONOMY_ROLE_ID = '1496741063191429160';
@@ -242,22 +242,40 @@ async function adminAdjustBank(userId, guildId, amount, username = null, meta = 
 async function getShopItems() {
   const { data, error } = await supabase
     .from(SHOP_TABLE)
-    .select('*')
-    .order('name', { ascending: true });
+    .select('id,displayname,type,price')
+    .order('displayname', { ascending: true });
 
   if (error) throw error;
-  return data || [];
+
+  return (data || []).map(row => ({
+    id: row.id,
+    name: row.displayname,
+    displayname: row.displayname,
+    type: row.type,
+    price: Number(row.price)
+  }));
 }
 
 async function findShopItemByName(name) {
+  const clean = String(name ?? '').trim();
+
   const { data, error } = await supabase
     .from(SHOP_TABLE)
-    .select('*')
-    .ilike('name', name)
+    .select('id,displayname,type,price')
+    .ilike('displayname', clean)
     .maybeSingle();
 
   if (error) throw error;
-  return data;
+
+  return data
+    ? {
+        id: data.id,
+        name: data.displayname,
+        displayname: data.displayname,
+        type: data.type,
+        price: Number(data.price)
+      }
+    : null;
 }
 
 module.exports = {
