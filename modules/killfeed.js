@@ -22,11 +22,17 @@ const state = {
   startedAt: new Date().toISOString(),
   newestFile: null,
   initializedFiles: new Set(),
-  initializedNewest: false
+  initializedNewest: false,
+  pendingScan: new Map(),
+  pendingConfirm: new Map()
 };
 
 function log(...args) {
   if (DEBUG) console.log("[killfeed]", ...args);
+}
+
+function dbg(tag, data) {
+  if (DEBUG) console.log("[killfeed][debug]", tag, data);
 }
 
 function ensureConfig() {
@@ -62,6 +68,7 @@ async function listAdmFiles() {
 
     const fullPaths = files.map(name => joinRemote(REMOTE_DIR, name));
     log("ftp list", { dir: REMOTE_DIR, count: fullPaths.length, files: fullPaths });
+    dbg("LIST_RESULT", { remoteDir: REMOTE_DIR, count: fullPaths.length, newest: fullPaths[fullPaths.length - 1] || null });
     return fullPaths;
   } finally {
     client.close();
@@ -75,9 +82,22 @@ async function readRemoteFile(remotePath) {
     await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
     log("ftp download start", remotePath);
     await client.downloadTo(localTmp, remotePath);
+
     const content = fs.readFileSync(localTmp, "utf8");
     const lines = content.split(/\r?\n/);
-    log("ftp download ok", { file: remotePath, bytes: Buffer.byteLength(content, "utf8"), totalLines: lines.length });
+
+    log("ftp download ok", {
+      file: remotePath,
+      bytes: Buffer.byteLength(content, "utf8"),
+      totalLines: lines.length
+    });
+
+    dbg("FILE_READ", {
+      file: remotePath,
+      bytes: Buffer.byteLength(content, "utf8"),
+      lines: lines.length
+    });
+
     return content;
   } finally {
     try { fs.unlinkSync(localTmp); } catch {}
@@ -114,9 +134,11 @@ async function safePostWebhook(payload) {
       body: JSON.stringify(payload)
     });
     log("webhook post", { status: res.status, ok: res.ok });
+    dbg("WEBHOOK_POST", { status: res.status, ok: res.ok, contentLength: payload && payload.content ? String(payload.content).length : 0 });
     return res.ok;
   } catch (err) {
     log("webhook error", err.message);
+    dbg("WEBHOOK_ERROR", { error: err.message });
     return false;
   }
 }
@@ -166,27 +188,35 @@ function processFile(file, content, skipExisting = false) {
   const events = [];
   const newLines = Math.max(0, lines.length - startIndex);
 
-  log("file cycle", {
+  dbg("PROCESS_FILE", {
     file,
     previousLines: previous.lineCount,
     currentLines: current.lineCount,
-    newLines,
     startIndex,
+    newLines,
     rotated,
     reset,
+    skipExisting,
     firstLine: current.firstLine,
     lastLine: current.lastLine
   });
 
+  const candidateLines = [];
+
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
+    candidateLines.push(line);
+
     const event = parseAdmKillLine(line);
-    if (!event) continue;
+    if (!event) {
+      dbg("SKIP_LINE", { file, line });
+      continue;
+    }
 
     const dedupeKey = `${file}|${event.type}|${event.raw}`;
     if (state.lastEvents.has(dedupeKey)) {
-      log("dedupe skip", { file, type: event.type, line });
+      dbg("DEDupe_HIT", { file, raw: event.raw });
       continue;
     }
 
@@ -198,9 +228,28 @@ function processFile(file, content, skipExisting = false) {
 
     log("trigger match", { file, type: event.type, line });
     events.push({ ...event, file });
+
+    dbg("TRIGGER_HIT_NEW_LINES", {
+      file,
+      line,
+      victim: event.victim,
+      killer: event.killer,
+      weapon: event.weapon,
+      distance: event.distance,
+      time: event.time
+    });
   }
 
+  dbg("NEW_LINES_SEEN", {
+    file,
+    candidateLines: candidateLines.length,
+    newLines,
+    startIndex,
+    preview: candidateLines.slice(0, 3)
+  });
+
   state.fileMeta.set(file, current);
+  dbg("PROCESS_FILE_END", { file, events: events.length, stored: current });
   return events;
 }
 
@@ -209,8 +258,35 @@ async function handleEvents(events) {
     const content = buildEventMessage(evt);
     log("event parsed", evt);
     log("discord payload", content);
+    dbg("WEBHOOK_SEND", { file: evt.file, victim: evt.victim, killer: evt.killer, time: evt.time });
     await safePostWebhook({ content });
   }
+}
+
+function confirmPending(file, currentFingerprint) {
+  const pending = state.pendingScan.get(file);
+  if (!pending) return null;
+
+  if (
+    pending.lineCount !== currentFingerprint.lineCount ||
+    pending.lastLine !== currentFingerprint.lastLine ||
+    pending.firstLine !== currentFingerprint.firstLine
+  ) {
+    dbg("PENDING_CHANGED", { file, pending, current: currentFingerprint });
+    state.pendingScan.set(file, currentFingerprint);
+    state.pendingConfirm.delete(file);
+    return null;
+  }
+
+  const confirmCount = (state.pendingConfirm.get(file) || 0) + 1;
+  state.pendingConfirm.set(file, confirmCount);
+  dbg("PENDING_CONFIRM", { file, confirmCount, fingerprint: currentFingerprint });
+
+  if (confirmCount < 2) return null;
+
+  state.pendingConfirm.delete(file);
+  state.pendingScan.delete(file);
+  return pending;
 }
 
 async function pollOnce() {
@@ -224,7 +300,7 @@ async function pollOnce() {
     const newestFile = remoteFiles[remoteFiles.length - 1] || null;
     state.newestFile = newestFile;
 
-    log("cycle start", {
+    dbg("CYCLE_START", {
       cycle: state.cycle,
       remoteCount: remoteFiles.length,
       newestFile,
@@ -233,6 +309,7 @@ async function pollOnce() {
 
     if (!newestFile) {
       log("no adm files found", { dir: REMOTE_DIR });
+      dbg("NO_FILES", { dir: REMOTE_DIR });
       return;
     }
 
@@ -241,24 +318,44 @@ async function pollOnce() {
       content = await readRemoteFile(newestFile);
     } catch (err) {
       log("read failed", { file: newestFile, error: err.message });
+      dbg("READ_FAILED", { file: newestFile, error: err.message });
       if (String(err.message || "").includes("550")) state.retryQueue.add(newestFile);
       return;
     }
 
+    const fp = fingerprint(content);
+    dbg("NEWEST_FINGERPRINT", { newestFile, fp });
+
     if (!state.initializedNewest) {
       state.initializedNewest = true;
-      state.fileMeta.set(newestFile, fingerprint(content));
+      state.fileMeta.set(newestFile, fp);
       state.initializedFiles.add(newestFile);
+      state.pendingScan.set(newestFile, fp);
+      state.pendingConfirm.set(newestFile, 0);
+      dbg("BASELINE_NEWEST", { newestFile, fp });
       log("initialized newest file without posting", newestFile);
       return;
     }
 
     if (!state.initializedFiles.has(newestFile)) {
       state.initializedFiles.add(newestFile);
-      state.fileMeta.set(newestFile, fingerprint(content));
+      state.fileMeta.set(newestFile, fp);
+      state.pendingScan.set(newestFile, fp);
+      state.pendingConfirm.set(newestFile, 0);
+      dbg("NEW_NEWEST_BASELINE", { newestFile, fp });
       log("new newest file detected, baseline stored", newestFile);
       return;
     }
+
+    const confirmed = confirmPending(newestFile, fp);
+    if (!confirmed) {
+      dbg("PENDING_NOT_READY", { file: newestFile, fp, hasPending: state.pendingScan.has(newestFile) });
+      return;
+    }
+
+    const previous = getState(newestFile);
+    const appended = fp.lineCount > previous.lineCount;
+    dbg("CONFIRMED_STABLE", { file: newestFile, previous, current: fp, appended });
 
     const events = processFile(newestFile, content, false);
     if (events.length) {
@@ -268,11 +365,11 @@ async function pollOnce() {
       log("no events", newestFile);
     }
 
-    log("cycle end", {
+    dbg("CYCLE_END", {
       cycle: state.cycle,
-      processedFiles: 1,
+      newestFile,
       retryQueue: state.retryQueue.size,
-      newestFile: state.newestFile
+      storedMeta: state.fileMeta.get(newestFile)
     });
   } finally {
     state.inFlight = false;
@@ -300,6 +397,12 @@ function start() {
     debug: DEBUG,
     webhookEnabled: !!WEBHOOK_URL,
     remoteDir: REMOTE_DIR
+  });
+  dbg("START_STATE", {
+    loopInterval: LOOP_INTERVAL,
+    remoteDir: REMOTE_DIR,
+    debug: DEBUG,
+    webhookEnabled: !!WEBHOOK_URL
   });
   pollOnce().catch(err => console.error("[killfeed] initial poll error:", err)).finally(scheduleNext);
 }
