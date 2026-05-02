@@ -19,7 +19,8 @@ const state = {
   seenFiles: new Set(),
   fileMeta: new Map(),
   lastEvents: new Set(),
-  startedAt: new Date().toISOString()
+  startedAt: new Date().toISOString(),
+  cycle: 0
 };
 
 function log(...args) {
@@ -37,12 +38,21 @@ function ensureConfig() {
 async function listFilesFromFtp() {
   const client = new Client();
   try {
-    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+    await client.access({
+      host: FTP_HOST,
+      user: FTP_USER,
+      password: FTP_PASS,
+      secure: FTP_SECURE
+    });
+
     const list = await client.list();
-    return list
+    const files = list
       .filter(item => item.isFile)
       .map(item => item.name)
       .filter(name => LOG_EXTENSIONS.some(ext => name.toUpperCase().endsWith(ext)));
+
+    log("ftp list", { count: files.length, files });
+    return files;
   } finally {
     client.close();
   }
@@ -50,11 +60,31 @@ async function listFilesFromFtp() {
 
 async function readRemoteFile(remotePath) {
   const client = new Client();
-  const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.log`);
+  const localTmp = path.join(
+    "/tmp",
+    `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.log`
+  );
+
   try {
-    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+    await client.access({
+      host: FTP_HOST,
+      user: FTP_USER,
+      password: FTP_PASS,
+      secure: FTP_SECURE
+    });
+
+    log("ftp download start", remotePath);
     await client.downloadTo(localTmp, remotePath);
-    return fs.readFileSync(localTmp, "utf8");
+
+    const content = fs.readFileSync(localTmp, "utf8");
+    const lines = content.split(/\r?\n/);
+    log("ftp download ok", {
+      file: remotePath,
+      bytes: Buffer.byteLength(content, "utf8"),
+      totalLines: lines.length
+    });
+
+    return content;
   } finally {
     try { fs.unlinkSync(localTmp); } catch {}
     client.close();
@@ -83,14 +113,18 @@ function getState(file) {
 
 async function safePostWebhook(payload) {
   if (!WEBHOOK_URL) return false;
+
   try {
     const res = await fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+
+    log("webhook post", { status: res.status, ok: res.ok });
     return res.ok;
-  } catch {
+  } catch (err) {
+    log("webhook error", err.message);
     return false;
   }
 }
@@ -102,10 +136,14 @@ function cleanNpcName(name) {
 }
 
 function buildEventMessage(event) {
-  if (event.type === "lootmax") return `🔥 **Lootmax** ${event.value} | ${event.time}`;
+  if (event.type === "lootmax") {
+    return `🔥 **Lootmax** ${event.value} | ${event.time}`;
+  }
+
   if (event.type === "kill") {
     return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
   }
+
   return "Event detected";
 }
 
@@ -131,9 +169,12 @@ function parseAdmKillLine(line) {
 
 function parseRptLine(line) {
   if (!line) return null;
+
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
   const lootMatch = line.match(/lootmax\s*:\s*(\d+)/i);
+
   if (!lootMatch) return null;
+
   return {
     type: "lootmax",
     value: Number(lootMatch[1]),
@@ -145,20 +186,48 @@ function parseRptLine(line) {
 function processFile(file, content) {
   const current = fingerprint(content);
   const previous = getState(file);
+
   const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
-  const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
+  const reset = rotated || (
+    previous.lastLine &&
+    current.firstLine &&
+    previous.lastLine !== current.firstLine &&
+    current.lineCount <= previous.lineCount
+  );
+
   const lines = content.split(/\r?\n/);
   const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
   const events = [];
+  const newLines = Math.max(0, lines.length - startIndex);
+
+  log("file cycle", {
+    file,
+    previousLines: previous.lineCount,
+    currentLines: current.lineCount,
+    newLines,
+    startIndex,
+    rotated,
+    reset,
+    firstLine: current.firstLine,
+    lastLine: current.lastLine
+  });
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
-    const event = file.toUpperCase().endsWith(".ADM") ? parseAdmKillLine(line) : parseRptLine(line);
+
+    const event = file.toUpperCase().endsWith(".ADM")
+      ? parseAdmKillLine(line)
+      : parseRptLine(line);
+
     if (!event) continue;
 
     const dedupeKey = `${file}|${event.type}|${event.raw}`;
-    if (state.lastEvents.has(dedupeKey)) continue;
+    if (state.lastEvents.has(dedupeKey)) {
+      log("dedupe skip", { file, type: event.type, line });
+      continue;
+    }
+
     state.lastEvents.add(dedupeKey);
 
     if (state.lastEvents.size > 2000) {
@@ -166,6 +235,7 @@ function processFile(file, content) {
       if (first) state.lastEvents.delete(first);
     }
 
+    log("trigger match", { file, type: event.type, line });
     events.push({ ...event, file });
   }
 
@@ -176,7 +246,8 @@ function processFile(file, content) {
 async function handleEvents(events) {
   for (const evt of events) {
     const content = buildEventMessage(evt);
-    log("event", evt.file, content);
+    log("event parsed", evt);
+    log("discord payload", content);
     await safePostWebhook({ content });
   }
 }
@@ -184,12 +255,21 @@ async function handleEvents(events) {
 async function pollOnce() {
   if (state.inFlight) return;
   state.inFlight = true;
+  state.cycle += 1;
 
   try {
     ensureConfig();
+
     const remoteFiles = await listFilesFromFtp();
     const targets = new Set([...remoteFiles, ...state.retryQueue]);
     state.retryQueue.clear();
+
+    log("cycle start", {
+      cycle: state.cycle,
+      remoteCount: remoteFiles.length,
+      targetCount: targets.size,
+      seenFiles: state.seenFiles.size
+    });
 
     for (const file of targets) {
       const upper = file.toUpperCase();
@@ -199,7 +279,7 @@ async function pollOnce() {
       try {
         content = await readRemoteFile(file);
       } catch (err) {
-        log("read failed", file, err.message);
+        log("read failed", { file, error: err.message });
         if (String(err.message || "").includes("550")) state.retryQueue.add(file);
         continue;
       }
@@ -210,8 +290,20 @@ async function pollOnce() {
       }
 
       const events = processFile(file, content);
-      if (events.length) await handleEvents(events);
+      if (events.length) {
+        log("events found", { file, count: events.length });
+        await handleEvents(events);
+      } else {
+        log("no events", file);
+      }
     }
+
+    log("cycle end", {
+      cycle: state.cycle,
+      processedFiles: targets.size,
+      retryQueue: state.retryQueue.size,
+      seenFiles: state.seenFiles.size
+    });
   } finally {
     state.inFlight = false;
   }
@@ -219,6 +311,7 @@ async function pollOnce() {
 
 function scheduleNext() {
   if (!state.running) return;
+
   state.timer = setTimeout(async () => {
     try {
       await pollOnce();
@@ -233,6 +326,12 @@ function scheduleNext() {
 function start() {
   if (state.running) return;
   state.running = true;
+  log("start", {
+    loopInterval: LOOP_INTERVAL,
+    debug: DEBUG,
+    webhookEnabled: !!WEBHOOK_URL
+  });
+
   pollOnce()
     .catch(err => console.error("[killfeed] initial poll error:", err))
     .finally(scheduleNext);
