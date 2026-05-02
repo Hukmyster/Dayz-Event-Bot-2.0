@@ -233,7 +233,7 @@ async function handleCommand(interaction) {
   }
 
   if (cmd === "daily") {
-    return send(await daily.execute(interaction));
+    return daily.execute(interaction);
   }
 
   if (cmd === "account") {
