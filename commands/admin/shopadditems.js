@@ -1,5 +1,5 @@
 const { SlashCommandBuilder } = require('discord.js');
-const economy = require('../../modules/economy');
+const shop = require('../../modules/shop');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -8,7 +8,13 @@ module.exports = {
     .addStringOption(option =>
       option
         .setName('name')
-        .setDescription('Item name')
+        .setDescription('Item display name')
+        .setRequired(true)
+    )
+    .addStringOption(option =>
+      option
+        .setName('type')
+        .setDescription('Item type')
         .setRequired(true)
     )
     .addIntegerOption(option =>
@@ -16,57 +22,31 @@ module.exports = {
         .setName('price')
         .setDescription('Item price')
         .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName('description')
-        .setDescription('Item description')
-        .setRequired(false)
     ),
 
   async execute(interaction) {
     try {
-      if (!economy.hasAccess(interaction.member)) {
+      if (!interaction.member.permissions?.has('Administrator')) {
         return interaction.reply({
-          content: 'You do not have the required role to use this command.',
+          content: 'You do not have permission to use this command.',
           ephemeral: true
         });
       }
 
-      const member = interaction.member;
-      const isAdmin = member.permissions?.has('Administrator');
-
-      if (!isAdmin) {
-        return interaction.reply({
-          content: 'You do not have permission to use admin shop commands.',
-          ephemeral: true
-        });
-      }
-
-      const name = interaction.options.getString('name', true).trim();
+      const name = interaction.options.getString('name', true);
+      const type = interaction.options.getString('type', true);
       const price = interaction.options.getInteger('price', true);
-      const description = interaction.options.getString('description') || null;
 
-      const { data, error } = await economy.supabase
-        .from('shop')
-        .insert({
-          name,
-          price,
-          description
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const result = await shop.addItem(name, type, price);
 
       return interaction.reply({
-        content: `Added **${data.name}** to the shop for **${economy.formatMoney(data.price)}**.`,
+        content: result.reply || 'Item added.',
         ephemeral: true
       });
     } catch (error) {
-      console.error('shopadditem error:', error);
+      console.error('shopadditem command error:', error);
       return interaction.reply({
-        content: 'Something went wrong while adding that item.',
+        content: error.message || 'Something went wrong while adding the item.',
         ephemeral: true
       });
     }
