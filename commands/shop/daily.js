@@ -29,7 +29,6 @@ module.exports = {
         });
       }
 
-      const now = new Date();
       const claimData = await economy.getDailyClaim(interaction.guildId, interaction.user.id);
 
       if (claimData?.last_daily_claim_at) {
@@ -56,7 +55,7 @@ module.exports = {
         }
       );
 
-      await economy.setDailyClaim(interaction.guildId, interaction.user.id, now.toISOString());
+      await economy.setDailyClaim(interaction.guildId, interaction.user.id, new Date().toISOString());
 
       const embed = new EmbedBuilder()
         .setTitle('Daily Claimed')
