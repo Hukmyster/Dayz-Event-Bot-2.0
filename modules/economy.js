@@ -8,6 +8,7 @@ const supabase = createClient(
 const ECONOMY_ROLE_ID = '1496741063191429160';
 const CURRENCY_NAME = 'dollars';
 const STARTING_BANK_BALANCE = Number(process.env.STARTING_BANK_BALANCE || 0);
+const STARTING_CASH = Number(process.env.STARTING_CASH || 0);
 
 const ACCOUNT_TABLE = 'economy_accounts';
 const TRANSACTION_TABLE = 'economy_transactions';
@@ -46,8 +47,9 @@ async function createAccount(userId, guildId, username = null) {
       user_id: userId,
       guild_id: guildId,
       username,
-      wallet: 0,
-      bank: STARTING_BANK_BALANCE
+      wallet: STARTING_CASH,
+      bank: STARTING_BANK_BALANCE,
+      last_daily_claim_at: null
     })
     .select()
     .single();
@@ -70,6 +72,35 @@ async function updateAccount(userId, guildId, updates) {
     .eq('guild_id', guildId)
     .select()
     .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function setDailyClaim(guildId, userId, timestamp) {
+  const { data, error } = await supabase
+    .from(ACCOUNT_TABLE)
+    .upsert({
+      guild_id: guildId,
+      user_id: userId,
+      last_daily_claim_at: timestamp
+    }, {
+      onConflict: 'guild_id,user_id'
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function getDailyClaim(guildId, userId) {
+  const { data, error } = await supabase
+    .from(ACCOUNT_TABLE)
+    .select('last_daily_claim_at')
+    .eq('guild_id', guildId)
+    .eq('user_id', userId)
+    .maybeSingle();
 
   if (error) throw error;
   return data;
@@ -318,6 +349,7 @@ module.exports = {
   ECONOMY_ROLE_ID,
   CURRENCY_NAME,
   STARTING_BANK_BALANCE,
+  STARTING_CASH,
   ACCOUNT_TABLE,
   TRANSACTION_TABLE,
   SHOP_TABLE,
@@ -328,6 +360,8 @@ module.exports = {
   getOrCreateAccount,
   createAccount,
   updateAccount,
+  setDailyClaim,
+  getDailyClaim,
   logTransaction,
   addWallet,
   addBank,
