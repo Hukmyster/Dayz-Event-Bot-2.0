@@ -4,6 +4,7 @@ require("dotenv").config();
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
 const daily = require("./commands/shop/daily");
+const killfeed = require("./modules/killfeed");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
@@ -13,10 +14,6 @@ if (!process.env.DISCORD_TOKEN) {
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-function formatMsg(content) {
-  return content.length > 1900 ? content.slice(0, 1900) + "..." : content;
-}
 
 function serializeOptions(interaction) {
   const out = {};
@@ -75,44 +72,38 @@ async function handleCommand(interaction) {
     }, cmd);
   }
 
-  const send = (res, label = cmd) =>
-    replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
+  const send = (res, label = cmd) => replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
+
+  if (cmd === "killfeed") {
+    return replyOnce(interaction, { content: "Killfeed runs automatically on bot startup.", ephemeral: true }, cmd);
+  }
 
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
     debug.step("shoplist", { count: items.length });
-    return send({
-      reply: items.length
-        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
-        : "Shop empty"
-    });
+    return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
   }
 
   if (cmd === "shopadditem") {
-    return send(
-      await shop.addItem(
-        interaction.options.getString("name"),
-        interaction.options.getString("type"),
-        interaction.options.getInteger("price")
-      )
-    );
+    return send(await shop.addItem(
+      interaction.options.getString("name"),
+      interaction.options.getString("type"),
+      interaction.options.getInteger("price")
+    ));
   }
 
   if (cmd === "shopbuyitem") {
     const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
     const method = interaction.options.getString("method") || "wallet";
     const available = method === "bank" ? Number(account.bank || 0) : Number(account.wallet || 0);
-
-    return send(
-      await shop.buyItem(
-        interaction.options.getString("item"),
-        interaction.options.getInteger("quantity"),
-        interaction.options.getInteger("x"),
-        interaction.options.getInteger("z"),
-        method,
-        available
-      )
-    );
+    return send(await shop.buyItem(
+      interaction.options.getString("item"),
+      interaction.options.getInteger("quantity"),
+      interaction.options.getInteger("x"),
+      interaction.options.getInteger("z"),
+      method,
+      available
+    ));
   }
 
   if (cmd === "shopremoveitem") return send(await shop.deleteItem(interaction.options.getString("name")));
@@ -297,14 +288,26 @@ async function handleCommand(interaction) {
   if (cmd === "addmoney") {
     const member = interaction.options.getUser("member", true);
     const amount = interaction.options.getInteger("amount", true);
-    const updated = await economy.adminAdjustWallet(member.id, interaction.guildId, amount, member.username, { notes: `Admin addmoney by ${interaction.user.username}` });
+    const updated = await economy.adminAdjustWallet(
+      member.id,
+      interaction.guildId,
+      amount,
+      member.username,
+      { notes: `Admin addmoney by ${interaction.user.username}` }
+    );
     return send({ reply: `Added ${economy.formatMoney(amount)} to ${member.username}. Wallet now ${economy.formatMoney(updated.wallet)}` });
   }
 
   if (cmd === "removemoney") {
     const member = interaction.options.getUser("member", true);
     const amount = interaction.options.getInteger("amount", true);
-    const updated = await economy.adminAdjustWallet(member.id, interaction.guildId, -amount, member.username, { notes: `Admin removemoney by ${interaction.user.username}` });
+    const updated = await economy.adminAdjustWallet(
+      member.id,
+      interaction.guildId,
+      -amount,
+      member.username,
+      { notes: `Admin removemoney by ${interaction.user.username}` }
+    );
     return send({ reply: `Removed ${economy.formatMoney(amount)} from ${member.username}. Wallet now ${economy.formatMoney(updated.wallet)}` });
   }
 
@@ -333,6 +336,8 @@ client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   debug.start("startup", { bot: client.user.tag });
   console.log("[DISCORD] Bot is ready. Commands are handled from Discord now.");
+  killfeed.start();
+  console.log("[KILLFEED] module started");
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
