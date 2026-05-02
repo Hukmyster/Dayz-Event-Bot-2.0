@@ -155,19 +155,67 @@ async function handleCommand(interaction) {
 
   if (cmd === "deposit") {
     const amount = interaction.options.getInteger("amount", true);
-    const updated = await economy.transferWalletToBank(interaction.user.id, interaction.guildId, amount, interaction.user.username, { notes: "User deposit" });
-    return send({ reply: `Deposited ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}` });
+    if (amount <= 0) return send({ reply: "Deposit amount must be a positive number." });
+
+    try {
+      const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
+      const wallet = Number(account.wallet || 0);
+
+      if (wallet < amount) {
+        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(wallet)} in your wallet.` });
+      }
+
+      const updated = await economy.transferWalletToBank(
+        interaction.user.id,
+        interaction.guildId,
+        amount,
+        interaction.user.username,
+        { notes: "User deposit" }
+      );
+
+      return send({
+        reply: `Deposited ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+      });
+    } catch (err) {
+      debug.fail("deposit", err, { user: interaction.user?.tag, amount });
+      return send({ reply: err.message || "Deposit failed." });
+    }
   }
 
   if (cmd === "withdraw") {
     const amount = interaction.options.getInteger("amount", true);
-    const updated = await economy.transferBankToWallet(interaction.user.id, interaction.guildId, amount, interaction.user.username, { notes: "User withdraw" });
-    return send({ reply: `Withdrew ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}` });
+    if (amount <= 0) return send({ reply: "Withdraw amount must be a positive number." });
+
+    try {
+      const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
+      const bank = Number(account.bank || 0);
+
+      if (bank < amount) {
+        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(bank)} in your bank.` });
+      }
+
+      const updated = await economy.transferBankToWallet(
+        interaction.user.id,
+        interaction.guildId,
+        amount,
+        interaction.user.username,
+        { notes: "User withdraw" }
+      );
+
+      return send({
+        reply: `Withdrew ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+      });
+    } catch (err) {
+      debug.fail("withdraw", err, { user: interaction.user?.tag, amount });
+      return send({ reply: err.message || "Withdraw failed." });
+    }
   }
 
   if (cmd === "send") {
     const member = interaction.options.getUser("member", true);
     const amount = interaction.options.getInteger("amount", true);
+
+    if (amount <= 0) return send({ reply: "Amount must be a positive number." });
 
     const sender = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
     if (Number(sender.wallet || 0) < amount) return send({ reply: `You only have ${economy.formatMoney(sender.wallet)} in your wallet.` });
