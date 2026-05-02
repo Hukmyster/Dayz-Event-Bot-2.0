@@ -30,13 +30,15 @@ module.exports = {
         targetUser.username
       );
 
-      const total = Number(account.wallet || 0) + Number(account.bank || 0);
+      const wallet = Number(account.wallet || 0);
+      const bank = Number(account.bank || 0);
+      const total = wallet + bank;
 
       const embed = new EmbedBuilder()
         .setTitle(`${targetUser.username}'s Balance`)
         .addFields(
-          { name: 'Wallet', value: economy.formatMoney(account.wallet), inline: true },
-          { name: 'Bank', value: economy.formatMoney(account.bank), inline: true },
+          { name: 'Wallet', value: economy.formatMoney(wallet), inline: true },
+          { name: 'Bank', value: economy.formatMoney(bank), inline: true },
           { name: 'Total', value: economy.formatMoney(total), inline: true }
         )
         .setColor(0x3498db)
