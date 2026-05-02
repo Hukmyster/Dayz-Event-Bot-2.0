@@ -26,13 +26,7 @@ module.exports = {
       const userId = interaction.user.id;
       const username = interaction.user.username;
 
-      const { data: shopItem, error: itemError } = await economy.supabase
-        .from('shop_items')
-        .select('*')
-        .ilike('name', itemName)
-        .maybeSingle();
-
-      if (itemError) throw itemError;
+      const shopItem = await economy.findShopItemByName(itemName);
 
       if (!shopItem) {
         return interaction.reply({
