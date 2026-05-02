@@ -33,7 +33,9 @@ async function replyOnce(interaction, payload, label = "reply") {
     replied: interaction.replied,
     deferred: interaction.deferred
   });
-  return (interaction.replied || interaction.deferred) ? interaction.followUp(data) : interaction.reply(data);
+  return (interaction.replied || interaction.deferred)
+    ? interaction.followUp(data)
+    : interaction.reply(data);
 }
 
 async function handleCommand(interaction) {
@@ -72,16 +74,24 @@ async function handleCommand(interaction) {
     }, cmd);
   }
 
-  const send = (res, label = cmd) => replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
+  const send = (res, label = cmd) =>
+    replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
 
   if (cmd === "killfeed") {
-    return replyOnce(interaction, { content: "Killfeed runs automatically on bot startup.", ephemeral: true }, cmd);
+    return replyOnce(interaction, {
+      content: "Killfeed runs automatically on bot startup.",
+      ephemeral: true
+    }, cmd);
   }
 
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
     debug.step("shoplist", { count: items.length });
-    return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
+    return send({
+      reply: items.length
+        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
+        : "Shop empty"
+    });
   }
 
   if (cmd === "shopadditem") {
@@ -93,9 +103,14 @@ async function handleCommand(interaction) {
   }
 
   if (cmd === "shopbuyitem") {
-    const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
+    const account = await economy.getOrCreateAccount(
+      interaction.user.id,
+      interaction.guildId,
+      interaction.user.username
+    );
     const method = interaction.options.getString("method") || "wallet";
     const available = method === "bank" ? Number(account.bank || 0) : Number(account.wallet || 0);
+
     return send(await shop.buyItem(
       interaction.options.getString("item"),
       interaction.options.getInteger("quantity"),
@@ -106,9 +121,23 @@ async function handleCommand(interaction) {
     ));
   }
 
-  if (cmd === "shopremoveitem") return send(await shop.deleteItem(interaction.options.getString("name")));
-  if (cmd === "shopeditprice") return send(await shop.editPrice(interaction.options.getString("name"), interaction.options.getInteger("price")));
-  if (cmd === "shopeditname") return send(await shop.editName(interaction.options.getString("name"), interaction.options.getString("newname")));
+  if (cmd === "shopremoveitem") {
+    return send(await shop.deleteItem(interaction.options.getString("name")));
+  }
+
+  if (cmd === "shopeditprice") {
+    return send(await shop.editPrice(
+      interaction.options.getString("name"),
+      interaction.options.getInteger("price")
+    ));
+  }
+
+  if (cmd === "shopeditname") {
+    return send(await shop.editName(
+      interaction.options.getString("name"),
+      interaction.options.getString("newname")
+    ));
+  }
 
   if (cmd === "shopqueue") {
     const orders = shop.getOrders() || [];
@@ -120,10 +149,21 @@ async function handleCommand(interaction) {
     });
   }
 
-  if (cmd === "shopclearqueue") return send(await shop.clearOrders());
-  if (cmd === "shopbuildxml") return send(await shop.buildXML());
-  if (cmd === "shopviewxml") return send(await shop.viewXML());
-  if (cmd === "shoppushxml") return send(await shop.pushXML());
+  if (cmd === "shopclearqueue") {
+    return send(await shop.clearOrders());
+  }
+
+  if (cmd === "shopbuildxml") {
+    return send(await shop.buildXML());
+  }
+
+  if (cmd === "shopviewxml") {
+    return send(await shop.viewXML());
+  }
+
+  if (cmd === "shoppushxml") {
+    return send(await shop.pushXML());
+  }
 
   if (cmd === "shopstatus") {
     const items = await shop.getShopList();
@@ -132,13 +172,16 @@ async function handleCommand(interaction) {
     return send({ reply: `Items: ${items.length}\nOrders: ${orders.length}` });
   }
 
-  if (cmd === "shopreload") return send(await shop.reloadData());
+  if (cmd === "shopreload") {
+    return send(await shop.reloadData());
+  }
 
   if (cmd === "balance") {
     const targetUser = interaction.options.getUser("member") || interaction.user;
     const account = await economy.getOrCreateAccount(targetUser.id, interaction.guildId, targetUser.username);
     const wallet = Number(account.wallet || 0);
     const bank = Number(account.bank || 0);
+
     return send({
       reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
     });
@@ -153,7 +196,9 @@ async function handleCommand(interaction) {
       const wallet = Number(account.wallet || 0);
 
       if (wallet < amount) {
-        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(wallet)} in your wallet.` });
+        return send({
+          reply: `Insufficient funds. You only have ${economy.formatMoney(wallet)} in your wallet.`
+        });
       }
 
       const updated = await economy.transferWalletToBank(
@@ -182,7 +227,9 @@ async function handleCommand(interaction) {
       const bank = Number(account.bank || 0);
 
       if (bank < amount) {
-        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(bank)} in your bank.` });
+        return send({
+          reply: `Insufficient funds. You only have ${economy.formatMoney(bank)} in your bank.`
+        });
       }
 
       const updated = await economy.transferBankToWallet(
@@ -209,7 +256,9 @@ async function handleCommand(interaction) {
     if (amount <= 0) return send({ reply: "Amount must be a positive number." });
 
     const sender = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
-    if (Number(sender.wallet || 0) < amount) return send({ reply: `You only have ${economy.formatMoney(sender.wallet)} in your wallet.` });
+    if (Number(sender.wallet || 0) < amount) {
+      return send({ reply: `You only have ${economy.formatMoney(sender.wallet)} in your wallet.` });
+    }
 
     const receiver = await economy.getOrCreateAccount(member.id, interaction.guildId, member.username);
 
@@ -280,6 +329,7 @@ async function handleCommand(interaction) {
     const account = await economy.getOrCreateAccount(targetUser.id, interaction.guildId, targetUser.username);
     const wallet = Number(account.wallet || 0);
     const bank = Number(account.bank || 0);
+
     return send({
       reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
     });
@@ -295,7 +345,9 @@ async function handleCommand(interaction) {
       member.username,
       { notes: `Admin addmoney by ${interaction.user.username}` }
     );
-    return send({ reply: `Added ${economy.formatMoney(amount)} to ${member.username}. Wallet now ${economy.formatMoney(updated.wallet)}` });
+    return send({
+      reply: `Added ${economy.formatMoney(amount)} to ${member.username}. Wallet now ${economy.formatMoney(updated.wallet)}`
+    });
   }
 
   if (cmd === "removemoney") {
@@ -308,13 +360,16 @@ async function handleCommand(interaction) {
       member.username,
       { notes: `Admin removemoney by ${interaction.user.username}` }
     );
-    return send({ reply: `Removed ${economy.formatMoney(amount)} from ${member.username}. Wallet now ${economy.formatMoney(updated.wallet)}` });
+    return send({
+      reply: `Removed ${economy.formatMoney(amount)} from ${member.username}. Wallet now ${economy.formatMoney(updated.wallet)}`
+    });
   }
 
   if (cmd === "resetuser") {
     const member = interaction.options.getUser("member", true);
     const account = await economy.getOrCreateAccount(member.id, interaction.guildId, member.username);
     await economy.updateAccount(member.id, interaction.guildId, { wallet: 0, bank: 0 });
+
     await economy.logTransaction({
       guildId: interaction.guildId,
       userId: member.id,
@@ -325,6 +380,7 @@ async function handleCommand(interaction) {
       notes: `Account reset by ${interaction.user.username}`,
       metadata: { old_wallet: account.wallet, old_bank: account.bank, admin: true }
     });
+
     return send({ reply: `Reset ${member.username} to zero.` });
   }
 
