@@ -223,14 +223,16 @@ async function getShopList() {
   }
 }
 
-async function buyItem(itemName, qty, x, z) {
+async function buyItem(itemName, qty, x, z, method = "wallet", balance = null) {
   loadOrders();
   itemName = normalizeText(itemName);
   qty = normalizeNumber(qty);
   x = normalizeNumber(x);
   z = normalizeNumber(z);
+  method = normalizeText(method).toLowerCase() || "wallet";
+  balance = normalizeNumber(balance);
 
-  debug.step("shop.buyItem", { itemName, qty, x, z });
+  debug.step("shop.buyItem", { itemName, qty, x, z, method, balance });
 
   if (!itemName) return { reply: "Item is required" };
   if (!Number.isInteger(qty) || qty <= 0) return { reply: "Quantity must be a positive integer" };
@@ -245,6 +247,16 @@ async function buyItem(itemName, qty, x, z) {
     return { reply: "This item cannot be purchased because its price is invalid." };
   }
 
+  const totalCost = price * qty;
+
+  if (balance !== null && balance <= 0) {
+    return { reply: `You cannot afford this purchase. Cost: ${totalCost}. Available: ${balance}.` };
+  }
+
+  if (balance !== null && balance < totalCost) {
+    return { reply: `You cannot afford this purchase. Cost: ${totalCost}. Available: ${balance}.` };
+  }
+
   const order = {
     id: Date.now().toString(),
     item: item.name,
@@ -252,6 +264,7 @@ async function buyItem(itemName, qty, x, z) {
     qty,
     x,
     z,
+    method,
     status: "queued"
   };
 
