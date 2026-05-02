@@ -3,7 +3,6 @@ const economy = require('../../modules/economy');
 
 const DAILY_AMOUNT = Number(process.env.DAILY_AMOUNT || 100);
 const DAILY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const cooldowns = new Map();
 
 function formatRemaining(ms) {
   const totalSeconds = Math.ceil(ms / 1000);
@@ -30,17 +29,20 @@ module.exports = {
         });
       }
 
-      const key = `${interaction.guildId}:${interaction.user.id}`;
-      const now = Date.now();
-      const lastUsed = cooldowns.get(key) || 0;
-      const elapsed = now - lastUsed;
+      const now = new Date();
+      const claimData = await economy.getDailyClaim(interaction.guildId, interaction.user.id);
 
-      if (elapsed < DAILY_COOLDOWN_MS) {
-        const remaining = DAILY_COOLDOWN_MS - elapsed;
-        return interaction.reply({
-          content: `You already claimed your daily reward. Try again in ${formatRemaining(remaining)}.`,
-          ephemeral: true
-        });
+      if (claimData?.last_daily_claim_at) {
+        const lastClaim = new Date(claimData.last_daily_claim_at).getTime();
+        const elapsed = Date.now() - lastClaim;
+
+        if (elapsed < DAILY_COOLDOWN_MS) {
+          const remaining = DAILY_COOLDOWN_MS - elapsed;
+          return interaction.reply({
+            content: `You already claimed your daily reward. Try again in ${formatRemaining(remaining)}.`,
+            ephemeral: true
+          });
+        }
       }
 
       const updated = await economy.addBank(
@@ -54,7 +56,7 @@ module.exports = {
         }
       );
 
-      cooldowns.set(key, now);
+      await economy.setDailyClaim(interaction.guildId, interaction.user.id, now.toISOString());
 
       const embed = new EmbedBuilder()
         .setTitle('Daily Claimed')
