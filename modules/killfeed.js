@@ -16,11 +16,13 @@ const state = {
   timer: null,
   inFlight: false,
   retryQueue: new Set(),
-  seenFiles: new Set(),
   fileMeta: new Map(),
   lastEvents: new Set(),
   cycle: 0,
-  startedAt: new Date().toISOString()
+  startedAt: new Date().toISOString(),
+  newestFile: null,
+  initializedFiles: new Set(),
+  initializedNewest: false
 };
 
 function log(...args) {
@@ -36,8 +38,15 @@ function ensureConfig() {
 }
 
 function joinRemote(dir, name) {
-  const d = String(dir || "").replace(/\/+$|\/$/, "");
+  const d = String(dir || "").replace(/\/+$/, "");
   return `${d}/${name}`;
+}
+
+function extractTimestamp(filename) {
+  const m = String(filename).match(/_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.ADM$/i);
+  if (!m) return 0;
+  const [, y, mo, d, h, mi, s] = m;
+  return Date.parse(`${y}-${mo}-${d}T${h}:${mi}:${s}Z`) || 0;
 }
 
 async function listAdmFiles() {
@@ -48,7 +57,8 @@ async function listAdmFiles() {
     const files = list
       .filter(item => item.isFile)
       .map(item => item.name)
-      .filter(name => name.toUpperCase().endsWith(".ADM"));
+      .filter(name => name.toUpperCase().endsWith(".ADM"))
+      .sort((a, b) => extractTimestamp(a) - extractTimestamp(b));
 
     const fullPaths = files.map(name => joinRemote(REMOTE_DIR, name));
     log("ftp list", { dir: REMOTE_DIR, count: fullPaths.length, files: fullPaths });
@@ -113,42 +123,46 @@ async function safePostWebhook(payload) {
 
 function cleanNpcName(name) {
   const n = String(name || "").trim();
-  if (!n || n === `"` || n === `""`) return "Unknown NPC";
+  if (!n || n === `"` || n === `""`) return "NPC";
   return n;
 }
 
 function buildEventMessage(event) {
-  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
+  return [
+    "💀 **KILL CONFIRMED**",
+    `Victim: ${event.victim}`,
+    `Killer: ${event.killer}`,
+    `Weapon: ${event.weapon}`,
+    `Distance: ${event.distance}m`,
+    `Time: ${event.time}`
+  ].join("\n");
 }
 
 function parseAdmKillLine(line) {
   if (!line.includes("killed by")) return null;
-
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
   const victimRaw = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
   const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
   const weaponMatch = line.match(/with\s+(.+?)\s+from\s+[0-9.]+\s+meters/i);
   const distanceMatch = line.match(/from\s+([0-9.]+)\s+meters/i);
-
   return {
     type: "kill",
     time: timeMatch ? timeMatch[1] : "unknown time",
-    victim: cleanNpcName(victimRaw && victimRaw[1] ? victimRaw[1] : "Unknown NPC"),
+    victim: cleanNpcName(victimRaw && victimRaw[1] ? victimRaw[1] : "NPC"),
     killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
     weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
-    distance: distanceMatch && distanceMatch[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
+    distance: distanceMatch && distanceMatch[1] ? distanceMatch[1] : "0.0",
     raw: line
   };
 }
 
-function processFile(file, content) {
+function processFile(file, content, skipExisting = false) {
   const current = fingerprint(content);
   const previous = getState(file);
   const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
   const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
-
   const lines = content.split(/\r?\n/);
-  const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
+  const startIndex = skipExisting || (!reset && current.lineCount >= previous.lineCount) ? previous.lineCount : 0;
   const events = [];
   const newLines = Math.max(0, lines.length - startIndex);
 
@@ -167,7 +181,6 @@ function processFile(file, content) {
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
-
     const event = parseAdmKillLine(line);
     if (!event) continue;
 
@@ -208,45 +221,58 @@ async function pollOnce() {
   try {
     ensureConfig();
     const remoteFiles = await listAdmFiles();
-    const targets = new Set([...remoteFiles, ...state.retryQueue]);
-    state.retryQueue.clear();
+    const newestFile = remoteFiles[remoteFiles.length - 1] || null;
+    state.newestFile = newestFile;
 
     log("cycle start", {
       cycle: state.cycle,
       remoteCount: remoteFiles.length,
-      targetCount: targets.size,
-      seenFiles: state.seenFiles.size
+      newestFile,
+      initializedNewest: state.initializedNewest
     });
 
-    for (const file of targets) {
-      let content = null;
-      try {
-        content = await readRemoteFile(file);
-      } catch (err) {
-        log("read failed", { file, error: err.message });
-        if (String(err.message || "").includes("550")) state.retryQueue.add(file);
-        continue;
-      }
+    if (!newestFile) {
+      log("no adm files found", { dir: REMOTE_DIR });
+      return;
+    }
 
-      if (!state.seenFiles.has(file)) {
-        state.seenFiles.add(file);
-        log("new file", file);
-      }
+    let content = null;
+    try {
+      content = await readRemoteFile(newestFile);
+    } catch (err) {
+      log("read failed", { file: newestFile, error: err.message });
+      if (String(err.message || "").includes("550")) state.retryQueue.add(newestFile);
+      return;
+    }
 
-      const events = processFile(file, content);
-      if (events.length) {
-        log("events found", { file, count: events.length });
-        await handleEvents(events);
-      } else {
-        log("no events", file);
-      }
+    if (!state.initializedNewest) {
+      state.initializedNewest = true;
+      state.fileMeta.set(newestFile, fingerprint(content));
+      state.initializedFiles.add(newestFile);
+      log("initialized newest file without posting", newestFile);
+      return;
+    }
+
+    if (!state.initializedFiles.has(newestFile)) {
+      state.initializedFiles.add(newestFile);
+      state.fileMeta.set(newestFile, fingerprint(content));
+      log("new newest file detected, baseline stored", newestFile);
+      return;
+    }
+
+    const events = processFile(newestFile, content, false);
+    if (events.length) {
+      log("events found", { file: newestFile, count: events.length });
+      await handleEvents(events);
+    } else {
+      log("no events", newestFile);
     }
 
     log("cycle end", {
       cycle: state.cycle,
-      processedFiles: targets.size,
+      processedFiles: 1,
       retryQueue: state.retryQueue.size,
-      seenFiles: state.seenFiles.size
+      newestFile: state.newestFile
     });
   } finally {
     state.inFlight = false;
