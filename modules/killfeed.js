@@ -10,8 +10,7 @@ const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "
 const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
-const HUNT_RETRIES = Number(process.env.KILLFEED_HUNT_RETRIES || 8);
-const HUNT_DELAY_MS = Number(process.env.KILLFEED_HUNT_DELAY_MS || 10000);
+const HUNT_DELAY_MS = Number(process.env.KILLFEED_HUNT_DELAY_MS || 8000);
 const STALE_LIMIT = Number(process.env.KILLFEED_STALE_LIMIT || 2);
 const STANDBY_AFTER_SUCCESS = String(process.env.KILLFEED_STANDBY_AFTER_SUCCESS || "true").toLowerCase() === "true";
 
@@ -32,7 +31,13 @@ const state = {
   successLatched: false,
   history: [],
   lastList: [],
-  lastOutcome: null
+  lastOutcome: null,
+  huntHits: 0,
+  huntMoves: 0,
+  huntBackoff: HUNT_DELAY_MS,
+  huntStartAt: null,
+  huntLastChangeAt: null,
+  huntLastFile: null
 };
 
 function log(level, label, data) {
@@ -49,7 +54,7 @@ function safeJson(obj) {
 function record(step, data) {
   const entry = { ts: new Date().toISOString(), phase: state.phase, step, data };
   state.history.push(entry);
-  if (state.history.length > 25) state.history.shift();
+  if (state.history.length > 40) state.history.shift();
   log("trace", step, data);
 }
 
@@ -64,6 +69,9 @@ function historyStamp(reason) {
     `lineCount: ${state.currentLineCount}`,
     `bytes: ${state.lastContentBytes}`,
     `lastLine: ${state.lastKnownLastLine}`,
+    `huntHits: ${state.huntHits}`,
+    `huntMoves: ${state.huntMoves}`,
+    `huntBackoff: ${state.huntBackoff}`,
     "--- HISTORY ---",
     ...lines,
     "=== END STAMP ==="
@@ -269,45 +277,67 @@ async function handleEvents(events) {
 }
 
 async function huntForUpdates(targetFile) {
-  phaseShift("hunt", "enter-hunt", { targetFile, retries: HUNT_RETRIES, delayMs: HUNT_DELAY_MS });
+  phaseShift("hunt", "enter-hunt", { targetFile, delayMs: HUNT_DELAY_MS });
   state.huntActive = true;
+  state.huntStartAt = state.huntStartAt || new Date().toISOString();
 
-  for (let i = 1; i <= HUNT_RETRIES; i++) {
-    record("hunt attempt", { attempt: i, of: HUNT_RETRIES, targetFile, delayMs: HUNT_DELAY_MS });
-    await new Promise(r => setTimeout(r, HUNT_DELAY_MS));
+  while (state.running && !state.successLatched) {
+    state.huntHits += 1;
+    record("hunt attempt", { attempt: state.huntHits, targetFile, delayMs: state.huntBackoff, huntMoves: state.huntMoves, phase: state.phase });
+    await new Promise(r => setTimeout(r, state.huntBackoff));
 
     const files = await listAdmFiles();
     const newest = files[0];
-    record("hunt list", { attempt: i, newest, targetFile });
+    record("hunt list", { newest, targetFile, huntBackoff: state.huntBackoff, huntHits: state.huntHits, huntMoves: state.huntMoves });
 
     if (!newest) continue;
 
     if (newest.fullPath !== targetFile) {
-      record("hunt found new file", { old: targetFile, newest: newest.fullPath });
-      state.huntActive = false;
-      phaseShift("standby", "new-file-found", { file: newest.fullPath });
-      historyStamp("new file found");
-      return newest;
+      state.huntMoves += 1;
+      state.huntLastChangeAt = new Date().toISOString();
+      record("hunt found new file", { old: targetFile, newest: newest.fullPath, huntMoves: state.huntMoves });
+      const snap = await readRemoteFile(newest.fullPath);
+      const result = processFile(newest, snap.content, snap.bytes);
+      if (result.events.length) {
+        await handleEvents(result.events);
+        state.successLatched = true;
+        state.huntActive = false;
+        phaseShift("standby", "success-after-move", { file: newest.fullPath, events: result.events.length });
+        historyStamp("success-after-move");
+        return newest;
+      }
+      if (result.changed) {
+        state.huntActive = false;
+        phaseShift("standby", "new-file-no-event", { file: newest.fullPath });
+        historyStamp("new file no event");
+        return newest;
+      }
+    } else {
+      const snap = await readRemoteFile(targetFile);
+      const result = processFile(newest, snap.content, snap.bytes);
+      record("hunt compare", { huntHits: state.huntHits, changed: result.changed, events: result.events.length, staleCycles: state.staleCycles, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, huntBackoff: state.huntBackoff });
+      if (result.events.length) {
+        await handleEvents(result.events);
+        state.successLatched = true;
+        state.huntActive = false;
+        phaseShift("standby", "success", { file: newest.fullPath, events: result.events.length });
+        historyStamp("success");
+        return newest;
+      }
+      if (result.changed) {
+        state.huntMoves += 1;
+        state.huntLastChangeAt = new Date().toISOString();
+        state.huntBackoff = Math.max(3000, Math.floor(state.huntBackoff * 0.85));
+        record("hunt movement", { huntMoves: state.huntMoves, huntBackoff: state.huntBackoff, file: newest.fullPath });
+      } else {
+        state.huntBackoff = Math.min(30000, Math.floor(state.huntBackoff * 1.15));
+        record("hunt no movement", { huntBackoff: state.huntBackoff, file: newest.fullPath, staleCycles: state.staleCycles });
+      }
     }
 
-    const snap = await readRemoteFile(targetFile);
-    const result = processFile(newest, snap.content, snap.bytes);
-
-    record("hunt compare", { attempt: i, changed: result.changed, events: result.events.length, staleCycles: state.staleCycles, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes });
-
-    if (result.events.length) {
-      await handleEvents(result.events);
-      state.huntActive = false;
-      phaseShift("standby", "event-found-during-hunt", { file: newest.fullPath });
-      historyStamp("event found during hunt");
-      return newest;
-    }
-
-    if (result.changed) {
-      state.huntActive = false;
-      phaseShift("standby", "file-changed-during-hunt", { file: newest.fullPath });
-      historyStamp("file changed during hunt");
-      return newest;
+    if (state.staleCycles >= STALE_LIMIT) {
+      state.huntBackoff = Math.max(3000, Math.floor(state.huntBackoff * 0.9));
+      record("hunt stale acceleration", { huntBackoff: state.huntBackoff, staleCycles: state.staleCycles });
     }
   }
 
@@ -333,7 +363,7 @@ async function pollOnce() {
 
     const files = await listAdmFiles();
     const newest = files[0] || null;
-    record("cycle start", { cycle: state.cycle, remoteCount: files.length, newest, retryQueue: [...state.retryQueue] });
+    record("cycle start", { cycle: state.cycle, remoteCount: files.length, newest });
 
     if (!newest) {
       record("no ADM files found", { remoteDir: REMOTE_DIR });
@@ -363,12 +393,7 @@ async function pollOnce() {
     }
 
     if (!result.changed || state.staleCycles >= STALE_LIMIT) {
-      const hunted = await huntForUpdates(newest.fullPath);
-      if (hunted && hunted.fullPath !== newest.fullPath) {
-        record("hunt switched active file", { from: newest.fullPath, to: hunted.fullPath });
-        state.currentFile = hunted.fullPath;
-        resetFileState("hunt-switch", hunted);
-      }
+      await huntForUpdates(newest.fullPath);
     }
 
     record("cycle end", { cycle: state.cycle, phase: state.phase, currentFile: state.currentFile, currentLineCount: state.currentLineCount, lastKnownLastLine: state.lastKnownLastLine, lastContentBytes: state.lastContentBytes, staleCycles: state.staleCycles });
@@ -399,7 +424,7 @@ function start() {
   if (state.running) return;
   state.running = true;
   phaseShift("initial", "start");
-  record("start", { loopInterval: LOOP_INTERVAL, debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, remoteDir: REMOTE_DIR, huntRetries: HUNT_RETRIES, huntDelayMs: HUNT_DELAY_MS, staleLimit: STALE_LIMIT, standbyAfterSuccess: STANDBY_AFTER_SUCCESS });
+  record("start", { loopInterval: LOOP_INTERVAL, debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, remoteDir: REMOTE_DIR, huntDelayMs: HUNT_DELAY_MS, staleLimit: STALE_LIMIT, standbyAfterSuccess: STANDBY_AFTER_SUCCESS });
   pollOnce().catch(err => console.error("[killfeed] initial poll error:", err)).finally(scheduleNext);
 }
 
