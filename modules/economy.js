@@ -41,7 +41,8 @@ async function getOrCreateAccount(userId, guildId, username) {
     guild_id: guildId,
     username: username || "Unknown",
     wallet: 0,
-    bank: 0
+    bank: 0,
+    last_daily_claim_at: null
   };
 
   const { data: inserted, error: insertError } = await supabase
@@ -235,13 +236,13 @@ async function setDailyClaim(guildId, userId, isoString) {
   assertSupabase();
 
   const { error } = await supabase
-    .from("daily_claims")
-    .upsert([{ guild_id: guildId, user_id: userId, last_daily_claim_at: isoString }], {
-      onConflict: "guild_id,user_id"
-    });
+    .from("economy_accounts")
+    .update({ last_daily_claim_at: isoString })
+    .eq("guild_id", guildId)
+    .eq("user_id", userId);
 
   if (error) {
-    debug.supabaseError("economy.setDailyClaim", "upsert", error, { guildId, userId, isoString });
+    debug.supabaseError("economy.setDailyClaim", "update", error, { guildId, userId, isoString });
     throw error;
   }
 }
@@ -250,8 +251,8 @@ async function getDailyClaim(guildId, userId) {
   assertSupabase();
 
   const { data, error } = await supabase
-    .from("daily_claims")
-    .select("*")
+    .from("economy_accounts")
+    .select("last_daily_claim_at")
     .eq("guild_id", guildId)
     .eq("user_id", userId)
     .maybeSingle();
