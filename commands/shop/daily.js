@@ -22,13 +22,6 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      if (!economy.hasAccess(interaction.member)) {
-        return interaction.reply({
-          content: 'You do not have the required role to use economy commands.',
-          ephemeral: true
-        });
-      }
-
       const claimData = await economy.getDailyClaim(interaction.guildId, interaction.user.id);
 
       if (claimData?.last_daily_claim_at) {
@@ -39,7 +32,7 @@ module.exports = {
           const remaining = DAILY_COOLDOWN_MS - elapsed;
           return interaction.reply({
             content: `You already claimed your daily reward. Try again in ${formatRemaining(remaining)}.`,
-            ephemeral: true
+            flags: 64
           });
         }
       }
@@ -72,7 +65,7 @@ module.exports = {
       console.error('daily command error:', error);
       return interaction.reply({
         content: error.message || 'Something went wrong while claiming daily.',
-        ephemeral: true
+        flags: 64
       });
     }
   }
