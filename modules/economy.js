@@ -7,6 +7,7 @@ const supabase = createClient(
 
 const ECONOMY_ROLE_ID = '1496741063191429160';
 const CURRENCY_NAME = 'dollars';
+const STARTING_BANK_BALANCE = Number(process.env.STARTING_BANK_BALANCE || 0);
 
 const ACCOUNT_TABLE = 'economy_accounts';
 const TRANSACTION_TABLE = 'economy_transactions';
@@ -46,7 +47,7 @@ async function createAccount(userId, guildId, username = null) {
       guild_id: guildId,
       username,
       wallet: 0,
-      bank: 0
+      bank: STARTING_BANK_BALANCE
     })
     .select()
     .single();
@@ -215,7 +216,7 @@ async function chargeWallet(userId, guildId, amount, username = null, meta = {})
     guildId,
     userId,
     username,
-    type: 'purchase',
+    type: 'purchase_wallet',
     amount: -amount,
     balanceAfter: updated.wallet,
     notes: meta.notes || null,
@@ -223,6 +224,40 @@ async function chargeWallet(userId, guildId, amount, username = null, meta = {})
   });
 
   return updated;
+}
+
+async function chargeBank(userId, guildId, amount, username = null, meta = {}) {
+  const account = await getOrCreateAccount(userId, guildId, username);
+  amount = Number(amount);
+
+  if (Number(account.bank || 0) < amount) {
+    throw new Error('Insufficient bank balance.');
+  }
+
+  const updated = await updateAccount(userId, guildId, {
+    bank: Number(account.bank || 0) - amount
+  });
+
+  await logTransaction({
+    guildId,
+    userId,
+    username,
+    type: 'purchase_bank',
+    amount: -amount,
+    balanceAfter: updated.bank,
+    notes: meta.notes || null,
+    metadata: meta
+  });
+
+  return updated;
+}
+
+async function chargeByMethod(userId, guildId, amount, method = 'wallet', username = null, meta = {}) {
+  const normalized = String(method || 'wallet').toLowerCase();
+  if (normalized === 'bank') {
+    return chargeBank(userId, guildId, amount, username, meta);
+  }
+  return chargeWallet(userId, guildId, amount, username, meta);
 }
 
 async function adminAdjustWallet(userId, guildId, amount, username = null, meta = {}) {
@@ -282,6 +317,7 @@ module.exports = {
   supabase,
   ECONOMY_ROLE_ID,
   CURRENCY_NAME,
+  STARTING_BANK_BALANCE,
   ACCOUNT_TABLE,
   TRANSACTION_TABLE,
   SHOP_TABLE,
@@ -298,6 +334,8 @@ module.exports = {
   transferWalletToBank,
   transferBankToWallet,
   chargeWallet,
+  chargeBank,
+  chargeByMethod,
   adminAdjustWallet,
   adminAdjustBank,
   getShopItems,
