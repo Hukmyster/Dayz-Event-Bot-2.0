@@ -56,6 +56,7 @@ function mapShopRow(row) {
   return {
     id: row.id,
     name: row.displayname,
+    displayname: row.displayname,
     type: row.type,
     price: Number(row.price)
   };
