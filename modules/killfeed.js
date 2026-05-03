@@ -35,20 +35,26 @@ function cleanVictim(name) {
   return n ? n : "NPC";
 }
 
+function extractKiller(line) {
+  const playerMatch = line.match(/killed by\s+Player\s+"([^"]*)"/i);
+  if (playerMatch) return playerMatch[1].trim() || "Unknown";
+  const afterMatch = line.match(/killed by\s+(.+?)(?:\s+with\s+|\s+from\s+|$)/i);
+  if (afterMatch) return afterMatch[1].trim() || "Unknown";
+  return "Unknown";
+}
+
 function parseKillLine(line) {
   if (!line.includes("killed by")) return null;
 
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
   const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
-  const killerMatch = line.match(/killed by\s+Player\s+"([^"]*)"/i);
-  const weaponMatch = line.match(/with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i);
-
-  if (!killerMatch) return null;
+  const killer = extractKiller(line);
+  const weaponMatch = line.match(/\bwith\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i);
 
   return {
     time: timeMatch ? timeMatch[1] : "unknown",
     victim: cleanVictim(victimMatch?.[1] || ""),
-    killer: killerMatch[1] || "Unknown",
+    killer,
     weapon: weaponMatch?.[1]?.trim() || "Unknown",
     distance: weaponMatch?.[2] || "0",
     raw: line
@@ -56,14 +62,7 @@ function parseKillLine(line) {
 }
 
 function buildEventId(fileName, evt) {
-  return [
-    fileName,
-    evt.time,
-    evt.victim,
-    evt.killer,
-    evt.weapon,
-    evt.distance
-  ].join("|");
+  return [fileName, evt.time, evt.victim, evt.killer, evt.weapon, evt.distance].join("|");
 }
 
 function formatEmbed(evt) {
@@ -82,11 +81,10 @@ function formatEmbed(evt) {
 
 async function postWebhook(evt) {
   if (!WEBHOOK_URL) return;
-  const payload = { embeds: [formatEmbed(evt)] };
   await fetch(WEBHOOK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ embeds: [formatEmbed(evt)] })
   });
 }
 
