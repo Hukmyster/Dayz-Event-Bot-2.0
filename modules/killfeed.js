@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { Client } = require("basic-ftp");
 
-const LOOP_INTERVAL = Number(process.env.KILLFEED_INTERVAL_MS || 5 * 60 * 1000);
+const LOOP_INTERVAL = Number(process.env.KILLFEED_INTERNAL_MS || 5 * 60 * 1000);
 const FTP_HOST = process.env.FTP_HOST;
 const FTP_USER = process.env.FTP_USER;
 const FTP_PASS = process.env.FTP_PASS;
@@ -21,9 +21,7 @@ const state = {
   fileMeta: new Map(),
   lastEvents: new Set(),
   cycle: 0,
-  startedAt: new Date().toISOString(),
-  lastBootstrapFile: null,
-  lastBootstrapLines: 0
+  startedAt: new Date().toISOString()
 };
 
 function dbg(tag, data) {
@@ -276,28 +274,20 @@ async function pollOnce() {
       return;
     }
 
-    if (!ftpItems.length) {
-      dbg("poll:end", {
-        cycle: state.cycle,
-        downloaded: 0,
-        skipped: 0,
-        totalEvents: 0,
-        retryQueue: state.retryQueue.size,
-        seenFiles: state.seenFiles.size
-      });
-      return;
-    }
+    const ftpMap = new Map(ftpItems.map(i => [i.remotePath, i]));
 
-    const latest = ftpItems[ftpItems.length - 1];
-    const toProcess = [latest];
+    for (const retryPath of state.retryQueue) {
+      if (!ftpMap.has(retryPath)) {
+        ftpMap.set(retryPath, { name: path.basename(retryPath), remotePath: retryPath, size: -1, modifiedAt: null });
+      }
+    }
+    state.retryQueue.clear();
 
     let downloaded = 0;
     let skipped = 0;
     let totalEvents = 0;
 
-    for (const ftpItem of toProcess) {
-      const remotePath = ftpItem.remotePath;
-
+    for (const [remotePath, ftpItem] of ftpMap) {
       if (!fileNeedsDownload(remotePath, ftpItem)) {
         skipped++;
         continue;
@@ -309,6 +299,7 @@ async function pollOnce() {
         downloaded++;
       } catch (err) {
         warn("poll:read-failed", { file: remotePath, error: err.message });
+        if (String(err.message || "").includes("550")) state.retryQueue.add(remotePath);
         continue;
       }
 
@@ -323,11 +314,6 @@ async function pollOnce() {
         dbg("poll:events", { file: remotePath, count: events.length });
         await handleEvents(events);
       }
-    }
-
-    if (state.lastBootstrapFile !== latest.remotePath) {
-      state.lastBootstrapFile = latest.remotePath;
-      state.lastBootstrapLines = getState(latest.remotePath).lineCount;
     }
 
     dbg("poll:end", {
