@@ -3,14 +3,21 @@ const SERVICE_ID = process.env.SERVICE_ID || "";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const LOOP_MS = Number(process.env.KILLFEED_INTERNAL_MS || 30000);
 
+const EXPLOSIVE_KILLERS = new Set([
+  "6-M7 Frag Grenade",
+  "LandMineTrap",
+  "Land Mine",
+  "Grenade",
+  "M67 Grenade"
+]);
+
 const state = {
   started: false,
   timer: null,
   running: false,
   startedAt: new Date().toISOString(),
   username: "",
-  seenFiles: new Set(),
-  fileMeta: new Map(),
+  fileState: new Map(),
   sentEventIds: new Set()
 };
 
@@ -35,47 +42,81 @@ function cleanVictim(name) {
   return n ? n : "NPC";
 }
 
-function extractKiller(line) {
-  const playerMatch = line.match(/killed by\s+Player\s+"([^"]*)"/i);
-  if (playerMatch) return playerMatch[1].trim() || "Unknown";
-  const afterMatch = line.match(/killed by\s+(.+?)(?:\s+with\s+|\s+from\s+|$)/i);
-  if (afterMatch) return afterMatch[1].trim() || "Unknown";
-  return "Unknown";
+function cleanKillerName(name) {
+  const n = String(name || "").trim();
+  return n ? n : "Unknown";
+}
+
+function isExplosiveKiller(killer) {
+  return EXPLOSIVE_KILLERS.has(cleanKillerName(killer));
 }
 
 function parseKillLine(line) {
   if (!line.includes("killed by")) return null;
 
-  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)\s*\|\s*/);
   const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
-  const killer = extractKiller(line);
-  const weaponMatch = line.match(/\bwith\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i);
 
-  return {
-    time: timeMatch ? timeMatch[1] : "unknown",
-    victim: cleanVictim(victimMatch?.[1] || ""),
-    killer,
-    weapon: weaponMatch?.[1]?.trim() || "Unknown",
-    distance: weaponMatch?.[2] || "0",
-    raw: line
-  };
+  const playerKillMatch = line.match(
+    /killed by\s+Player\s+"([^"]*)"\s+\(id=.*?\)\s+with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i
+  );
+
+  const explosiveKillMatch = line.match(
+    /killed by\s+(LandMineTrap|Land Mine|6-M7 Frag Grenade|Grenade|M67 Grenade)\s*$/i
+  );
+
+  if (playerKillMatch) {
+    const killer = cleanKillerName(playerKillMatch[1]);
+    return {
+      time: timeMatch ? timeMatch[1] : "unknown",
+      victim: cleanVictim(victimMatch?.[1] || ""),
+      killer,
+      weapon: playerKillMatch[2].trim(),
+      distance: playerKillMatch[3],
+      explosive: isExplosiveKiller(killer),
+      raw: line
+    };
+  }
+
+  if (explosiveKillMatch) {
+    const killer = cleanKillerName(explosiveKillMatch[1]);
+    return {
+      time: timeMatch ? timeMatch[1] : "unknown",
+      victim: cleanVictim(victimMatch?.[1] || ""),
+      killer,
+      weapon: "",
+      distance: "0",
+      explosive: true,
+      raw: line
+    };
+  }
+
+  return null;
 }
 
 function buildEventId(fileName, evt) {
-  return [fileName, evt.time, evt.victim, evt.killer, evt.weapon, evt.distance].join("|");
+  return [fileName, evt.time, evt.victim, evt.killer, evt.weapon, evt.distance, evt.raw].join("|");
 }
 
 function formatEmbed(evt) {
+  const fields = [
+    { name: "Victim", value: evt.victim || "NPC", inline: true },
+    { name: "Killer", value: evt.killer || "Unknown", inline: true }
+  ];
+
+  if (!evt.explosive) {
+    fields.push({ name: "Weapon", value: evt.weapon || "Unknown", inline: true });
+    fields.push({ name: "Distance", value: `${evt.distance || "0"}m`, inline: true });
+  } else {
+    fields.push({ name: "Distance", value: `${evt.distance || "0"}m`, inline: true });
+  }
+
+  fields.push({ name: "Time", value: evt.time || "unknown", inline: true });
+
   return {
     title: "💀 KILL CONFIRMED",
     color: 0xc0392b,
-    fields: [
-      { name: "Victim", value: evt.victim || "NPC", inline: true },
-      { name: "Killer", value: evt.killer || "Unknown", inline: true },
-      { name: "Weapon", value: evt.weapon || "Unknown", inline: true },
-      { name: "Distance", value: `${evt.distance || "0"}m`, inline: true },
-      { name: "Time", value: evt.time || "unknown", inline: true }
-    ]
+    fields
   };
 }
 
@@ -179,26 +220,45 @@ function fingerprint(content) {
 
 function processFile(remotePath, content) {
   const current = fingerprint(content);
-  const previous = state.fileMeta.get(remotePath) || { lineCount: 0, firstLine: "", lastLine: "" };
-  const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
-  const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
+  const previous = state.fileState.get(remotePath) || { lineCount: 0, lastLine: "" };
 
   const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
-  const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
+  let startIndex = 0;
+
+  if (current.lineCount >= previous.lineCount && previous.lineCount > 0) {
+    startIndex = previous.lineCount;
+  }
+
   const events = [];
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
-    if (!line || !line.includes("killed by")) continue;
+    if (!line.includes("killed by")) continue;
+
     const evt = parseKillLine(line);
     if (!evt) continue;
-    const id = buildEventId(remotePath.split("/").pop() || remotePath, evt);
-    if (state.sentEventIds.has(id)) continue;
-    state.sentEventIds.add(id);
+
+    const eventId = buildEventId(remotePath.split("/").pop() || remotePath, evt);
+    const duplicate = state.sentEventIds.has(eventId);
+
+    console.log("[KILLFEED][MATCH]", JSON.stringify({
+      file: remotePath,
+      line,
+      parsed: evt,
+      duplicate
+    }));
+
+    if (duplicate) continue;
+
+    state.sentEventIds.add(eventId);
     events.push(evt);
   }
 
-  state.fileMeta.set(remotePath, current);
+  state.fileState.set(remotePath, {
+    lineCount: current.lineCount,
+    lastLine: current.lastLine
+  });
+
   return events;
 }
 
@@ -215,15 +275,6 @@ async function loopOnce() {
     const { username, paths } = collectCandidates(serverJson);
     state.username = username;
 
-    const newFiles = [];
-    for (const p of paths) {
-      if (!state.seenFiles.has(p)) {
-        state.seenFiles.add(p);
-        newFiles.push(p);
-      }
-    }
-    logLoop("new:files", { count: newFiles.length });
-
     let newEvents = 0;
     for (const remotePath of paths) {
       try {
@@ -233,7 +284,12 @@ async function loopOnce() {
           newEvents++;
           await postWebhook(evt);
         }
-      } catch {}
+      } catch (err) {
+        console.log("[KILLFEED][READ_ERROR]", JSON.stringify({
+          file: remotePath,
+          error: err?.message || String(err)
+        }));
+      }
     }
 
     logLoop("new:events", { count: newEvents });
