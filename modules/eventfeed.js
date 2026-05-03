@@ -36,12 +36,6 @@ const TRIGGERS = {
   25: { type: "AirDrop", location: "Myshkino West Tents", coords: "1160.616 186.296 7252.222" }
 };
 
-const TYPE_ICONS = {
-  Crate: "📦",
-  Horde: "🧟",
-  AirDrop: "📦"
-};
-
 const state = {
   started: false,
   timer: null,
@@ -52,7 +46,7 @@ const state = {
   sentEventIds: new Set()
 };
 
-function dbg(tag, data) {
+function logLoop(tag, data) {
   if (!EVENTFEED_DEBUG) return;
   const ts = new Date().toISOString();
   const dataStr = data !== undefined ? JSON.stringify(data) : "";
@@ -72,7 +66,12 @@ function normalizeLine(line) {
 function buildMessage(triggerNum) {
   const entry = TRIGGERS[triggerNum];
   if (!entry) return null;
-  return `A ${entry.type} has been spotted in ${entry.location} ${entry.coords} get there quick before you miss out!`;
+
+  const article = /^airdrop/i.test(entry.type) ? "An" : "A";
+  const coords = String(entry.coords || "").trim().split(/\s+/).filter(Boolean);
+  const shortCoords = coords.length >= 3 ? `${coords[0]} ${coords[2]}` : coords.join(" ");
+
+  return `${article} ${entry.type} has been spotted in ${entry.location} ${shortCoords} get there quick before you miss out!`;
 }
 
 function parseTrigger(line) {
@@ -105,7 +104,7 @@ function buildEventId(fileName, evt) {
 
 function formatEmbed(evt) {
   return {
-    title: `${TYPE_ICONS[evt.type] || "📡"} EVENT DETECTED`,
+    title: `${evt.type === "AirDrop" ? "📦" : evt.type === "Horde" ? "🧟" : "📡"} EVENT DETECTED`,
     color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
     description: evt.message || "Unknown"
   };
@@ -155,7 +154,7 @@ function collectCandidates(serverJson) {
     const base = String(raw || "").trim();
     if (!base) continue;
     const filename = base.split("/").pop();
-    if (!/\.rpt$/i.test(filename)) continue;
+    if (!/\.adm$/i.test(filename)) continue;
 
     list.push({
       filename,
@@ -244,7 +243,14 @@ function processFile(remotePath, content) {
     const id = buildEventId(remotePath.split("/").pop() || remotePath, evt);
     const duplicate = state.sentEventIds.has(id);
 
-    dbg("MATCH", { file: remotePath, line, parsed: evt, duplicate });
+    if (EVENTFEED_DEBUG) {
+      console.log("[EVENTFEED][MATCH]", JSON.stringify({
+        file: remotePath,
+        line,
+        parsed: evt,
+        duplicate
+      }));
+    }
 
     if (duplicate) continue;
     state.sentEventIds.add(id);
@@ -260,9 +266,9 @@ function processFile(remotePath, content) {
 }
 
 async function loopOnce() {
-  dbg("loop:start", { loopMs: LOOP_MS });
+  logLoop("loop:start", { loopMs: LOOP_MS });
   if (state.running) {
-    dbg("loop:end", { skipped: true });
+    logLoop("loop:end", { skipped: true });
     return;
   }
 
@@ -291,10 +297,10 @@ async function loopOnce() {
       }
     }
 
-    dbg("new:events", { count: newEvents });
+    logLoop("new:events", { count: newEvents });
   } finally {
     state.running = false;
-    dbg("loop:end", {});
+    logLoop("loop:end", {});
   }
 }
 
