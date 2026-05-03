@@ -21,7 +21,9 @@ const state = {
   fileMeta: new Map(),
   lastEvents: new Set(),
   cycle: 0,
-  startedAt: new Date().toISOString()
+  startedAt: new Date().toISOString(),
+  lastBootstrapFile: null,
+  lastBootstrapLines: 0
 };
 
 function dbg(tag, data) {
@@ -57,46 +59,6 @@ function joinRemote(dir, name) {
   return `${d}/${name}`;
 }
 
-async function listAdmFiles() {
-  const client = new Client();
-  client.ftp.timeout = FTP_TIMEOUT_MS;
-  client.ftp.log = () => {};
-  try {
-    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
-    const list = await client.list(REMOTE_DIR);
-
-    const items = list
-      .filter(item => item.isFile && item.name.toUpperCase().endsWith(".ADM"))
-      .map(item => ({
-        name: item.name,
-        remotePath: joinRemote(REMOTE_DIR, item.name),
-        size: item.size ?? -1,
-        modifiedAt: item.modifiedAt ? item.modifiedAt.toISOString() : null,
-      }));
-
-    log("ftp:list:done", { admCount: items.length });
-    return items;
-  } finally {
-    try { client.close(); } catch {}
-  }
-}
-
-async function readRemoteFile(remotePath) {
-  const client = new Client();
-  client.ftp.timeout = FTP_TIMEOUT_MS;
-  client.ftp.log = () => {};
-  const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
-  try {
-    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
-    await client.downloadTo(localTmp, remotePath);
-    const buf = fs.readFileSync(localTmp);
-    return buf.toString("utf8");
-  } finally {
-    try { fs.unlinkSync(localTmp); } catch {}
-    try { client.close(); } catch {}
-  }
-}
-
 function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
@@ -109,58 +71,6 @@ function fingerprint(content) {
     lastLine: normalizeLine(lines[lines.length - 1] || ""),
     firstLine: normalizeLine(lines[0] || "")
   };
-}
-
-function getState(file) {
-  if (!state.fileMeta.has(file)) {
-    state.fileMeta.set(file, { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null });
-  }
-  return state.fileMeta.get(file);
-}
-
-function fileNeedsDownload(remotePath, ftpItem) {
-  const prev = getState(remotePath);
-  const isNew = !state.seenFiles.has(remotePath);
-
-  if (isNew) {
-    log("download:decision", { file: remotePath, reason: "NEW_FILE", ftpSize: ftpItem.size, ftpMod: ftpItem.modifiedAt });
-    return true;
-  }
-
-  if (ftpItem.size > 0 && prev.size >= 0 && ftpItem.size > prev.size) {
-    log("download:decision", { file: remotePath, reason: "SIZE_GREW", prevSize: prev.size, nowSize: ftpItem.size });
-    return true;
-  }
-
-  if (ftpItem.modifiedAt && prev.modifiedAt && ftpItem.modifiedAt !== prev.modifiedAt) {
-    log("download:decision", { file: remotePath, reason: "MODIFIED_AT_CHANGED", prev: prev.modifiedAt, now: ftpItem.modifiedAt });
-    return true;
-  }
-
-  if (ftpItem.size <= 0 && !ftpItem.modifiedAt) {
-    log("download:decision", { file: remotePath, reason: "NO_METADATA_FALLBACK" });
-    return true;
-  }
-
-  return false;
-}
-
-async function safePostWebhook(payload) {
-  if (!WEBHOOK_URL) {
-    return false;
-  }
-  try {
-    const res = await fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) warn("webhook:http-error", { status: res.status });
-    return res.ok;
-  } catch (err) {
-    warn("webhook:exception", err.message);
-    return false;
-  }
 }
 
 function cleanNpcName(name) {
@@ -191,6 +101,103 @@ function parseAdmKillLine(line) {
     distance: distanceMatch && distanceMatch[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
     raw: line
   };
+}
+
+function getState(file) {
+  if (!state.fileMeta.has(file)) {
+    state.fileMeta.set(file, { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null });
+  }
+  return state.fileMeta.get(file);
+}
+
+async function createClient() {
+  const client = new Client();
+  client.ftp.timeout = FTP_TIMEOUT_MS;
+  client.ftp.log = () => {};
+  await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+  return client;
+}
+
+async function listAdmFilesFresh() {
+  const client = await createClient();
+  try {
+    const list = await client.list(REMOTE_DIR);
+    const items = list
+      .filter(item => item.isFile && item.name.toUpperCase().endsWith(".ADM"))
+      .map(item => ({
+        name: item.name,
+        remotePath: joinRemote(REMOTE_DIR, item.name),
+        size: item.size ?? -1,
+        modifiedAt: item.modifiedAt ? item.modifiedAt.toISOString() : null
+      }))
+      .sort((a, b) => {
+        const am = a.modifiedAt || "";
+        const bm = b.modifiedAt || "";
+        if (am !== bm) return am.localeCompare(bm);
+        return a.name.localeCompare(b.name);
+      });
+
+    log("ftp:list:done", { admCount: items.length });
+    return items;
+  } finally {
+    try { client.close(); } catch {}
+  }
+}
+
+async function readRemoteFile(remotePath) {
+  const client = await createClient();
+  const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
+  try {
+    await client.downloadTo(localTmp, remotePath);
+    const buf = fs.readFileSync(localTmp);
+    return buf.toString("utf8");
+  } finally {
+    try { fs.unlinkSync(localTmp); } catch {}
+    try { client.close(); } catch {}
+  }
+}
+
+function fileNeedsDownload(remotePath, ftpItem) {
+  const prev = getState(remotePath);
+  const isNew = !state.seenFiles.has(remotePath);
+
+  if (isNew) {
+    log("download:decision", { file: remotePath, reason: "NEW_FILE", ftpSize: ftpItem.size, ftpMod: ftpItem.modifiedAt });
+    return true;
+  }
+
+  if (ftpItem.size > 0 && prev.size >= 0 && ftpItem.size > prev.size) {
+    log("download:decision", { file: remotePath, reason: "SIZE_GREW", prevSize: prev.size, nowSize: ftpItem.size });
+    return true;
+  }
+
+  if (ftpItem.modifiedAt && prev.modifiedAt && ftpItem.modifiedAt !== prev.modifiedAt) {
+    log("download:decision", { file: remotePath, reason: "MODIFIED_AT_CHANGED", prev: prev.modifiedAt, now: ftpItem.modifiedAt });
+    return true;
+  }
+
+  if (ftpItem.size <= 0 && !ftpItem.modifiedAt) {
+    log("download:decision", { file: remotePath, reason: "NO_METADATA_FALLBACK" });
+    return true;
+  }
+
+  return false;
+}
+
+async function safePostWebhook(payload) {
+  if (!WEBHOOK_URL) return false;
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) warn("webhook:http-error", { status: res.status });
+    return res.ok;
+  } catch (err) {
+    warn("webhook:exception", err.message);
+    return false;
+  }
 }
 
 function processFile(remotePath, content, ftpItem) {
@@ -239,7 +246,7 @@ function processFile(remotePath, content, ftpItem) {
   state.fileMeta.set(remotePath, {
     ...current,
     size: ftpItem.size,
-    modifiedAt: ftpItem.modifiedAt,
+    modifiedAt: ftpItem.modifiedAt
   });
 
   return events;
@@ -253,9 +260,7 @@ async function handleEvents(events) {
 }
 
 async function pollOnce() {
-  if (state.inFlight) {
-    return;
-  }
+  if (state.inFlight) return;
   state.inFlight = true;
   state.cycle += 1;
   dbg("poll:start", { cycle: state.cycle, seenFiles: state.seenFiles.size, retryQueue: state.retryQueue.size });
@@ -265,26 +270,34 @@ async function pollOnce() {
 
     let ftpItems;
     try {
-      ftpItems = await listAdmFiles();
+      ftpItems = await listAdmFilesFresh();
     } catch (err) {
       warn("poll:list-failed", err.message);
       return;
     }
 
-    const ftpMap = new Map(ftpItems.map(i => [i.remotePath, i]));
-
-    for (const retryPath of state.retryQueue) {
-      if (!ftpMap.has(retryPath)) {
-        ftpMap.set(retryPath, { name: path.basename(retryPath), remotePath: retryPath, size: -1, modifiedAt: null });
-      }
+    if (!ftpItems.length) {
+      dbg("poll:end", {
+        cycle: state.cycle,
+        downloaded: 0,
+        skipped: 0,
+        totalEvents: 0,
+        retryQueue: state.retryQueue.size,
+        seenFiles: state.seenFiles.size
+      });
+      return;
     }
-    state.retryQueue.clear();
+
+    const latest = ftpItems[ftpItems.length - 1];
+    const toProcess = [latest];
 
     let downloaded = 0;
     let skipped = 0;
     let totalEvents = 0;
 
-    for (const [remotePath, ftpItem] of ftpMap) {
+    for (const ftpItem of toProcess) {
+      const remotePath = ftpItem.remotePath;
+
       if (!fileNeedsDownload(remotePath, ftpItem)) {
         skipped++;
         continue;
@@ -296,7 +309,6 @@ async function pollOnce() {
         downloaded++;
       } catch (err) {
         warn("poll:read-failed", { file: remotePath, error: err.message });
-        if (String(err.message || "").includes("550")) state.retryQueue.add(remotePath);
         continue;
       }
 
@@ -311,6 +323,11 @@ async function pollOnce() {
         dbg("poll:events", { file: remotePath, count: events.length });
         await handleEvents(events);
       }
+    }
+
+    if (state.lastBootstrapFile !== latest.remotePath) {
+      state.lastBootstrapFile = latest.remotePath;
+      state.lastBootstrapLines = getState(latest.remotePath).lineCount;
     }
 
     dbg("poll:end", {
