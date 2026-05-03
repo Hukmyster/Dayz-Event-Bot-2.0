@@ -18,26 +18,6 @@ function ensureLogsDir() {
   fs.mkdirSync(LOCAL_DIR, { recursive: true });
 }
 
-function getAdmRegex() {
-  return /^DayZServer_(?:X1|PS4|PS5)_x64_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})\.ADM$/;
-}
-
-function pickLatestAdm(entries, admRegex) {
-  let best = null;
-  let bestKey = null;
-  for (const e of entries || []) {
-    if (e.type !== "file" || typeof e.name !== "string") continue;
-    const m = e.name.match(admRegex);
-    if (!m) continue;
-    const key = m[1].replace(/[-_]/g, "");
-    if (bestKey === null || key > bestKey) {
-      bestKey = key;
-      best = e;
-    }
-  }
-  return best;
-}
-
 function httpGetJson(url, headers = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers }, res => {
@@ -56,10 +36,21 @@ function httpGetJson(url, headers = {}) {
   });
 }
 
-async function listFiles(dir) {
+function countLines(filePath) {
+  if (!fs.existsSync(filePath)) return 0;
+  const txt = fs.readFileSync(filePath, "utf8");
+  if (!txt) return 0;
+  return txt.split(/\r?\n/).filter(Boolean).length;
+}
+
+function getAdmRegex() {
+  return /\.ADM$/i;
+}
+
+async function listFiles(remoteDir) {
   const serviceId = process.env.SERVICE_ID;
   const token = process.env.API_TOKEN;
-  const url = `https://api.nitrado.net/services/${serviceId}/gameservers/file_server/list?dir=${encodeURIComponent(dir)}`;
+  const url = `https://api.nitrado.net/services/${serviceId}/gameservers/file_server/list?dir=${encodeURIComponent(remoteDir)}`;
   const res = await httpGetJson(url, {
     Authorization: `Bearer ${token}`,
     Accept: "application/json"
@@ -83,62 +74,89 @@ async function downloadFile(remotePath) {
   }
 }
 
-function countLines(filePath) {
-  if (!fs.existsSync(filePath)) return 0;
-  const txt = fs.readFileSync(filePath, "utf8");
-  if (!txt) return 0;
-  return txt.split(/\r?\n/).filter(Boolean).length;
+function normalizeDir(dir) {
+  if (!dir) return "";
+  let out = String(dir).trim();
+  if (!out.startsWith("/")) out = `/${out}`;
+  out = out.replace(/\/+/g, "/");
+  if (out.length > 1 && out.endsWith("/")) out = out.slice(0, -1);
+  return out;
 }
 
-function getFallbackDirs() {
-  const envDir = String(process.env.KILLFEED_REMOTE_DIR || "").trim();
+function candidateDirs() {
+  const base = normalizeDir(process.env.KILLFEED_REMOTE_DIR || "");
   const dirs = [];
-  if (envDir) dirs.push(envDir);
-  dirs.push(
-    "/dayzps/config",
-    "/dayzps/config/logs",
-    "/ftproot/dayzstandalone/config",
-    "/ftproot/dayzstandalone/config/logs",
-    "/noftp/dayzps/config",
-    "/noftp/dayzps/config/logs",
-    "/noftp/dayzstandalone/config",
-    "/noftp/dayzstandalone/config/logs"
-  );
+  if (base) dirs.push(base);
+  if (base) dirs.push(`${base}/logs`);
+  dirs.push("/logs");
+  dirs.push("/");
   return [...new Set(dirs)];
 }
 
-async function findWorkingDir(admRegex) {
-  const dirs = getFallbackDirs();
+async function recursiveFindAdm(startDir, depth = 0, maxDepth = 5, seen = new Set()) {
+  const dir = normalizeDir(startDir);
+  if (!dir || seen.has(dir) || depth > maxDepth) return [];
+  seen.add(dir);
+
+  let entries = [];
+  try {
+    entries = await listFiles(dir);
+  } catch {
+    return [];
+  }
+
+  const results = [];
+  for (const e of entries) {
+    const name = e?.name;
+    const type = e?.type;
+    if (!name) continue;
+
+    const fullPath = `${dir === "/" ? "" : dir}/${name}`.replace(/\/+/g, "/");
+
+    if (type === "file" && /\.ADM$/i.test(name)) {
+      results.push({ dir, name, fullPath, entry: e });
+    }
+
+    if (type === "dir" || type === "folder") {
+      const nested = await recursiveFindAdm(fullPath, depth + 1, maxDepth, seen);
+      if (nested.length) results.push(...nested);
+    }
+  }
+
+  return results;
+}
+
+async function findWorkingAdm() {
+  const dirs = candidateDirs();
   for (const dir of dirs) {
-    try {
-      const entries = await listFiles(dir);
-      const latest = pickLatestAdm(entries, admRegex);
-      if (latest) return { dir, latest, entries };
-    } catch {}
+    const found = await recursiveFindAdm(dir);
+    if (found.length) {
+      found.sort((a, b) => String(b.name).localeCompare(String(a.name)));
+      return found[0];
+    }
   }
   return null;
 }
 
-async function mirrorLatest(admRegex) {
-  const found = await findWorkingDir(admRegex);
+async function mirrorLatest() {
+  const found = await findWorkingAdm();
   if (!found) throw new Error("No ADM file found in any candidate directory");
-  const remotePath = `${found.dir}/${found.latest.name}`;
-  await downloadFile(remotePath);
+  console.log(`[proof] found path: ${found.fullPath}`);
+  await downloadFile(found.fullPath);
   fs.copyFileSync(STAGING_LOG, LOCAL_LOG);
   const stats = fs.statSync(LOCAL_LOG);
   return {
-    name: found.latest.name,
+    name: found.name,
     bytes: stats.size,
     lines: countLines(LOCAL_LOG),
     remoteDir: found.dir,
-    fileCount: found.entries.filter(e => e.type === "file").length
+    remotePath: found.fullPath
   };
 }
 
 async function loopWatcher() {
   ensureLogsDir();
 
-  const admRegex = getAdmRegex();
   const cycleMs = parseInt(process.env.KILLFEED_INTERNAL_MS || "35000", 10);
   const staleLimit = parseInt(process.env.KILLFEED_STALE_LIMIT || "2", 10);
   const standbyAfterSuccess = String(process.env.KILLFEED_STANDBY_AFTER_SUCCESS || "true").toLowerCase() === "true";
@@ -153,7 +171,7 @@ async function loopWatcher() {
   console.log("[proof] starting ADM watcher");
 
   try {
-    const snap = await mirrorLatest(admRegex);
+    const snap = await mirrorLatest();
     lastName = snap.name;
     lastBytes = snap.bytes;
     lastLines = snap.lines;
@@ -168,9 +186,10 @@ async function loopWatcher() {
     await sleep(cycleMs);
 
     try {
-      const snap = await mirrorLatest(admRegex);
+      const snap = await mirrorLatest();
       const newLinesThisCycle = Math.max(0, snap.lines - lastObservedLines);
-      console.log(`[proof] files found: ${snap.fileCount}`);
+
+      console.log(`[proof] files found: 1`);
       console.log(`[proof] lines found: ${snap.lines}`);
       console.log(`[proof] new lines this cycle: ${newLinesThisCycle}`);
 
