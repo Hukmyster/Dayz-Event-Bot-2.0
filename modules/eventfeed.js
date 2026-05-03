@@ -1,7 +1,7 @@
 const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
 const WEBHOOK_URL = process.env.EVENTFEED_WEBHOOK_URL || "";
-const LOOP_MS = 5 * 60 * 1000;
+const LOOP_MS = Number(process.env.KILLFEED_INTERNAL_MS || 30000);
 const EVENTFEED_DEBUG = String(process.env.EVENTFEED_DEBUG || "false").toLowerCase() === "true";
 
 const MAX_FILES = 5;
@@ -46,7 +46,7 @@ const state = {
   sentEventIds: new Set()
 };
 
-function logLoop(tag, data) {
+function dbg(tag, data) {
   if (!EVENTFEED_DEBUG) return;
   const ts = new Date().toISOString();
   const dataStr = data !== undefined ? JSON.stringify(data) : "";
@@ -66,11 +66,9 @@ function normalizeLine(line) {
 function buildMessage(triggerNum) {
   const entry = TRIGGERS[triggerNum];
   if (!entry) return null;
-
   const article = /^airdrop/i.test(entry.type) ? "An" : "A";
   const coords = String(entry.coords || "").trim().split(/\s+/).filter(Boolean);
   const shortCoords = coords.length >= 3 ? `${coords[0]} ${coords[2]}` : coords.join(" ");
-
   return `${article} ${entry.type} has been spotted in ${entry.location} ${shortCoords} get there quick before you miss out!`;
 }
 
@@ -104,7 +102,7 @@ function buildEventId(fileName, evt) {
 
 function formatEmbed(evt) {
   return {
-    title: `${evt.type === "AirDrop" ? "📦" : evt.type === "Horde" ? "🧟" : "📡"} EVENT DETECTED`,
+    title: "EVENT DETECTED",
     color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
     description: evt.message || "Unknown"
   };
@@ -112,11 +110,18 @@ function formatEmbed(evt) {
 
 async function postWebhook(evt) {
   if (!WEBHOOK_URL) return;
-  await fetch(WEBHOOK_URL, {
+  const payload = { embeds: [formatEmbed(evt)] };
+  const res = await fetch(WEBHOOK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ embeds: [formatEmbed(evt)] })
+    body: JSON.stringify(payload)
   });
+
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    throw new Error(`Discord webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
+  }
+  dbg("webhook:sent", { status: res.status, type: evt.type, trigger: evt.trigger });
 }
 
 async function nitradoRequest(url, opts = {}) {
@@ -154,7 +159,7 @@ function collectCandidates(serverJson) {
     const base = String(raw || "").trim();
     if (!base) continue;
     const filename = base.split("/").pop();
-    if (!/\.adm$/i.test(filename)) continue;
+    if (!/\.rpt$/i.test(filename)) continue;
 
     list.push({
       filename,
@@ -214,7 +219,9 @@ async function readRemoteFile(remotePath, username) {
       if (!tokenUrl || !token) throw new Error("No token returned");
       const content = await fetchFile(tokenUrl, token);
       return { pathUsed: candidate, content };
-    } catch {}
+    } catch (err) {
+      dbg("read:attempt_fail", { file: candidate, error: err?.message || String(err) });
+    }
   }
   throw new Error(`All read attempts failed for ${remotePath}`);
 }
@@ -235,6 +242,8 @@ function processFile(remotePath, content) {
   const startIndex = current.lineCount >= previous.lineCount && previous.lineCount > 0 ? previous.lineCount : 0;
   const events = [];
 
+  dbg("file:scan", { remotePath, current, previous, startIndex });
+
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     const evt = parseEventLine(line);
@@ -243,14 +252,7 @@ function processFile(remotePath, content) {
     const id = buildEventId(remotePath.split("/").pop() || remotePath, evt);
     const duplicate = state.sentEventIds.has(id);
 
-    if (EVENTFEED_DEBUG) {
-      console.log("[EVENTFEED][MATCH]", JSON.stringify({
-        file: remotePath,
-        line,
-        parsed: evt,
-        duplicate
-      }));
-    }
+    dbg("match", { file: remotePath, line, parsed: evt, duplicate });
 
     if (duplicate) continue;
     state.sentEventIds.add(id);
@@ -266,9 +268,9 @@ function processFile(remotePath, content) {
 }
 
 async function loopOnce() {
-  logLoop("loop:start", { loopMs: LOOP_MS });
+  dbg("loop:start", { loopMs: LOOP_MS });
   if (state.running) {
-    logLoop("loop:end", { skipped: true });
+    dbg("loop:end", { skipped: true });
     return;
   }
 
@@ -277,6 +279,8 @@ async function loopOnce() {
     const serverJson = await fetchServerInfo();
     const { username, paths } = collectCandidates(serverJson);
     state.username = username;
+
+    dbg("files:selected", { count: paths.length, paths });
 
     let newEvents = 0;
     for (const remotePath of paths) {
@@ -288,19 +292,17 @@ async function loopOnce() {
           await postWebhook(evt);
         }
       } catch (err) {
-        if (EVENTFEED_DEBUG) {
-          console.log("[EVENTFEED][READ_ERROR]", JSON.stringify({
-            file: remotePath,
-            error: err?.message || String(err)
-          }));
-        }
+        dbg("read:error", {
+          file: remotePath,
+          error: err?.message || String(err)
+        });
       }
     }
 
-    logLoop("new:events", { count: newEvents });
+    dbg("new:events", { count: newEvents });
   } finally {
     state.running = false;
-    logLoop("loop:end", {});
+    dbg("loop:end", {});
   }
 }
 
