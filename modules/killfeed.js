@@ -2,6 +2,7 @@ const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const LOOP_MS = Number(process.env.KILLFEED_INTERNAL_MS || 30000);
+const DEBUG_ENABLED = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 
 const EXPLOSIVE_KILLERS = new Set([
   "6-M7 Frag Grenade",
@@ -22,9 +23,19 @@ const state = {
 };
 
 function logLoop(tag, data) {
+  if (!DEBUG_ENABLED) return;
   const ts = new Date().toISOString();
   const dataStr = data !== undefined ? JSON.stringify(data) : "";
   console.log(`[killfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
+}
+
+function debugLog(tag, data) {
+  if (!DEBUG_ENABLED) return;
+  console.log(`[KILLFEED][${tag}]`, data);
+}
+
+function errorLog(tag, data) {
+  console.log(`[KILLFEED][${tag}]`, data);
 }
 
 function normalizePath(p) {
@@ -253,12 +264,12 @@ function processFile(remotePath, content) {
     const eventId = buildEventId(remotePath.split("/").pop() || remotePath, evt);
     const duplicate = state.sentEventIds.has(eventId);
 
-    console.log("[KILLFEED][MATCH]", JSON.stringify({
+    debugLog("MATCH", {
       file: remotePath,
       line,
       parsed: evt,
       duplicate
-    }));
+    });
 
     if (duplicate) continue;
 
@@ -297,10 +308,10 @@ async function loopOnce() {
           await postWebhook(evt);
         }
       } catch (err) {
-        console.log("[KILLFEED][READ_ERROR]", JSON.stringify({
+        errorLog("READ_ERROR", {
           file: remotePath,
           error: err?.message || String(err)
-        }));
+        });
       }
     }
 
