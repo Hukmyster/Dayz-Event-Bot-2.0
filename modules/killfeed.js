@@ -1,40 +1,23 @@
-const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
+const LOOP_MS = Number(process.env.KILLFEED_INTERNAL_MS || 30000);
 
 const state = {
   started: false,
+  timer: null,
   running: false,
   startedAt: new Date().toISOString(),
   username: "",
-  primaryPaths: [],
-  readablePaths: [],
-  seenEventKeys: new Set(),
-  fileMeta: new Map()
+  seenFiles: new Set(),
+  fileMeta: new Map(),
+  seenEvents: new Set()
 };
 
-function dbg(tag, data) {
+function logLoop(tag, data) {
   const ts = new Date().toISOString();
-  const dataStr = data !== undefined ? (typeof data === "object" ? JSON.stringify(data) : String(data)) : "";
+  const dataStr = data !== undefined ? JSON.stringify(data) : "";
   console.log(`[killfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
-}
-
-function log(tag, data) {
-  if (DEBUG) dbg(tag, data);
-}
-
-function warn(tag, data) {
-  const ts = new Date().toISOString();
-  const dataStr = data !== undefined ? (typeof data === "object" ? JSON.stringify(data) : String(data)) : "";
-  console.warn(`[killfeed][${ts}][WARN:${tag}]${dataStr ? " " + dataStr : ""}`);
-}
-
-function ensureConfig() {
-  const missing = [];
-  if (!API_TOKEN) missing.push("API_TOKEN");
-  if (!SERVICE_ID) missing.push("SERVICE_ID");
-  if (missing.length) throw new Error(`Missing killfeed env vars: ${missing.join(", ")}`);
 }
 
 function normalizePath(p) {
@@ -47,58 +30,40 @@ function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
 
-function fingerprint(content) {
-  const raw = content.split(/\r?\n/);
-  const lines = raw[raw.length - 1] === "" ? raw.slice(0, -1) : raw;
-  return {
-    lineCount: lines.length,
-    firstLine: normalizeLine(lines[0] || ""),
-    lastLine: normalizeLine(lines[lines.length - 1] || "")
-  };
-}
-
-function cleanNpcName(name) {
+function cleanVictim(name) {
   const n = String(name || "").trim();
-  if (!n || n === `"` || n === `""`) return "Unknown NPC";
-  return n;
+  return n ? n : "NPC";
 }
 
 function parseKillLine(line) {
-  const hasKill = /killed by|committed suicide|bled out|died\./i.test(line);
-  if (!hasKill) return null;
+  if (!line.includes("killed by")) return null;
 
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
-  const victimMatch = line.match(/Player\s+"([^"]*)"/i);
-  const killerMatch = line.match(/killed by\s+(?:Player\s+"([^"]*)"|Infected|Wolf|Bear|Zombie|Fireplace|Vehicle|FallDamage|Explosion|Gas)/i);
-  const weaponMatch = line.match(/\bwith\s+(.+?)(?:\s+from\s+[0-9.]+\s+meters|\s*$)/i);
-  const distanceMatch = line.match(/from\s+([0-9.]+)\s+meters/i);
+  const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
+  const killerMatch = line.match(/killed by\s+Player\s+"([^"]*)"/i);
+  const weaponMatch = line.match(/with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i);
 
-  if (!/killed by/i.test(line)) {
-    return {
-      type: "death",
-      time: timeMatch ? timeMatch[1] : "unknown time",
-      victim: cleanNpcName(victimMatch?.[1] || "Unknown NPC"),
-      killer: "Environment",
-      weapon: "Unknown",
-      distance: "0.0",
-      raw: line
-    };
-  }
+  if (!killerMatch) return null;
 
   return {
-    type: "kill",
-    time: timeMatch ? timeMatch[1] : "unknown time",
-    victim: cleanNpcName(victimMatch?.[1] || "Unknown NPC"),
-    killer: cleanNpcName(killerMatch?.[1] || "Unknown"),
+    time: timeMatch ? timeMatch[1] : "unknown",
+    victim: cleanVictim(victimMatch?.[1] || ""),
+    killer: killerMatch[1] || "Unknown",
     weapon: weaponMatch?.[1]?.trim() || "Unknown",
-    distance: distanceMatch?.[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
+    distance: weaponMatch?.[2] || "0",
     raw: line
   };
 }
 
-function buildEventMessage(event) {
-  if (event.type === "death") return `☠️ **${event.victim}** died | ${event.time}`;
-  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
+function formatDiscordMessage(evt) {
+  return [
+    "💀 KILL CONFIRMED",
+    `Victim: ${evt.victim}`,
+    `Killer: ${evt.killer}`,
+    `Weapon: ${evt.weapon}`,
+    `Distance: ${evt.distance}m`,
+    `Time: ${evt.time}`
+  ].join("\n");
 }
 
 async function nitradoRequest(url, opts = {}) {
@@ -111,47 +76,41 @@ async function nitradoRequest(url, opts = {}) {
     }
   });
   const text = await res.text().catch(() => "");
-  log("http:response", { url, status: res.status, body: text.slice(0, 500) });
   if (!res.ok) throw new Error(`Nitrado HTTP ${res.status}: ${text.slice(0, 250)}`);
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
+  return JSON.parse(text);
 }
 
-async function fetchGameServerInfo() {
+async function fetchServerInfo() {
   return await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers`);
 }
 
-function collectPrimaryCandidates(serverJson) {
+function collectCandidates(serverJson) {
   const gs = serverJson?.data?.gameserver || {};
   const username = gs?.username || "";
   const files = gs?.game_specific?.log_files || [];
-  const out = [];
+  const paths = [];
 
   for (const item of Array.isArray(files) ? files : []) {
     const raw = typeof item === "string" ? item : (item?.path || item?.file || item?.name || item?.filename || "");
     const base = String(raw || "").trim();
     if (!base) continue;
     const filename = base.split("/").pop();
-    out.push(`/games/${username}/noftp/dayzps/config/${filename}`);
-    out.push(`/games/${username}/noftp/${base.replace(/^\/+/, "")}`);
-    out.push(base);
+    paths.push(`/games/${username}/noftp/dayzps/config/${filename}`);
+    paths.push(`/games/${username}/noftp/${base.replace(/^\/+/, "")}`);
+    paths.push(base);
   }
 
-  return { username, paths: [...new Set(out.map(normalizePath))] };
+  return { username, paths: [...new Set(paths.map(normalizePath))] };
 }
 
 async function getDownloadToken(filePath) {
   const json = await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`);
   const tokenUrl = json?.data?.token?.url || null;
   const token = json?.data?.token?.token || null;
-  log("download:parsed", { filePath, hasTokenUrl: !!tokenUrl, hasToken: !!token, tokenUrl: tokenUrl || null });
-  return { tokenUrl, token, raw: json };
+  return { tokenUrl, token };
 }
 
-async function fetchFileViaToken(tokenUrl, token) {
+async function fetchFile(tokenUrl, token) {
   const u = new URL(tokenUrl);
   if (token) u.searchParams.set("token", token);
   const res = await fetch(u.toString(), {
@@ -161,34 +120,39 @@ async function fetchFileViaToken(tokenUrl, token) {
     }
   });
   const text = await res.text().catch(() => "");
-  log("token:response", { url: u.toString(), status: res.status, body: text.slice(0, 500) });
   if (!res.ok) throw new Error(`Token fetch HTTP ${res.status}: ${text.slice(0, 250)}`);
   return text;
 }
 
 function candidateReadPaths(originalPath, username) {
   const filename = String(originalPath || "").split("/").pop();
-  return [
+  return [...new Set([
     `/games/${username}/noftp/dayzps/config/${filename}`,
     `/games/${username}/noftp/${filename}`,
     normalizePath(originalPath)
-  ];
+  ])];
 }
 
-async function readRemoteFileWithFallbacks(remotePath, username) {
-  const candidates = [...new Set(candidateReadPaths(remotePath, username).filter(Boolean))];
+async function readRemoteFile(remotePath, username) {
+  const candidates = candidateReadPaths(remotePath, username);
   for (const candidate of candidates) {
     try {
-      log("read:attempt", { path: candidate });
       const { tokenUrl, token } = await getDownloadToken(candidate);
-      if (!tokenUrl || !token) throw new Error("No token URL/token returned");
-      const content = await fetchFileViaToken(tokenUrl, token);
+      if (!tokenUrl || !token) throw new Error("No token returned");
+      const content = await fetchFile(tokenUrl, token);
       return { pathUsed: candidate, content };
-    } catch (err) {
-      warn("read:failed", { path: candidate, error: err.message });
-    }
+    } catch {}
   }
   throw new Error(`All read attempts failed for ${remotePath}`);
+}
+
+function fingerprint(content) {
+  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+  return {
+    lineCount: lines.length,
+    firstLine: normalizeLine(lines[0] || ""),
+    lastLine: normalizeLine(lines[lines.length - 1] || "")
+  };
 }
 
 function processFile(remotePath, content) {
@@ -203,88 +167,85 @@ function processFile(remotePath, content) {
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
-    if (!line) continue;
-    const event = parseKillLine(line);
-    if (!event) continue;
-    const key = `${remotePath}|${event.raw}`;
-    if (state.seenEventKeys.has(key)) continue;
-    state.seenEventKeys.add(key);
-    events.push({ ...event, file: remotePath });
+    if (!line || !line.includes("killed by")) continue;
+    const evt = parseKillLine(line);
+    if (!evt) continue;
+    const key = `${remotePath}|${evt.raw}`;
+    if (state.seenEvents.has(key)) continue;
+    state.seenEvents.add(key);
+    events.push(evt);
   }
 
   state.fileMeta.set(remotePath, current);
   return events;
 }
 
-async function safePostWebhook(payload) {
-  if (!WEBHOOK_URL) return false;
-  try {
-    const res = await fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    return res.ok;
-  } catch {
-    return false;
+async function postWebhook(evt) {
+  if (!WEBHOOK_URL) return;
+  await fetch(WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: formatDiscordMessage(evt) })
+  });
+}
+
+async function loopOnce() {
+  logLoop("loop:start", { startedAt: state.startedAt, loopMs: LOOP_MS });
+  if (state.running) {
+    logLoop("loop:end", { skipped: true });
+    return;
   }
-}
 
-async function handleEvents(events) {
-  for (const evt of events) await safePostWebhook({ content: buildEventMessage(evt) });
-}
-
-async function run() {
   state.running = true;
-  dbg("START", { debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, source: "nitrado-api", serviceId: SERVICE_ID, startedAt: state.startedAt });
+  try {
+    const serverJson = await fetchServerInfo();
+    const { username, paths } = collectCandidates(serverJson);
+    state.username = username;
 
-  const serverJson = await fetchGameServerInfo();
-  const { username, paths } = collectPrimaryCandidates(serverJson);
-  state.username = username;
-  state.primaryPaths = paths;
-  log("primary:paths", { username, count: paths.length, paths });
-
-  const readable = [];
-
-  for (const remotePath of paths) {
-    try {
-      const result = await readRemoteFileWithFallbacks(remotePath, username);
-      readable.push(result.pathUsed);
-      const events = processFile(remotePath, result.content);
-      if (events.length) {
-        log("poll:events", { file: remotePath, count: events.length, readPath: result.pathUsed });
-        await handleEvents(events);
-      } else {
-        log("read:ok", { path: remotePath, used: result.pathUsed, bytes: result.content.length });
+    const newFiles = [];
+    for (const p of paths) {
+      if (!state.seenFiles.has(p)) {
+        state.seenFiles.add(p);
+        newFiles.push(p);
       }
-    } catch (err) {
-      warn("read:all-failed", { path: remotePath, error: err.message });
     }
+    logLoop("new:files", { count: newFiles.length });
+
+    let newEvents = 0;
+    const allTargets = [...new Set([...newFiles, ...paths])];
+
+    for (const remotePath of allTargets) {
+      try {
+        const result = await readRemoteFile(remotePath, username);
+        const events = processFile(remotePath, result.content);
+        for (const evt of events) {
+          newEvents++;
+          await postWebhook(evt);
+        }
+      } catch {}
+    }
+
+    logLoop("new:events", { count: newEvents });
+  } finally {
+    state.running = false;
+    logLoop("loop:end", {});
   }
-
-  state.readablePaths = [...new Set(readable)];
-  console.log(JSON.stringify({
-    username,
-    primaryPaths: paths,
-    readablePaths: state.readablePaths,
-    totalDiscovered: state.readablePaths.length
-  }, null, 2));
-
-  state.running = false;
 }
 
 function start() {
   if (state.started) return;
   state.started = true;
-  return run().catch(err => {
-    warn("run:error", err.message);
-    state.running = false;
-    throw err;
-  });
+  loopOnce().catch(() => {});
+  state.timer = setInterval(() => {
+    loopOnce().catch(() => {});
+  }, LOOP_MS);
 }
 
 function stop() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = null;
   state.running = false;
+  state.started = false;
 }
 
 module.exports = { start, stop, state };
