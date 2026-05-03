@@ -7,7 +7,6 @@ const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
 const ROOT_DIRS = ["/", "/dayzps", "/dayzps/config", "/dayzps/storage", "/server"];
 const MAX_DEPTH = 12;
-const FTP_TIMEOUT_MS = 30_000;
 
 const state = {
   running: false,
@@ -50,12 +49,6 @@ function normalizePath(p) {
   const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
   if (!s) return "/";
   return s.startsWith("/") ? s : `/${s}`;
-}
-
-function parentDir(p) {
-  const n = normalizePath(p);
-  if (n === "/") return null;
-  return normalizePath(path.posix.dirname(n));
 }
 
 function normalizeLine(line) {
@@ -129,7 +122,7 @@ function isDir(entry) {
   const t = String(entry?.type || entry?.kind || entry?.entry_type || "").toLowerCase();
   if (t.includes("dir")) return true;
   if (entry?.is_dir === true || entry?.directory === true) return true;
-  return !entry?.name?.includes(".") && !entry?.path?.match(/\.[a-z0-9]+$/i) && !entry?.size;
+  return !entry?.name?.match(/\.[a-z0-9]+$/i) && !entry?.path?.match(/\.[a-z0-9]+$/i) && !entry?.size;
 }
 
 async function listDirectory(dir) {
@@ -144,6 +137,8 @@ async function discoverFromDir(dir, depth = 0) {
   if (depth > MAX_DEPTH) return;
   if (state.visitedDirs.has(ndir)) return;
   state.visitedDirs.add(ndir);
+
+  log("scan:attempt", { dir: ndir, depth });
 
   let entries = [];
   try {
@@ -177,11 +172,9 @@ async function discoverFromDir(dir, depth = 0) {
 async function discoverAllAdmPaths() {
   state.visitedDirs.clear();
   state.foundPaths.clear();
-
   for (const root of ROOT_DIRS) {
     await discoverFromDir(root, 0);
   }
-
   const paths = [...state.foundPaths].sort();
   log("discover:done", { admPaths: paths.length, visitedDirs: state.visitedDirs.size });
   return paths;
@@ -203,14 +196,6 @@ async function readRemoteFile(remotePath) {
     return JSON.stringify(json);
   }
   return await res.text();
-}
-
-function fileNeedsDownload(remotePath, meta) {
-  const prev = state.fileMeta.get(remotePath) || { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null };
-  if (!state.seenFiles.has(remotePath)) return true;
-  if (meta.size > 0 && prev.size >= 0 && meta.size > prev.size) return true;
-  if (meta.modifiedAt && prev.modifiedAt && meta.modifiedAt !== prev.modifiedAt) return true;
-  return false;
 }
 
 async function safePostWebhook(payload) {
@@ -246,7 +231,6 @@ function processFile(remotePath, content, meta) {
   }
 
   state.fileMeta.set(remotePath, { ...current, size: meta.size, modifiedAt: meta.modifiedAt });
-  log("poll:file", { remotePath, previousLines: previous.lineCount, currentLines: current.lineCount, startIndex, reset: String(reset) });
   return events;
 }
 
@@ -264,9 +248,7 @@ async function pollOnce() {
     ensureConfig();
     const discovered = await discoverAllAdmPaths();
 
-    let downloaded = 0;
     let totalEvents = 0;
-
     for (const remotePath of discovered) {
       let content;
       try {
@@ -277,11 +259,7 @@ async function pollOnce() {
       }
 
       const meta = { size: content.length, modifiedAt: null };
-      if (!state.seenFiles.has(remotePath) || fileNeedsDownload(remotePath, meta)) {
-        downloaded++;
-        state.seenFiles.add(remotePath);
-      }
-
+      state.seenFiles.add(remotePath);
       const events = processFile(remotePath, content, meta);
       totalEvents += events.length;
       if (events.length) {
@@ -290,7 +268,7 @@ async function pollOnce() {
       }
     }
 
-    dbg("poll:end", { cycle: state.cycle, downloaded, totalEvents, discovered: discovered.length, visitedDirs: state.visitedDirs.size });
+    dbg("poll:end", { cycle: state.cycle, totalEvents, discovered: discovered.length, visitedDirs: state.visitedDirs.size });
   } finally {
     state.inFlight = false;
   }
