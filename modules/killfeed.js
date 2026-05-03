@@ -63,18 +63,33 @@ function cleanNpcName(name) {
   return n;
 }
 
-function parseAdmKillLine(line) {
-  if (!line.includes("killed by")) return null;
+function parseKillLine(line) {
+  const hasKill = /killed by|committed suicide|bled out|died\./i.test(line);
+  if (!hasKill) return null;
+
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
-  const victimRaw = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
-  const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
-  const weaponMatch = line.match(/with\s+(.+?)\s+from\s+[0-9.]+\s+meters/i);
+  const victimMatch = line.match(/Player\s+"([^"]*)"/i);
+  const killerMatch = line.match(/killed by\s+(?:Player\s+"([^"]*)"|Infected|Wolf|Bear|Zombie|Fireplace|Vehicle|FallDamage|Explosion|Gas)/i);
+  const weaponMatch = line.match(/\bwith\s+(.+?)(?:\s+from\s+[0-9.]+\s+meters|\s*$)/i);
   const distanceMatch = line.match(/from\s+([0-9.]+)\s+meters/i);
+
+  if (!/killed by/i.test(line)) {
+    return {
+      type: "death",
+      time: timeMatch ? timeMatch[1] : "unknown time",
+      victim: cleanNpcName(victimMatch?.[1] || "Unknown NPC"),
+      killer: "Environment",
+      weapon: "Unknown",
+      distance: "0.0",
+      raw: line
+    };
+  }
+
   return {
     type: "kill",
     time: timeMatch ? timeMatch[1] : "unknown time",
-    victim: cleanNpcName(victimRaw?.[1] || "Unknown NPC"),
-    killer: killerMatch?.[1] || "Unknown",
+    victim: cleanNpcName(victimMatch?.[1] || "Unknown NPC"),
+    killer: cleanNpcName(killerMatch?.[1] || "Unknown"),
     weapon: weaponMatch?.[1]?.trim() || "Unknown",
     distance: distanceMatch?.[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
     raw: line
@@ -82,6 +97,7 @@ function parseAdmKillLine(line) {
 }
 
 function buildEventMessage(event) {
+  if (event.type === "death") return `☠️ **${event.victim}** died | ${event.time}`;
   return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
 }
 
@@ -119,7 +135,6 @@ function collectPrimaryCandidates(serverJson) {
     const base = String(raw || "").trim();
     if (!base) continue;
     const filename = base.split("/").pop();
-
     out.push(`/games/${username}/noftp/dayzps/config/${filename}`);
     out.push(`/games/${username}/noftp/${base.replace(/^\/+/, "")}`);
     out.push(base);
@@ -189,7 +204,7 @@ function processFile(remotePath, content) {
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
-    const event = parseAdmKillLine(line);
+    const event = parseKillLine(line);
     if (!event) continue;
     const key = `${remotePath}|${event.raw}`;
     if (state.seenEventKeys.has(key)) continue;
@@ -259,10 +274,7 @@ async function run() {
 }
 
 function start() {
-  if (state.started) {
-    log("start:ignored", { reason: "already-started" });
-    return;
-  }
+  if (state.started) return;
   state.started = true;
   return run().catch(err => {
     warn("run:error", err.message);
