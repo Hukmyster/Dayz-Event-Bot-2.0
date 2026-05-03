@@ -102,17 +102,14 @@ async function nitradoRequest(url, opts = {}) {
       ...(opts.headers || {})
     }
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Nitrado HTTP ${res.status}: ${text.slice(0, 250)}`);
-  }
-  return res;
+  const text = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`Nitrado HTTP ${res.status}: ${text.slice(0, 250)}`);
+  try { return JSON.parse(text); } catch { return text; }
 }
 
 async function fetchGameServerInfo() {
   const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers`;
-  const res = await nitradoRequest(url);
-  return await res.json();
+  return await nitradoRequest(url);
 }
 
 function collectPrimaryCandidates(gameServerJson) {
@@ -133,10 +130,7 @@ function collectPrimaryCandidates(gameServerJson) {
     }
   }
 
-  return {
-    username,
-    paths: [...new Set(candidates.map(normalizePath))]
-  };
+  return { username, paths: [...new Set(candidates.map(normalizePath))] };
 }
 
 function extractEntries(json) {
@@ -160,9 +154,7 @@ function isDir(entry) {
 
 async function listDirectory(dir) {
   const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/list?dir=${encodeURIComponent(dir)}`;
-  const res = await nitradoRequest(url);
-  const json = await res.json();
-  return extractEntries(json);
+  return extractEntries(await nitradoRequest(url));
 }
 
 async function discoverFromDir(dir, depth = 0) {
@@ -183,7 +175,6 @@ async function discoverFromDir(dir, depth = 0) {
   }
 
   let loggedHit = false;
-
   for (const entry of Array.isArray(entries) ? entries : []) {
     const p = entryPath(entry, ndir);
     const name = String(entry?.name || path.posix.basename(p) || "").trim();
@@ -200,9 +191,7 @@ async function discoverFromDir(dir, depth = 0) {
 
     if (isDir(entry)) {
       const child = p && p !== ndir ? p : joinChild(ndir, name);
-      if (child && child !== ndir) {
-        await discoverFromDir(child, depth + 1);
-      }
+      if (child && child !== ndir) await discoverFromDir(child, depth + 1);
     }
   }
 }
@@ -210,9 +199,7 @@ async function discoverFromDir(dir, depth = 0) {
 async function fallbackRecursiveScan() {
   state.visitedDirs.clear();
   state.discoveredPaths.clear();
-  for (const root of ROOT_DIRS) {
-    await discoverFromDir(root, 0);
-  }
+  for (const root of ROOT_DIRS) await discoverFromDir(root, 0);
   return [...state.discoveredPaths].sort();
 }
 
@@ -240,30 +227,21 @@ async function discoverAllPaths() {
 
 async function getDownloadToken(filePath) {
   const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`;
-  const res = await nitradoRequest(url);
-  const json = await res.json();
-  const tokenUrl = json?.data?.token?.url || null;
-  const token = json?.data?.token?.token || null;
-  return { json, tokenUrl, token };
+  const json = await nitradoRequest(url);
+  return {
+    tokenUrl: json?.data?.token?.url || null,
+    token: json?.data?.token?.token || null,
+    raw: json
+  };
 }
 
 async function fetchFileViaToken(tokenUrl, token) {
   const u = new URL(tokenUrl);
   if (token) u.searchParams.set("token", token);
-
-  const res = await fetch(u.toString(), {
-    headers: {
-      Authorization: `Bearer ${API_TOKEN}`,
-      Accept: "application/octet-stream,*/*"
-    }
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Token fetch HTTP ${res.status}: ${text.slice(0, 250)}`);
-  }
-
-  return await res.text();
+  const res = await fetch(u.toString(), { headers: { Authorization: `Bearer ${API_TOKEN}`, Accept: "application/octet-stream,*/*" } });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`Token fetch HTTP ${res.status}: ${text.slice(0, 250)}`);
+  return text;
 }
 
 function candidateReadPaths(originalPath, username) {
@@ -286,8 +264,9 @@ async function readRemoteFileWithFallbacks(remotePath, username) {
     try {
       log("read:attempt", { path: candidate });
       const { tokenUrl, token } = await getDownloadToken(candidate);
+      log("read:token-response", { path: candidate, hasTokenUrl: !!tokenUrl, hasToken: !!token });
       if (!tokenUrl || !token) throw new Error("No token URL/token returned");
-      log("read:token", { path: candidate, tokenUrl: tokenUrl.slice(0, 80) });
+      log("read:token", { path: candidate, tokenUrl: tokenUrl.slice(0, 100) });
       const content = await fetchFileViaToken(tokenUrl, token);
       return { pathUsed: candidate, content };
     } catch (err) {
@@ -313,11 +292,9 @@ function processFile(remotePath, content) {
     if (!line) continue;
     const event = parseAdmKillLine(line);
     if (!event) continue;
-
     const key = `${remotePath}|${event.raw}`;
     if (state.seenEventKeys.has(key)) continue;
     state.seenEventKeys.add(key);
-
     events.push({ ...event, file: remotePath });
   }
 
@@ -328,11 +305,7 @@ function processFile(remotePath, content) {
 async function safePostWebhook(payload) {
   if (!WEBHOOK_URL) return false;
   try {
-    const res = await fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    const res = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     return res.ok;
   } catch {
     return false;
@@ -340,19 +313,11 @@ async function safePostWebhook(payload) {
 }
 
 async function handleEvents(events) {
-  for (const evt of events) {
-    await safePostWebhook({ content: buildEventMessage(evt) });
-  }
+  for (const evt of events) await safePostWebhook({ content: buildEventMessage(evt) });
 }
 
 async function run() {
-  dbg("START", {
-    debug: DEBUG,
-    webhookEnabled: !!WEBHOOK_URL,
-    source: "nitrado-api",
-    serviceId: SERVICE_ID,
-    startedAt: state.startedAt
-  });
+  dbg("START", { debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, source: "nitrado-api", serviceId: SERVICE_ID, startedAt: state.startedAt });
 
   const discovered = await discoverAllPaths();
   const readable = [];
