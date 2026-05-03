@@ -7,33 +7,33 @@ const EVENTFEED_DEBUG = String(process.env.EVENTFEED_DEBUG || "false").toLowerCa
 const MAX_FILES = 5;
 
 const TRIGGERS = {
-  "lootmax 1": { type: "Crate", location: "NEAF", coords: "12326.443 141.268 12445.012" },
-  "lootmax 2": { type: "Crate", location: "SWAF", coords: "5049.104 10.768 2440.176" },
-  "lootmax 3": { type: "Crate", location: "NWAF", coords: "4704.286 340.096 9823.721" },
+  1: { type: "Crate", location: "NEAF", coords: "12326.443 141.268 12445.012" },
+  2: { type: "Crate", location: "SWAF", coords: "5049.104 10.768 2440.176" },
+  3: { type: "Crate", location: "NWAF", coords: "4704.286 340.096 9823.721" },
 
-  "lootmax 4": { type: "Horde", location: "Cherno West", coords: "6561.959 2461.536" },
-  "lootmax 5": { type: "Horde", location: "Cherno East", coords: "7624.959 3225.536" },
-  "lootmax 6": { type: "Horde", location: "Berezino West", coords: "12275.959 9574.536" },
-  "lootmax 7": { type: "Horde", location: "Berezino East", coords: "12840.959 9812.536" },
-  "lootmax 8": { type: "Horde", location: "Electro", coords: "10489.959 2341.536" },
-  "lootmax 9": { type: "Horde", location: "Svet", coords: "13946.959 13236.536" },
-  "lootmax 10": { type: "Horde", location: "Novo", coords: "11495.959 14337.536" },
-  "lootmax 11": { type: "Horde", location: "Sevrograd", coords: "7730.959 12587.536" },
-  "lootmax 12": { type: "Horde", location: "Novoya", coords: "3455.959 13057.536" },
-  "lootmax 13": { type: "Horde", location: "Lopatino", coords: "2770.959 9938.536" },
-  "lootmax 14": { type: "Horde", location: "Pustoshka", coords: "3054.959 7865.536" },
-  "lootmax 15": { type: "Horde", location: "Pavlovo", coords: "1726.959 3871.536" },
+  4: { type: "Horde", location: "Cherno West", coords: "6561.959 2461.536" },
+  5: { type: "Horde", location: "Cherno East", coords: "7624.959 3225.536" },
+  6: { type: "Horde", location: "Berezino West", coords: "12275.959 9574.536" },
+  7: { type: "Horde", location: "Berezino East", coords: "12840.959 9812.536" },
+  8: { type: "Horde", location: "Electro", coords: "10489.959 2341.536" },
+  9: { type: "Horde", location: "Svet", coords: "13946.959 13236.536" },
+  10: { type: "Horde", location: "Novo", coords: "11495.959 14337.536" },
+  11: { type: "Horde", location: "Sevrograd", coords: "7730.959 12587.536" },
+  12: { type: "Horde", location: "Novoya", coords: "3455.959 13057.536" },
+  13: { type: "Horde", location: "Lopatino", coords: "2770.959 9938.536" },
+  14: { type: "Horde", location: "Pustoshka", coords: "3054.959 7865.536" },
+  15: { type: "Horde", location: "Pavlovo", coords: "1726.959 3871.536" },
 
-  "lootmax 16": { type: "AirDrop", location: "VMC", coords: "4293.901 314.482 8319.655" },
-  "lootmax 17": { type: "AirDrop", location: "Altar", coords: "8164.277 474.996 9092.780" },
-  "lootmax 18": { type: "AirDrop", location: "MB Kamensk", coords: "7999.17 341.301 14633.3" },
-  "lootmax 19": { type: "AirDrop", location: "Tisy", coords: "1647.59 452.303 14007.204" },
-  "lootmax 20": { type: "AirDrop", location: "NWAF", coords: "4166.85 339.750 10741.5" },
-  "lootmax 21": { type: "AirDrop", location: "NEAF", coords: "12383 141.924 12410" },
-  "lootmax 22": { type: "AirDrop", location: "Balota", coords: "5013.265 10.456 2472.806" },
-  "lootmax 23": { type: "AirDrop", location: "Pavlovo", coords: "2075.365 110.525 3502.136" },
-  "lootmax 24": { type: "AirDrop", location: "Green Mountain", coords: "3703.102 402.9561 5993.007" },
-  "lootmax 25": { type: "AirDrop", location: "Myshkino West Tents", coords: "1160.616 186.296 7252.222" }
+  16: { type: "AirDrop", location: "VMC", coords: "4293.901 314.482 8319.655" },
+  17: { type: "AirDrop", location: "Altar", coords: "8164.277 474.996 9092.780" },
+  18: { type: "AirDrop", location: "MB Kamensk", coords: "7999.17 341.301 14633.3" },
+  19: { type: "AirDrop", location: "Tisy", coords: "1647.59 452.303 14007.204" },
+  20: { type: "AirDrop", location: "NWAF", coords: "4166.85 339.750 10741.5" },
+  21: { type: "AirDrop", location: "NEAF", coords: "12383 141.924 12410" },
+  22: { type: "AirDrop", location: "Balota", coords: "5013.265 10.456 2472.806" },
+  23: { type: "AirDrop", location: "Pavlovo", coords: "2075.365 110.525 3502.136" },
+  24: { type: "AirDrop", location: "Green Mountain", coords: "3703.102 402.9561 5993.007" },
+  25: { type: "AirDrop", location: "Myshkino West Tents", coords: "1160.616 186.296 7252.222" }
 };
 
 const state = {
@@ -63,35 +63,32 @@ function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
 
-function buildMessage(triggerKey) {
-  const entry = TRIGGERS[triggerKey];
+function buildMessage(triggerNum) {
+  const entry = TRIGGERS[triggerNum];
   if (!entry) return null;
   return `A ${entry.type} has been spotted in ${entry.location} ${entry.coords} get there quick before you miss out!`;
 }
 
 function parseTrigger(line) {
-  const m = line.match(/\blootmax\s*(?:[1-9]|1[0-9]|2[0-5])\b/i);
+  const m = line.match(/lootmax:\s*(\d+)/i);
   if (!m) return null;
-  const key = `lootmax ${m[0].match(/\d+/)[0]}`;
-  return key.toLowerCase();
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
 }
 
 function parseEventLine(line) {
-  const triggerKey = parseTrigger(line);
-  if (!triggerKey) return null;
-
-  const trigger = TRIGGERS[triggerKey];
-  if (!trigger) return null;
+  const triggerNum = parseTrigger(line);
+  if (!triggerNum || !TRIGGERS[triggerNum]) return null;
 
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
   return {
     time: timeMatch ? timeMatch[1] : "unknown",
-    trigger: triggerKey,
-    triggerLabel: `lootmax ${triggerKey.split(" ")[1]}`,
-    type: trigger.type,
-    location: trigger.location,
-    coords: trigger.coords,
-    message: buildMessage(triggerKey),
+    trigger: `lootmax: ${triggerNum}`,
+    triggerNum,
+    type: TRIGGERS[triggerNum].type,
+    location: TRIGGERS[triggerNum].location,
+    coords: TRIGGERS[triggerNum].coords,
+    message: buildMessage(triggerNum),
     raw: line
   };
 }
@@ -105,7 +102,7 @@ function formatEmbed(evt) {
     title: "📡 EVENT DETECTED",
     color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
     fields: [
-      { name: "Trigger", value: evt.triggerLabel || evt.trigger || "unknown", inline: true },
+      { name: "Trigger", value: evt.trigger || "unknown", inline: true },
       { name: "Type", value: evt.type || "unknown", inline: true },
       { name: "Location", value: evt.location || "unknown", inline: true },
       { name: "Coords", value: evt.coords || "unknown", inline: false },
