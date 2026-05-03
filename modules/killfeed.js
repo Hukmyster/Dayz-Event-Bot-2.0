@@ -12,7 +12,6 @@ const MAX_DIRS = 5000;
 const state = {
   visitedDirs: new Set(),
   discoveredPaths: new Set(),
-  attemptedDirs: new Set(),
   seenEventKeys: new Set(),
   fileMeta: new Map(),
   startedAt: new Date().toISOString()
@@ -173,7 +172,6 @@ async function discoverFromDir(dir, depth = 0) {
   if (state.visitedDirs.size >= MAX_DIRS) return;
 
   state.visitedDirs.add(ndir);
-  state.attemptedDirs.add(ndir);
   log("scan:attempt", { dir: ndir, depth });
 
   let entries = [];
@@ -244,36 +242,41 @@ async function getDownloadToken(filePath) {
   const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`;
   const res = await nitradoRequest(url);
   const json = await res.json();
-  const tokenUrl = json?.data?.token?.url || json?.data?.url || null;
-  return { json, tokenUrl };
+  const tokenUrl = json?.data?.token?.url || null;
+  const token = json?.data?.token?.token || null;
+  return { json, tokenUrl, token };
 }
 
-async function fetchFileViaToken(tokenUrl) {
-  const res = await fetch(tokenUrl, {
+async function fetchFileViaToken(tokenUrl, token) {
+  const u = new URL(tokenUrl);
+  if (token) u.searchParams.set("token", token);
+
+  const res = await fetch(u.toString(), {
     headers: {
       Authorization: `Bearer ${API_TOKEN}`,
       Accept: "application/octet-stream,*/*"
     }
   });
+
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`Token fetch HTTP ${res.status}: ${text.slice(0, 250)}`);
   }
+
   return await res.text();
 }
 
 function candidateReadPaths(originalPath, username) {
   const original = normalizePath(originalPath);
   const filename = path.posix.basename(original);
-  const dirs = new Set([
+  return [...new Set([
     original,
     `/games/${username}/noftp/${filename}`,
     `/games/${username}/noftp/${original.replace(/^\/+/, "")}`,
     `/dayzps/config/${filename}`,
     `/dayzps/storage/${filename}`,
     `/server/${filename}`
-  ]);
-  return [...dirs].filter(Boolean);
+  ].filter(Boolean))];
 }
 
 async function readRemoteFileWithFallbacks(remotePath, username) {
@@ -282,10 +285,10 @@ async function readRemoteFileWithFallbacks(remotePath, username) {
   for (const candidate of candidates) {
     try {
       log("read:attempt", { path: candidate });
-      const { tokenUrl } = await getDownloadToken(candidate);
-      if (!tokenUrl) throw new Error("No token URL returned");
+      const { tokenUrl, token } = await getDownloadToken(candidate);
+      if (!tokenUrl || !token) throw new Error("No token URL/token returned");
       log("read:token", { path: candidate, tokenUrl: tokenUrl.slice(0, 80) });
-      const content = await fetchFileViaToken(tokenUrl);
+      const content = await fetchFileViaToken(tokenUrl, token);
       return { pathUsed: candidate, content };
     } catch (err) {
       warn("read:failed", { path: candidate, error: err.message });
