@@ -1,241 +1,425 @@
-require("dotenv").config();
-
 const fs = require("fs");
 const path = require("path");
-const https = require("https");
 const { Client } = require("basic-ftp");
 
-const LOCAL_DIR = path.resolve("./logs");
-const LOCAL_LOG = path.join(LOCAL_DIR, "log.ADM");
-const STAGING_LOG = path.join(LOCAL_DIR, "serverlog.ADM");
+const LOOP_INTERVAL = Number(process.env.KILLFEED_INTERVAL_MS || 5 * 60 * 1000);
+const FTP_HOST = process.env.FTP_HOST;
+const FTP_USER = process.env.FTP_USER;
+const FTP_PASS = process.env.FTP_PASS;
+const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "true";
+const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
+const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
+const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
+const FTP_TIMEOUT_MS = 30_000;
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const state = {
+  running: false,
+  timer: null,
+  inFlight: false,
+  retryQueue: new Set(),
+  seenFiles: new Set(),
+  fileMeta: new Map(),
+  lastEvents: new Set(),
+  cycle: 0,
+  startedAt: new Date().toISOString()
+};
 
-let running = false;
-let started = false;
-
-function ensureLogsDir() {
-  fs.mkdirSync(LOCAL_DIR, { recursive: true });
+function dbg(tag, data) {
+  const ts = new Date().toISOString();
+  const dataStr = data !== undefined
+    ? (typeof data === "object" ? JSON.stringify(data) : String(data))
+    : "";
+  console.log(`[killfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
 }
 
-function httpGetJson(url, headers = {}) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers }, res => {
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", chunk => body += chunk);
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(body));
-        } catch (e) {
-          reject(new Error(`Bad JSON from ${url}: ${e.message}`));
-        }
+function log(tag, data) {
+  if (DEBUG) dbg(tag, data);
+}
+
+function warn(tag, data) {
+  const ts = new Date().toISOString();
+  const dataStr = data !== undefined
+    ? (typeof data === "object" ? JSON.stringify(data) : String(data))
+    : "";
+  console.warn(`[killfeed][${ts}][WARN:${tag}]${dataStr ? " " + dataStr : ""}`);
+}
+
+function ensureConfig() {
+  const missing = [];
+  if (!FTP_HOST) missing.push("FTP_HOST");
+  if (!FTP_USER) missing.push("FTP_USER");
+  if (!FTP_PASS) missing.push("FTP_PASS");
+  if (missing.length) throw new Error(`Missing killfeed env vars: ${missing.join(", ")}`);
+}
+
+function joinRemote(dir, name) {
+  const d = String(dir || "").replace(/\/+$|\/$/, "");
+  return `${d}/${name}`;
+}
+
+async function listAdmFiles() {
+  const client = new Client();
+  client.ftp.timeout = FTP_TIMEOUT_MS;
+  log("ftp:list:start", { host: FTP_HOST, user: FTP_USER, secure: FTP_SECURE, dir: REMOTE_DIR });
+  try {
+    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+    log("ftp:list:connected", { host: FTP_HOST });
+
+    const list = await client.list(REMOTE_DIR);
+    log("ftp:list:raw", { totalEntries: list.length, dir: REMOTE_DIR });
+
+    list.forEach(item => {
+      log("ftp:list:entry", {
+        name: item.name,
+        isFile: item.isFile,
+        size: item.size,
+        modifiedAt: item.modifiedAt ? item.modifiedAt.toISOString() : null,
+        type: item.type
       });
     });
-    req.on("error", reject);
-  });
-}
 
-function countLines(filePath) {
-  if (!fs.existsSync(filePath)) return 0;
-  const txt = fs.readFileSync(filePath, "utf8");
-  if (!txt) return 0;
-  return txt.split(/\r?\n/).filter(Boolean).length;
-}
+    const items = list
+      .filter(item => item.isFile && item.name.toUpperCase().endsWith(".ADM"))
+      .map(item => ({
+        name: item.name,
+        remotePath: joinRemote(REMOTE_DIR, item.name),
+        size: item.size ?? -1,
+        modifiedAt: item.modifiedAt ? item.modifiedAt.toISOString() : null,
+      }));
 
-function getAdmRegex() {
-  return /\.ADM$/i;
-}
-
-async function listFiles(remoteDir) {
-  const serviceId = process.env.SERVICE_ID;
-  const token = process.env.API_TOKEN;
-  const url = `https://api.nitrado.net/services/${serviceId}/gameservers/file_server/list?dir=${encodeURIComponent(remoteDir)}`;
-  const res = await httpGetJson(url, {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/json"
-  });
-  return res.data?.data?.entries || [];
-}
-
-async function downloadFile(remotePath) {
-  const client = new Client();
-  client.ftp.verbose = false;
-  try {
-    await client.access({
-      host: process.env.FTP_HOST,
-      user: process.env.FTP_USER,
-      password: process.env.FTP_PASS,
-      secure: String(process.env.FTP_SECURE).toLowerCase() === "true"
-    });
-    await client.downloadTo(STAGING_LOG, remotePath);
+    log("ftp:list:done", { admCount: items.length, files: items.map(i => `${i.remotePath} size=${i.size} mod=${i.modifiedAt}`) });
+    return items;
   } finally {
-    client.close();
+    try { client.close(); } catch {}
+    log("ftp:list:closed", null);
   }
 }
 
-function normalizeDir(dir) {
-  if (!dir) return "";
-  let out = String(dir).trim();
-  if (!out.startsWith("/")) out = `/${out}`;
-  out = out.replace(/\/+/g, "/");
-  if (out.length > 1 && out.endsWith("/")) out = out.slice(0, -1);
-  return out;
-}
-
-function candidateDirs() {
-  const base = normalizeDir(process.env.KILLFEED_REMOTE_DIR || "");
-  const dirs = [];
-  if (base) dirs.push(base);
-  if (base) dirs.push(`${base}/logs`);
-  dirs.push("/logs");
-  dirs.push("/");
-  return [...new Set(dirs)];
-}
-
-async function recursiveFindAdm(startDir, depth = 0, maxDepth = 5, seen = new Set()) {
-  const dir = normalizeDir(startDir);
-  if (!dir || seen.has(dir) || depth > maxDepth) return [];
-  seen.add(dir);
-
-  let entries = [];
+async function readRemoteFile(remotePath) {
+  const client = new Client();
+  client.ftp.timeout = FTP_TIMEOUT_MS;
+  const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
+  log("ftp:download:start", { remotePath, localTmp });
   try {
-    entries = await listFiles(dir);
-  } catch {
-    return [];
+    await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
+    log("ftp:download:connected", { remotePath });
+    await client.downloadTo(localTmp, remotePath);
+    const buf = fs.readFileSync(localTmp);
+    const content = buf.toString("utf8");
+    const rawLines = content.split(/\r?\n/);
+    const trailingBlank = rawLines[rawLines.length - 1] === "";
+    log("ftp:download:done", {
+      remotePath,
+      bytes: buf.length,
+      rawLineCount: rawLines.length,
+      trailingBlankLine: trailingBlank,
+      firstLine: rawLines[0] ? rawLines[0].slice(0, 80) : "(empty)",
+      lastNonEmptyLine: (rawLines.filter(l => l.trim()).slice(-1)[0] || "").slice(0, 80)
+    });
+    return content;
+  } finally {
+    try { fs.unlinkSync(localTmp); } catch {}
+    try { client.close(); } catch {}
+    log("ftp:download:closed", { remotePath });
   }
-
-  const results = [];
-  for (const e of entries) {
-    const name = e?.name;
-    const type = e?.type;
-    if (!name) continue;
-
-    const fullPath = `${dir === "/" ? "" : dir}/${name}`.replace(/\/+/g, "/");
-
-    if (type === "file" && /\.ADM$/i.test(name)) {
-      results.push({ dir, name, fullPath, entry: e });
-    }
-
-    if (type === "dir" || type === "folder") {
-      const nested = await recursiveFindAdm(fullPath, depth + 1, maxDepth, seen);
-      if (nested.length) results.push(...nested);
-    }
-  }
-
-  return results;
 }
 
-async function findWorkingAdm() {
-  const dirs = candidateDirs();
-  for (const dir of dirs) {
-    const found = await recursiveFindAdm(dir);
-    if (found.length) {
-      found.sort((a, b) => String(b.name).localeCompare(String(a.name)));
-      return found[0];
-    }
-  }
-  return null;
+function normalizeLine(line) {
+  return String(line || "").replace(/\r$/, "").trim();
 }
 
-async function mirrorLatest() {
-  const found = await findWorkingAdm();
-  if (!found) throw new Error("No ADM file found in any candidate directory");
-  console.log(`[proof] found path: ${found.fullPath}`);
-  await downloadFile(found.fullPath);
-  fs.copyFileSync(STAGING_LOG, LOCAL_LOG);
-  const stats = fs.statSync(LOCAL_LOG);
+function fingerprint(content) {
+  const raw = content.split(/\r?\n/);
+  const lines = raw[raw.length - 1] === "" ? raw.slice(0, -1) : raw;
   return {
-    name: found.name,
-    bytes: stats.size,
-    lines: countLines(LOCAL_LOG),
-    remoteDir: found.dir,
-    remotePath: found.fullPath
+    lineCount: lines.length,
+    lastLine: normalizeLine(lines[lines.length - 1] || ""),
+    firstLine: normalizeLine(lines[0] || "")
   };
 }
 
-async function loopWatcher() {
-  ensureLogsDir();
+function getState(file) {
+  if (!state.fileMeta.has(file)) {
+    state.fileMeta.set(file, { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null });
+  }
+  return state.fileMeta.get(file);
+}
 
-  const cycleMs = parseInt(process.env.KILLFEED_INTERNAL_MS || "35000", 10);
-  const staleLimit = parseInt(process.env.KILLFEED_STALE_LIMIT || "2", 10);
-  const standbyAfterSuccess = String(process.env.KILLFEED_STANDBY_AFTER_SUCCESS || "true").toLowerCase() === "true";
+function fileNeedsDownload(remotePath, ftpItem) {
+  const prev = getState(remotePath);
+  const isNew = !state.seenFiles.has(remotePath);
 
-  let lastName = null;
-  let lastBytes = 0;
-  let lastLines = 0;
-  let staleHits = 0;
-  let everSucceeded = false;
-  let lastObservedLines = 0;
-
-  console.log("[proof] starting ADM watcher");
-
-  try {
-    const snap = await mirrorLatest();
-    lastName = snap.name;
-    lastBytes = snap.bytes;
-    lastLines = snap.lines;
-    lastObservedLines = snap.lines;
-    everSucceeded = true;
-    console.log(`[BRAg] brag: initial ADM snapshot ok | dir=${snap.remoteDir} file=${lastName} bytes=${lastBytes} lines=${lastLines}`);
-  } catch (err) {
-    console.log("[proof] initial snapshot failed", err.message || err);
+  if (isNew) {
+    log("download:decision", { file: remotePath, reason: "NEW_FILE", ftpSize: ftpItem.size, ftpMod: ftpItem.modifiedAt });
+    return true;
   }
 
-  while (running) {
-    await sleep(cycleMs);
+  if (ftpItem.size > 0 && prev.size >= 0 && ftpItem.size > prev.size) {
+    log("download:decision", { file: remotePath, reason: "SIZE_GREW", prevSize: prev.size, nowSize: ftpItem.size });
+    return true;
+  }
 
-    try {
-      const snap = await mirrorLatest();
-      const newLinesThisCycle = Math.max(0, snap.lines - lastObservedLines);
+  if (ftpItem.modifiedAt && prev.modifiedAt && ftpItem.modifiedAt !== prev.modifiedAt) {
+    log("download:decision", { file: remotePath, reason: "MODIFIED_AT_CHANGED", prev: prev.modifiedAt, now: ftpItem.modifiedAt });
+    return true;
+  }
 
-      console.log(`[proof] files found: 1`);
-      console.log(`[proof] lines found: ${snap.lines}`);
-      console.log(`[proof] new lines this cycle: ${newLinesThisCycle}`);
+  if (ftpItem.size <= 0 && !ftpItem.modifiedAt) {
+    log("download:decision", { file: remotePath, reason: "NO_METADATA_FALLBACK" });
+    return true;
+  }
 
-      const nameChanged = snap.name !== lastName;
-      const grew = snap.bytes > lastBytes || snap.lines > lastLines;
+  log("download:decision", { file: remotePath, reason: "SKIP_UNCHANGED", ftpSize: ftpItem.size, prevSize: prev.size, ftpMod: ftpItem.modifiedAt, prevMod: prev.modifiedAt });
+  return false;
+}
 
-      if (nameChanged || grew) {
-        staleHits = 0;
-        const reason = nameChanged ? "new ADM file" : "new lines in existing ADM";
-        console.log(`[BRAg] brag: ${reason} | dir=${snap.remoteDir} file=${snap.name} bytes=${snap.bytes} lines=${snap.lines}`);
-        lastName = snap.name;
-        lastBytes = snap.bytes;
-        lastLines = snap.lines;
-        lastObservedLines = snap.lines;
-        everSucceeded = true;
-      } else {
-        staleHits += 1;
-        if (staleHits >= staleLimit) {
-          staleHits = 0;
-          if (standbyAfterSuccess && everSucceeded) {
-            console.log("[proof] standby after success");
-          }
-        }
-      }
-    } catch (err) {
-      console.log("[proof] poll failed", err.message || err);
-    }
+async function safePostWebhook(payload) {
+  if (!WEBHOOK_URL) {
+    log("webhook:skip", "no WEBHOOK_URL configured");
+    return false;
+  }
+  log("webhook:send", { contentPreview: (payload.content || "").slice(0, 80) });
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    log("webhook:result", { status: res.status, ok: res.ok });
+    if (!res.ok) warn("webhook:http-error", { status: res.status });
+    return res.ok;
+  } catch (err) {
+    warn("webhook:exception", err.message);
+    return false;
   }
 }
 
-async function start() {
-  if (started) return;
-  started = true;
-  running = true;
-  try {
-    await loopWatcher();
-  } catch (err) {
-    console.error("[proof] fatal", err);
+function cleanNpcName(name) {
+  const n = String(name || "").trim();
+  if (!n || n === `"` || n === `""`) return "Unknown NPC";
+  return n;
+}
+
+function buildEventMessage(event) {
+  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
+}
+
+function parseAdmKillLine(line) {
+  if (!line.includes("killed by")) return null;
+
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
+  const victimRaw = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
+  const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
+  const weaponMatch = line.match(/with\s+(.+?)\s+from\s+[0-9.]+\s+meters/i);
+  const distanceMatch = line.match(/from\s+([0-9.]+)\s+meters/i);
+
+  return {
+    type: "kill",
+    time: timeMatch ? timeMatch[1] : "unknown time",
+    victim: cleanNpcName(victimRaw && victimRaw[1] ? victimRaw[1] : "Unknown NPC"),
+    killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
+    weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
+    distance: distanceMatch && distanceMatch[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
+    raw: line
+  };
+}
+
+function processFile(remotePath, content, ftpItem) {
+  const current = fingerprint(content);
+  const previous = getState(remotePath);
+  const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
+  const reset = rotated || (
+    previous.lastLine &&
+    current.firstLine &&
+    previous.lastLine !== current.firstLine &&
+    current.lineCount <= previous.lineCount
+  );
+
+  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+  const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
+  const events = [];
+
+  log("process:file", {
+    file: remotePath,
+    previousLines: previous.lineCount,
+    currentLines: current.lineCount,
+    newLines: Math.max(0, lines.length - startIndex),
+    startIndex,
+    rotated,
+    reset,
+    prevLastLine: previous.lastLine ? previous.lastLine.slice(0, 60) : "(none)",
+    currFirstLine: current.firstLine ? current.firstLine.slice(0, 60) : "(none)"
+  });
+
+  let scanned = 0;
+  let matched = 0;
+  let duped = 0;
+
+  for (let i = startIndex; i < lines.length; i++) {
+    const line = normalizeLine(lines[i]);
+    if (!line) continue;
+    scanned++;
+
+    const event = parseAdmKillLine(line);
+    if (!event) continue;
+    matched++;
+
+    const dedupeKey = `${remotePath}|${event.type}|${event.raw}`;
+    if (state.lastEvents.has(dedupeKey)) {
+      duped++;
+      log("process:dedupe", { file: remotePath, line: line.slice(0, 60) });
+      continue;
+    }
+
+    state.lastEvents.add(dedupeKey);
+    if (state.lastEvents.size > 2000) {
+      const first = state.lastEvents.values().next().value;
+      if (first) state.lastEvents.delete(first);
+    }
+
+    log("process:event-found", { file: remotePath, killer: event.killer, victim: event.victim, weapon: event.weapon });
+    events.push({ ...event, file: remotePath });
   }
+
+  log("process:summary", { file: remotePath, scanned, matched, duped, emitted: events.length });
+
+  state.fileMeta.set(remotePath, {
+    ...current,
+    size: ftpItem.size,
+    modifiedAt: ftpItem.modifiedAt,
+  });
+
+  return events;
+}
+
+async function handleEvents(events) {
+  for (const evt of events) {
+    const content = buildEventMessage(evt);
+    log("event:dispatch", { killer: evt.killer, victim: evt.victim, weapon: evt.weapon });
+    await safePostWebhook({ content });
+  }
+}
+
+async function pollOnce() {
+  if (state.inFlight) {
+    warn("poll:skip", `cycle ${state.cycle + 1} skipped — previous poll still running`);
+    return;
+  }
+  state.inFlight = true;
+  state.cycle += 1;
+  dbg(`poll:start`, { cycle: state.cycle, seenFiles: state.seenFiles.size, retryQueue: state.retryQueue.size });
+
+  try {
+    ensureConfig();
+
+    let ftpItems;
+    try {
+      ftpItems = await listAdmFiles();
+    } catch (err) {
+      warn("poll:list-failed", err.message);
+      return;
+    }
+
+    const ftpMap = new Map(ftpItems.map(i => [i.remotePath, i]));
+
+    for (const retryPath of state.retryQueue) {
+      if (!ftpMap.has(retryPath)) {
+        log("poll:retry-inject", retryPath);
+        ftpMap.set(retryPath, { name: path.basename(retryPath), remotePath: retryPath, size: -1, modifiedAt: null });
+      }
+    }
+    state.retryQueue.clear();
+
+    dbg("poll:targets", { cycle: state.cycle, remoteAdmCount: ftpItems.length, totalTargets: ftpMap.size });
+
+    let downloaded = 0;
+    let skipped = 0;
+    let totalEvents = 0;
+
+    for (const [remotePath, ftpItem] of ftpMap) {
+      if (!fileNeedsDownload(remotePath, ftpItem)) {
+        skipped++;
+        continue;
+      }
+
+      let content = null;
+      try {
+        content = await readRemoteFile(remotePath);
+        downloaded++;
+      } catch (err) {
+        warn("poll:read-failed", { file: remotePath, error: err.message });
+        if (String(err.message || "").includes("550")) state.retryQueue.add(remotePath);
+        continue;
+      }
+
+      if (!state.seenFiles.has(remotePath)) {
+        state.seenFiles.add(remotePath);
+        dbg("poll:new-file-seen", remotePath);
+      }
+
+      const events = processFile(remotePath, content, ftpItem);
+      totalEvents += events.length;
+
+      if (events.length) {
+        dbg("poll:events", { file: remotePath, count: events.length });
+        await handleEvents(events);
+      } else {
+        log("poll:no-events", remotePath);
+      }
+    }
+
+    dbg("poll:end", {
+      cycle: state.cycle,
+      downloaded,
+      skipped,
+      totalEvents,
+      retryQueue: state.retryQueue.size,
+      seenFiles: state.seenFiles.size
+    });
+  } finally {
+    state.inFlight = false;
+    dbg("poll:inFlight-cleared", { cycle: state.cycle });
+  }
+}
+
+function scheduleNext() {
+  if (!state.running) return;
+  dbg("schedule:next", { inMs: LOOP_INTERVAL, nextAt: new Date(Date.now() + LOOP_INTERVAL).toISOString() });
+  state.timer = setTimeout(async () => {
+    try {
+      await pollOnce();
+    } catch (err) {
+      warn("schedule:poll-error", err.message);
+    } finally {
+      scheduleNext();
+    }
+  }, LOOP_INTERVAL);
+}
+
+function start() {
+  if (state.running) return;
+  state.running = true;
+  dbg("START", {
+    loopIntervalMs: LOOP_INTERVAL,
+    debug: DEBUG,
+    webhookEnabled: !!WEBHOOK_URL,
+    remoteDir: REMOTE_DIR,
+    ftpHost: FTP_HOST,
+    ftpUser: FTP_USER,
+    ftpSecure: FTP_SECURE,
+    ftpTimeoutMs: FTP_TIMEOUT_MS,
+    startedAt: state.startedAt
+  });
+  pollOnce()
+    .catch(err => warn("initial-poll-error", err.message))
+    .finally(scheduleNext);
 }
 
 function stop() {
-  running = false;
+  state.running = false;
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = null;
+  dbg("STOP", null);
 }
 
-module.exports = {
-  start,
-  stop
-};
+module.exports = { start, stop, pollOnce, state };
