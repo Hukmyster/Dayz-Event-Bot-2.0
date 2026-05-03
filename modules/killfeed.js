@@ -135,7 +135,7 @@ async function listAdmFilesFresh() {
         return a.name.localeCompare(b.name);
       });
 
-    log("ftp:list:done", { admCount: items.length });
+    log("source:list", { remoteDir: REMOTE_DIR, admCount: items.length, files: items.map(x => x.remotePath) });
     return items;
   } finally {
     try { client.close(); } catch {}
@@ -146,6 +146,7 @@ async function readRemoteFile(remotePath) {
   const client = await createClient();
   const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
   try {
+    log("source:download", { remotePath });
     await client.downloadTo(localTmp, remotePath);
     const buf = fs.readFileSync(localTmp);
     return buf.toString("utf8");
@@ -213,6 +214,14 @@ function processFile(remotePath, content, ftpItem) {
   const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
   const events = [];
 
+  log("poll:file", {
+    remotePath,
+    previousLines: previous.lineCount,
+    currentLines: current.lineCount,
+    startIndex,
+    reset
+  });
+
   let scanned = 0;
   let matched = 0;
   let duped = 0;
@@ -247,6 +256,7 @@ function processFile(remotePath, content, ftpItem) {
     modifiedAt: ftpItem.modifiedAt
   });
 
+  log("poll:summary", { remotePath, scanned, matched, duped, emitted: events.length });
   return events;
 }
 
