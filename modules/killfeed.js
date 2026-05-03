@@ -1,6 +1,5 @@
 const path = require("path");
 
-const LOOP_INTERVAL = Number(process.env.KILLFEED_INTERNAL_MS || 5 * 60 * 1000);
 const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const API_TOKEN = process.env.API_TOKEN || "";
@@ -9,15 +8,10 @@ const ROOT_DIRS = ["/", "/dayzps", "/dayzps/config", "/dayzps/storage", "/server
 const MAX_DEPTH = 12;
 
 const state = {
-  running: false,
-  timer: null,
-  inFlight: false,
   seenFiles: new Set(),
   foundPaths: new Set(),
   visitedDirs: new Set(),
-  fileMeta: new Map(),
   lastEvents: new Set(),
-  cycle: 0,
   startedAt: new Date().toISOString()
 };
 
@@ -172,132 +166,23 @@ async function discoverFromDir(dir, depth = 0) {
 async function discoverAllAdmPaths() {
   state.visitedDirs.clear();
   state.foundPaths.clear();
+
   for (const root of ROOT_DIRS) {
     await discoverFromDir(root, 0);
   }
+
   const paths = [...state.foundPaths].sort();
   log("discover:done", { admPaths: paths.length, visitedDirs: state.visitedDirs.size });
   return paths;
 }
 
-async function readRemoteFile(remotePath) {
-  const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(remotePath)}`;
-  const res = await nitradoRequest(url);
-  const contentType = res.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    const json = await res.json();
-    const maybe = json?.data?.content || json?.data?.file?.content || json?.data?.download || json?.data?.url;
-    if (typeof maybe === "string" && maybe.startsWith("http")) {
-      const r2 = await fetch(maybe);
-      if (!r2.ok) throw new Error(`Download URL HTTP ${r2.status}`);
-      return await r2.text();
-    }
-    if (typeof maybe === "string") return maybe;
-    return JSON.stringify(json);
-  }
-  return await res.text();
+async function main() {
+  ensureConfig();
+  const paths = await discoverAllAdmPaths();
+  console.log(JSON.stringify({ admPaths: paths, count: paths.length }, null, 2));
 }
 
-async function safePostWebhook(payload) {
-  if (!WEBHOOK_URL) return false;
-  try {
-    const res = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-function processFile(remotePath, content, meta) {
-  const current = fingerprint(content);
-  const previous = state.fileMeta.get(remotePath) || { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null };
-  const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
-  const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
-
-  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
-  const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
-  const events = [];
-
-  for (let i = startIndex; i < lines.length; i++) {
-    const line = normalizeLine(lines[i]);
-    if (!line) continue;
-    const event = parseAdmKillLine(line);
-    if (!event) continue;
-    const dedupeKey = `${remotePath}|${event.type}|${event.raw}`;
-    if (state.lastEvents.has(dedupeKey)) continue;
-    state.lastEvents.add(dedupeKey);
-    if (state.lastEvents.size > 2000) state.lastEvents.delete(state.lastEvents.values().next().value);
-    events.push({ ...event, file: remotePath });
-  }
-
-  state.fileMeta.set(remotePath, { ...current, size: meta.size, modifiedAt: meta.modifiedAt });
-  return events;
-}
-
-async function handleEvents(events) {
-  for (const evt of events) await safePostWebhook({ content: buildEventMessage(evt) });
-}
-
-async function pollOnce() {
-  if (state.inFlight) return;
-  state.inFlight = true;
-  state.cycle += 1;
-  dbg("poll:start", { cycle: state.cycle, source: "nitrado-api" });
-
-  try {
-    ensureConfig();
-    const discovered = await discoverAllAdmPaths();
-
-    let totalEvents = 0;
-    for (const remotePath of discovered) {
-      let content;
-      try {
-        content = await readRemoteFile(remotePath);
-      } catch (err) {
-        warn("poll:read-failed", { file: remotePath, error: err.message });
-        continue;
-      }
-
-      const meta = { size: content.length, modifiedAt: null };
-      state.seenFiles.add(remotePath);
-      const events = processFile(remotePath, content, meta);
-      totalEvents += events.length;
-      if (events.length) {
-        log("poll:events", { file: remotePath, count: events.length });
-        await handleEvents(events);
-      }
-    }
-
-    dbg("poll:end", { cycle: state.cycle, totalEvents, discovered: discovered.length, visitedDirs: state.visitedDirs.size });
-  } finally {
-    state.inFlight = false;
-  }
-}
-
-function scheduleNext() {
-  if (!state.running) return;
-  state.timer = setTimeout(async () => {
-    try {
-      await pollOnce();
-    } catch (err) {
-      warn("schedule:poll-error", err.message);
-    } finally {
-      scheduleNext();
-    }
-  }, LOOP_INTERVAL);
-}
-
-function start() {
-  if (state.running) return;
-  state.running = true;
-  dbg("START", { loopIntervalMs: LOOP_INTERVAL, debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, source: "nitrado-api", serviceId: SERVICE_ID, startedAt: state.startedAt });
-  pollOnce().catch(err => warn("initial-poll-error", err.message)).finally(scheduleNext);
-}
-
-function stop() {
-  state.running = false;
-  if (state.timer) clearTimeout(state.timer);
-  state.timer = null;
-}
-
-module.exports = { start, stop, pollOnce, state };
+main().catch(err => {
+  console.error(err);
+  process.exit(1);
+});
