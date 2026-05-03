@@ -1,25 +1,21 @@
-const fs = require("fs");
 const path = require("path");
-const { Client } = require("basic-ftp");
 
 const LOOP_INTERVAL = Number(process.env.KILLFEED_INTERNAL_MS || 5 * 60 * 1000);
-const FTP_HOST = process.env.FTP_HOST;
-const FTP_USER = process.env.FTP_USER;
-const FTP_PASS = process.env.FTP_PASS;
-const FTP_SECURE = String(process.env.FTP_SECURE || "false").toLowerCase() === "true";
 const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
-const REMOTE_DIR = process.env.KILLFEED_REMOTE_DIR || "/dayzps/config";
-const FTP_TIMEOUT_MS = 30_000;
 const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
+const ROOT_DIRS = ["/", "/dayzps", "/dayzps/config", "/dayzps/storage", "/server"];
+const MAX_DEPTH = 12;
+const FTP_TIMEOUT_MS = 30_000;
 
 const state = {
   running: false,
   timer: null,
   inFlight: false,
-  retryQueue: new Set(),
   seenFiles: new Set(),
+  foundPaths: new Set(),
+  visitedDirs: new Set(),
   fileMeta: new Map(),
   lastEvents: new Set(),
   cycle: 0,
@@ -28,9 +24,7 @@ const state = {
 
 function dbg(tag, data) {
   const ts = new Date().toISOString();
-  const dataStr = data !== undefined
-    ? (typeof data === "object" ? JSON.stringify(data) : String(data))
-    : "";
+  const dataStr = data !== undefined ? (typeof data === "object" ? JSON.stringify(data) : String(data)) : "";
   console.log(`[killfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
 }
 
@@ -40,9 +34,7 @@ function log(tag, data) {
 
 function warn(tag, data) {
   const ts = new Date().toISOString();
-  const dataStr = data !== undefined
-    ? (typeof data === "object" ? JSON.stringify(data) : String(data))
-    : "";
+  const dataStr = data !== undefined ? (typeof data === "object" ? JSON.stringify(data) : String(data)) : "";
   console.warn(`[killfeed][${ts}][WARN:${tag}]${dataStr ? " " + dataStr : ""}`);
 }
 
@@ -52,6 +44,18 @@ function ensureConfig() {
   if (!API_TOKEN) missing.push("API_TOKEN");
   if (!SERVICE_ID) missing.push("SERVICE_ID");
   if (missing.length) throw new Error(`Missing killfeed env vars: ${missing.join(", ")}`);
+}
+
+function normalizePath(p) {
+  const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
+  if (!s) return "/";
+  return s.startsWith("/") ? s : `/${s}`;
+}
+
+function parentDir(p) {
+  const n = normalizePath(p);
+  if (n === "/") return null;
+  return normalizePath(path.posix.dirname(n));
 }
 
 function normalizeLine(line) {
@@ -112,40 +116,79 @@ async function nitradoRequest(url, opts = {}) {
   return res;
 }
 
-async function listAdmFilesFromNitrado() {
-  const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/list?dir=${encodeURIComponent(REMOTE_DIR)}&search=.ADM`;
+function extractEntries(json) {
+  const data = json?.data || json || {};
+  return data.entries || data.items || data.files || [];
+}
+
+function entryPath(entry) {
+  return normalizePath(entry?.path || entry?.filename || entry?.name || "");
+}
+
+function isDir(entry) {
+  const t = String(entry?.type || entry?.kind || entry?.entry_type || "").toLowerCase();
+  if (t.includes("dir")) return true;
+  if (entry?.is_dir === true || entry?.directory === true) return true;
+  return !entry?.name?.includes(".") && !entry?.path?.match(/\.[a-z0-9]+$/i) && !entry?.size;
+}
+
+async function listDirectory(dir) {
+  const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/list?dir=${encodeURIComponent(dir)}`;
   const res = await nitradoRequest(url);
   const json = await res.json();
+  return extractEntries(json);
+}
 
-  const entries = json?.data?.entries || [];
-  const items = (Array.isArray(entries) ? entries : [])
-    .map(item => {
-      const remotePath = item.path || item.filename || item.name || "";
-      const name = item.name || item.filename || path.basename(remotePath);
-      const size = item.size ?? -1;
-      const modifiedAt = item.modified_at || item.modifiedAt || item.mtime || null;
-      return {
-        name,
-        remotePath,
-        size,
-        modifiedAt: modifiedAt ? new Date(modifiedAt).toISOString() : null
-      };
-    })
-    .filter(item => item.remotePath && item.remotePath.toUpperCase().endsWith(".ADM"))
-    .sort((a, b) => {
-      const am = a.modifiedAt || "";
-      const bm = b.modifiedAt || "";
-      if (am !== bm) return am.localeCompare(bm);
-      return a.remotePath.localeCompare(b.remotePath);
-    });
+async function discoverFromDir(dir, depth = 0) {
+  const ndir = normalizePath(dir);
+  if (depth > MAX_DEPTH) return;
+  if (state.visitedDirs.has(ndir)) return;
+  state.visitedDirs.add(ndir);
 
-  log("source:list", { source: "nitrado-api", serviceId: SERVICE_ID, admCount: items.length, files: items.map(x => x.remotePath) });
-  return items;
+  let entries = [];
+  try {
+    entries = await listDirectory(ndir);
+  } catch (err) {
+    warn("discover:list-failed", { dir: ndir, error: err.message });
+    return;
+  }
+
+  let loggedOne = false;
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const p = entryPath(entry);
+    const name = String(entry?.name || path.posix.basename(p) || "").trim();
+    const looksAdm = /\.adm$/i.test(p) || /\.adm$/i.test(name);
+
+    if (looksAdm) {
+      state.foundPaths.add(p);
+      if (!loggedOne) {
+        log("found:adm", { path: p, dir: ndir });
+        loggedOne = true;
+      }
+    }
+
+    if (isDir(entry)) {
+      const child = p || normalizePath(path.posix.join(ndir, name));
+      if (child && child !== ndir) await discoverFromDir(child, depth + 1);
+    }
+  }
+}
+
+async function discoverAllAdmPaths() {
+  state.visitedDirs.clear();
+  state.foundPaths.clear();
+
+  for (const root of ROOT_DIRS) {
+    await discoverFromDir(root, 0);
+  }
+
+  const paths = [...state.foundPaths].sort();
+  log("discover:done", { admPaths: paths.length, visitedDirs: state.visitedDirs.size });
+  return paths;
 }
 
 async function readRemoteFile(remotePath) {
   const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(remotePath)}`;
-  log("source:download", { source: "nitrado-api", remotePath });
   const res = await nitradoRequest(url);
   const contentType = res.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
@@ -162,55 +205,29 @@ async function readRemoteFile(remotePath) {
   return await res.text();
 }
 
-function fileNeedsDownload(remotePath, ftpItem) {
+function fileNeedsDownload(remotePath, meta) {
   const prev = state.fileMeta.get(remotePath) || { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null };
-  const isNew = !state.seenFiles.has(remotePath);
-
-  if (isNew) {
-    log("download:decision", { file: remotePath, reason: "NEW_FILE", size: ftpItem.size, mod: ftpItem.modifiedAt });
-    return true;
-  }
-  if (ftpItem.size > 0 && prev.size >= 0 && ftpItem.size > prev.size) {
-    log("download:decision", { file: remotePath, reason: "SIZE_GREW", prevSize: prev.size, nowSize: ftpItem.size });
-    return true;
-  }
-  if (ftpItem.modifiedAt && prev.modifiedAt && ftpItem.modifiedAt !== prev.modifiedAt) {
-    log("download:decision", { file: remotePath, reason: "MODIFIED_AT_CHANGED", prev: prev.modifiedAt, now: ftpItem.modifiedAt });
-    return true;
-  }
-  if (ftpItem.size <= 0 && !ftpItem.modifiedAt) {
-    log("download:decision", { file: remotePath, reason: "NO_METADATA_FALLBACK" });
-    return true;
-  }
+  if (!state.seenFiles.has(remotePath)) return true;
+  if (meta.size > 0 && prev.size >= 0 && meta.size > prev.size) return true;
+  if (meta.modifiedAt && prev.modifiedAt && meta.modifiedAt !== prev.modifiedAt) return true;
   return false;
 }
 
 async function safePostWebhook(payload) {
   if (!WEBHOOK_URL) return false;
   try {
-    const res = await fetch(WEBHOOK_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) warn("webhook:http-error", { status: res.status });
+    const res = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     return res.ok;
-  } catch (err) {
-    warn("webhook:exception", err.message);
+  } catch {
     return false;
   }
 }
 
-function processFile(remotePath, content, ftpItem) {
+function processFile(remotePath, content, meta) {
   const current = fingerprint(content);
   const previous = state.fileMeta.get(remotePath) || { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null };
   const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
-  const reset = rotated || (
-    previous.lastLine &&
-    current.firstLine &&
-    previous.lastLine !== current.firstLine &&
-    current.lineCount <= previous.lineCount
-  );
+  const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
 
   const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
   const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
@@ -221,103 +238,59 @@ function processFile(remotePath, content, ftpItem) {
     if (!line) continue;
     const event = parseAdmKillLine(line);
     if (!event) continue;
-
     const dedupeKey = `${remotePath}|${event.type}|${event.raw}`;
     if (state.lastEvents.has(dedupeKey)) continue;
-
     state.lastEvents.add(dedupeKey);
-    if (state.lastEvents.size > 2000) {
-      const first = state.lastEvents.values().next().value;
-      if (first) state.lastEvents.delete(first);
-    }
-
+    if (state.lastEvents.size > 2000) state.lastEvents.delete(state.lastEvents.values().next().value);
     events.push({ ...event, file: remotePath });
   }
 
-  state.fileMeta.set(remotePath, {
-    ...current,
-    size: ftpItem.size,
-    modifiedAt: ftpItem.modifiedAt
-  });
-
-  log("poll:file", {
-    remotePath,
-    previousLines: previous.lineCount,
-    currentLines: current.lineCount,
-    startIndex,
-    reset: String(reset)
-  });
-  log("poll:summary", { remotePath, scanned: lines.length, matched: events.length, duped: 0, emitted: events.length });
-
+  state.fileMeta.set(remotePath, { ...current, size: meta.size, modifiedAt: meta.modifiedAt });
+  log("poll:file", { remotePath, previousLines: previous.lineCount, currentLines: current.lineCount, startIndex, reset: String(reset) });
   return events;
 }
 
 async function handleEvents(events) {
-  for (const evt of events) {
-    const content = buildEventMessage(evt);
-    await safePostWebhook({ content });
-  }
+  for (const evt of events) await safePostWebhook({ content: buildEventMessage(evt) });
 }
 
 async function pollOnce() {
   if (state.inFlight) return;
   state.inFlight = true;
   state.cycle += 1;
-  dbg("poll:start", { cycle: state.cycle, seenFiles: state.seenFiles.size, retryQueue: state.retryQueue.size, source: "nitrado-api" });
+  dbg("poll:start", { cycle: state.cycle, source: "nitrado-api" });
 
   try {
     ensureConfig();
-
-    let ftpItems;
-    try {
-      ftpItems = await listAdmFilesFromNitrado();
-    } catch (err) {
-      warn("poll:list-failed", err.message);
-      return;
-    }
-
-    const ftpMap = new Map(ftpItems.map(i => [i.remotePath, i]));
+    const discovered = await discoverAllAdmPaths();
 
     let downloaded = 0;
-    let skipped = 0;
     let totalEvents = 0;
 
-    for (const [remotePath, ftpItem] of ftpMap) {
-      if (!fileNeedsDownload(remotePath, ftpItem)) {
-        skipped++;
-        continue;
-      }
-
-      let content = null;
+    for (const remotePath of discovered) {
+      let content;
       try {
         content = await readRemoteFile(remotePath);
-        downloaded++;
       } catch (err) {
         warn("poll:read-failed", { file: remotePath, error: err.message });
         continue;
       }
 
-      if (!state.seenFiles.has(remotePath)) {
+      const meta = { size: content.length, modifiedAt: null };
+      if (!state.seenFiles.has(remotePath) || fileNeedsDownload(remotePath, meta)) {
+        downloaded++;
         state.seenFiles.add(remotePath);
       }
 
-      const events = processFile(remotePath, content, ftpItem);
+      const events = processFile(remotePath, content, meta);
       totalEvents += events.length;
-
       if (events.length) {
-        dbg("poll:events", { file: remotePath, count: events.length });
+        log("poll:events", { file: remotePath, count: events.length });
         await handleEvents(events);
       }
     }
 
-    dbg("poll:end", {
-      cycle: state.cycle,
-      downloaded,
-      skipped,
-      totalEvents,
-      retryQueue: state.retryQueue.size,
-      seenFiles: state.seenFiles.size
-    });
+    dbg("poll:end", { cycle: state.cycle, downloaded, totalEvents, discovered: discovered.length, visitedDirs: state.visitedDirs.size });
   } finally {
     state.inFlight = false;
   }
@@ -339,17 +312,8 @@ function scheduleNext() {
 function start() {
   if (state.running) return;
   state.running = true;
-  dbg("START", {
-    loopIntervalMs: LOOP_INTERVAL,
-    debug: DEBUG,
-    webhookEnabled: !!WEBHOOK_URL,
-    source: "nitrado-api",
-    serviceId: SERVICE_ID,
-    startedAt: state.startedAt
-  });
-  pollOnce()
-    .catch(err => warn("initial-poll-error", err.message))
-    .finally(scheduleNext);
+  dbg("START", { loopIntervalMs: LOOP_INTERVAL, debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, source: "nitrado-api", serviceId: SERVICE_ID, startedAt: state.startedAt });
+  pollOnce().catch(err => warn("initial-poll-error", err.message)).finally(scheduleNext);
 }
 
 function stop() {
