@@ -51,6 +51,14 @@ function isExplosiveKiller(killer) {
   return EXPLOSIVE_KILLERS.has(cleanKillerName(killer));
 }
 
+function extractLocation(line) {
+  const m = line.match(/pos=<([^>]+)>/i);
+  if (!m) return "";
+  const parts = m[1].split(",").map(s => s.trim());
+  if (parts.length < 2) return "";
+  return `${parts[0]}, ${parts[1]}`;
+}
+
 function parseKillLine(line) {
   if (!line.includes("killed by")) return null;
 
@@ -65,6 +73,8 @@ function parseKillLine(line) {
     /killed by\s+(LandMineTrap|Land Mine|6-M7 Frag Grenade|Grenade|M67 Grenade)\s*$/i
   );
 
+  const location = extractLocation(line);
+
   if (playerKillMatch) {
     const killer = cleanKillerName(playerKillMatch[1]);
     return {
@@ -73,6 +83,7 @@ function parseKillLine(line) {
       killer,
       weapon: playerKillMatch[2].trim(),
       distance: playerKillMatch[3],
+      location: "",
       explosive: isExplosiveKiller(killer),
       raw: line
     };
@@ -85,7 +96,8 @@ function parseKillLine(line) {
       victim: cleanVictim(victimMatch?.[1] || ""),
       killer,
       weapon: "",
-      distance: "0",
+      distance: "",
+      location,
       explosive: true,
       raw: line
     };
@@ -95,7 +107,7 @@ function parseKillLine(line) {
 }
 
 function buildEventId(fileName, evt) {
-  return [fileName, evt.time, evt.victim, evt.killer, evt.weapon, evt.distance, evt.raw].join("|");
+  return [fileName, evt.time, evt.victim, evt.killer, evt.weapon, evt.distance, evt.location, evt.raw].join("|");
 }
 
 function formatEmbed(evt) {
@@ -108,7 +120,7 @@ function formatEmbed(evt) {
     fields.push({ name: "Weapon", value: evt.weapon || "Unknown", inline: true });
     fields.push({ name: "Distance", value: `${evt.distance || "0"}m`, inline: true });
   } else {
-    fields.push({ name: "Distance", value: `${evt.distance || "0"}m`, inline: true });
+    if (evt.location) fields.push({ name: "Location", value: evt.location, inline: true });
   }
 
   fields.push({ name: "Time", value: evt.time || "unknown", inline: true });
