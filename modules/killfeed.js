@@ -12,6 +12,8 @@ const EXPLOSIVE_KILLERS = new Set([
   "M67 Grenade"
 ]);
 
+const MAX_FILES = 5;
+
 const state = {
   started: false,
   timer: null,
@@ -170,23 +172,44 @@ async function fetchServerInfo() {
   return await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers`);
 }
 
+function parseLogTimestamp(filename) {
+  const m = String(filename || "").match(/_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+  if (!m) return 0;
+  return Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}Z`) || 0;
+}
+
 function collectCandidates(serverJson) {
   const gs = serverJson?.data?.gameserver || {};
   const username = gs?.username || "";
   const files = gs?.game_specific?.log_files || [];
-  const paths = [];
+  const list = [];
 
   for (const item of Array.isArray(files) ? files : []) {
     const raw = typeof item === "string" ? item : (item?.path || item?.file || item?.name || item?.filename || "");
     const base = String(raw || "").trim();
     if (!base) continue;
     const filename = base.split("/").pop();
-    paths.push(`/games/${username}/noftp/dayzps/config/${filename}`);
-    paths.push(`/games/${username}/noftp/${base.replace(/^\/+/, "")}`);
-    paths.push(base);
+    if (!/\.adm$/i.test(filename)) continue;
+
+    const sortKey = parseLogTimestamp(filename);
+    list.push({
+      filename,
+      sortKey,
+      candidates: [
+        `/games/${username}/noftp/dayzps/config/${filename}`,
+        `/games/${username}/noftp/${base.replace(/^\/+/, "")}`,
+        base
+      ]
+    });
   }
 
-  return { username, paths: [...new Set(paths.map(normalizePath))] };
+  list.sort((a, b) => b.sortKey - a.sortKey || a.filename.localeCompare(b.filename));
+  const chosen = list.slice(0, MAX_FILES);
+
+  return {
+    username,
+    paths: [...new Set(chosen.flatMap(x => x.candidates).map(normalizePath))]
+  };
 }
 
 async function getDownloadToken(filePath) {
