@@ -2,7 +2,7 @@ require("dotenv").config();
 
 const fs = require("fs");
 const path = require("path");
-const axios = require("axios");
+const https = require("https");
 const { Client } = require("basic-ftp");
 
 const LOCAL_DIR = path.resolve("./logs");
@@ -13,40 +13,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function ensureLogsDir() {
   fs.mkdirSync(LOCAL_DIR, { recursive: true });
-}
-
-function parseIni(str) {
-  const out = {};
-  let section = out;
-  String(str || "").split(/\r?\n/).forEach(line => {
-    line = line.trim();
-    if (!line || line.startsWith(";") || line.startsWith("#")) return;
-    const sec = line.match(/^\[(.+?)\]$/);
-    if (sec) {
-      out[sec[1]] = out[sec[1]] || {};
-      section = out[sec[1]];
-      return;
-    }
-    const idx = line.indexOf("=");
-    if (idx === -1) return;
-    const key = line.slice(0, idx).trim();
-    const val = line.slice(idx + 1).trim();
-    section[key] = val;
-  });
-  return out;
-}
-
-function stringifyIni(obj) {
-  const lines = [];
-  for (const [k, v] of Object.entries(obj || {})) {
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      lines.push(`[${k}]`);
-      for (const [kk, vv] of Object.entries(v)) lines.push(`${kk}=${vv}`);
-    } else {
-      lines.push(`${k}=${v}`);
-    }
-  }
-  return lines.join("\n");
 }
 
 function log(msg, data) {
@@ -91,15 +57,31 @@ function pickLatestAdm(entries, admRegex) {
   return best;
 }
 
+function httpGetJson(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers }, res => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", chunk => body += chunk);
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (e) {
+          reject(new Error(`Bad JSON from ${url}: ${e.message}`));
+        }
+      });
+    });
+    req.on("error", reject);
+  });
+}
+
 async function listFiles(dir) {
   const serviceId = process.env.SERVICE_ID;
   const token = process.env.API_TOKEN;
   const url = `https://api.nitrado.net/services/${serviceId}/gameservers/file_server/list?dir=${encodeURIComponent(dir)}`;
-  const res = await axios.get(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json"
-    }
+  const res = await httpGetJson(url, {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/json"
   });
   return res.data?.data?.entries || [];
 }
