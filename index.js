@@ -5,6 +5,7 @@ const shop = require("./modules/shop");
 const economy = require("./modules/economy");
 const daily = require("./commands/shop/daily");
 const killfeed = require("./modules/killfeed");
+const eventfeed = require("./modules/eventfeed");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
@@ -80,6 +81,13 @@ async function handleCommand(interaction) {
   if (cmd === "killfeed") {
     return replyOnce(interaction, {
       content: "Killfeed runs automatically on bot startup.",
+      ephemeral: true
+    }, cmd);
+  }
+
+  if (cmd === "eventfeed") {
+    return replyOnce(interaction, {
+      content: "Eventfeed runs automatically on bot startup.",
       ephemeral: true
     }, cmd);
   }
@@ -394,6 +402,8 @@ client.once(Events.ClientReady, async () => {
   console.log("[DISCORD] Bot is ready. Commands are handled from Discord now.");
   killfeed.start();
   console.log("[KILLFEED] module started");
+  eventfeed.start();
+  console.log("[EVENTFEED] module started");
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
