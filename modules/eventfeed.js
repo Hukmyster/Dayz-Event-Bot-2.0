@@ -110,18 +110,14 @@ function formatEmbed(evt) {
 
 async function postWebhook(evt) {
   if (!WEBHOOK_URL) return;
-  const payload = { embeds: [formatEmbed(evt)] };
   const res = await fetch(WEBHOOK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ embeds: [formatEmbed(evt)] })
   });
-
   const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    throw new Error(`Discord webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
-  }
-  dbg("webhook:sent", { status: res.status, type: evt.type, trigger: evt.trigger });
+  if (!res.ok) throw new Error(`Discord webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
+  dbg("webhook:sent", { status: res.status, trigger: evt.trigger });
 }
 
 async function nitradoRequest(url, opts = {}) {
@@ -152,7 +148,7 @@ function collectCandidates(serverJson) {
   const gs = serverJson?.data?.gameserver || {};
   const username = gs?.username || "";
   const files = gs?.game_specific?.log_files || [];
-  const list = [];
+  const byName = new Map();
 
   for (const item of Array.isArray(files) ? files : []) {
     const raw = typeof item === "string" ? item : (item?.path || item?.file || item?.name || item?.filename || "");
@@ -160,24 +156,22 @@ function collectCandidates(serverJson) {
     if (!base) continue;
     const filename = base.split("/").pop();
     if (!/\.rpt$/i.test(filename)) continue;
+    if (byName.has(filename)) continue;
 
-    list.push({
+    byName.set(filename, {
       filename,
       sortKey: parseLogTimestamp(filename),
-      candidates: [
-        `/games/${username}/noftp/dayzps/config/${filename}`,
-        `/games/${username}/noftp/${base.replace(/^\/+/, "")}`,
-        base
-      ]
+      path: `/games/${username}/noftp/dayzps/config/${filename}`
     });
   }
 
-  list.sort((a, b) => b.sortKey - a.sortKey || a.filename.localeCompare(b.filename));
-  const chosen = list.slice(0, MAX_FILES);
+  const chosen = [...byName.values()]
+    .sort((a, b) => b.sortKey - a.sortKey || a.filename.localeCompare(b.filename))
+    .slice(0, MAX_FILES);
 
   return {
     username,
-    paths: [...new Set(chosen.flatMap(x => x.candidates).map(normalizePath))]
+    paths: chosen.map(x => normalizePath(x.path))
   };
 }
 
@@ -202,28 +196,12 @@ async function fetchFile(tokenUrl, token) {
   return text;
 }
 
-function candidateReadPaths(originalPath, username) {
-  const filename = String(originalPath || "").split("/").pop();
-  return [...new Set([
-    `/games/${username}/noftp/dayzps/config/${filename}`,
-    `/games/${username}/noftp/${filename}`,
-    normalizePath(originalPath)
-  ])];
-}
-
 async function readRemoteFile(remotePath, username) {
-  const candidates = candidateReadPaths(remotePath, username);
-  for (const candidate of candidates) {
-    try {
-      const { tokenUrl, token } = await getDownloadToken(candidate);
-      if (!tokenUrl || !token) throw new Error("No token returned");
-      const content = await fetchFile(tokenUrl, token);
-      return { pathUsed: candidate, content };
-    } catch (err) {
-      dbg("read:attempt_fail", { file: candidate, error: err?.message || String(err) });
-    }
-  }
-  throw new Error(`All read attempts failed for ${remotePath}`);
+  const candidate = remotePath.replace(`/games/${username}/noftp/dayzps/config/`, `/games/${username}/noftp/dayzps/config/`);
+  const { tokenUrl, token } = await getDownloadToken(candidate);
+  if (!tokenUrl || !token) throw new Error("No token returned");
+  const content = await fetchFile(tokenUrl, token);
+  return { pathUsed: candidate, content };
 }
 
 function fingerprint(content) {
