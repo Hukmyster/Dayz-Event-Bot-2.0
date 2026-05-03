@@ -53,30 +53,17 @@ function ensureConfig() {
 }
 
 function joinRemote(dir, name) {
-  const d = String(dir || "").replace(/\/+$|\/$/, "");
+  const d = String(dir || "").replace(/\/+$/, "");
   return `${d}/${name}`;
 }
 
 async function listAdmFiles() {
   const client = new Client();
   client.ftp.timeout = FTP_TIMEOUT_MS;
-  log("ftp:list:start", { host: FTP_HOST, user: FTP_USER, secure: FTP_SECURE, dir: REMOTE_DIR });
+  client.ftp.log = () => {};
   try {
     await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
-    log("ftp:list:connected", { host: FTP_HOST });
-
     const list = await client.list(REMOTE_DIR);
-    log("ftp:list:raw", { totalEntries: list.length, dir: REMOTE_DIR });
-
-    list.forEach(item => {
-      log("ftp:list:entry", {
-        name: item.name,
-        isFile: item.isFile,
-        size: item.size,
-        modifiedAt: item.modifiedAt ? item.modifiedAt.toISOString() : null,
-        type: item.type
-      });
-    });
 
     const items = list
       .filter(item => item.isFile && item.name.toUpperCase().endsWith(".ADM"))
@@ -87,40 +74,26 @@ async function listAdmFiles() {
         modifiedAt: item.modifiedAt ? item.modifiedAt.toISOString() : null,
       }));
 
-    log("ftp:list:done", { admCount: items.length, files: items.map(i => `${i.remotePath} size=${i.size} mod=${i.modifiedAt}`) });
+    log("ftp:list:done", { admCount: items.length });
     return items;
   } finally {
     try { client.close(); } catch {}
-    log("ftp:list:closed", null);
   }
 }
 
 async function readRemoteFile(remotePath) {
   const client = new Client();
   client.ftp.timeout = FTP_TIMEOUT_MS;
+  client.ftp.log = () => {};
   const localTmp = path.join("/tmp", `killfeed_${Date.now()}_${Math.random().toString(36).slice(2)}.adm`);
-  log("ftp:download:start", { remotePath, localTmp });
   try {
     await client.access({ host: FTP_HOST, user: FTP_USER, password: FTP_PASS, secure: FTP_SECURE });
-    log("ftp:download:connected", { remotePath });
     await client.downloadTo(localTmp, remotePath);
     const buf = fs.readFileSync(localTmp);
-    const content = buf.toString("utf8");
-    const rawLines = content.split(/\r?\n/);
-    const trailingBlank = rawLines[rawLines.length - 1] === "";
-    log("ftp:download:done", {
-      remotePath,
-      bytes: buf.length,
-      rawLineCount: rawLines.length,
-      trailingBlankLine: trailingBlank,
-      firstLine: rawLines[0] ? rawLines[0].slice(0, 80) : "(empty)",
-      lastNonEmptyLine: (rawLines.filter(l => l.trim()).slice(-1)[0] || "").slice(0, 80)
-    });
-    return content;
+    return buf.toString("utf8");
   } finally {
     try { fs.unlinkSync(localTmp); } catch {}
     try { client.close(); } catch {}
-    log("ftp:download:closed", { remotePath });
   }
 }
 
@@ -169,23 +142,19 @@ function fileNeedsDownload(remotePath, ftpItem) {
     return true;
   }
 
-  log("download:decision", { file: remotePath, reason: "SKIP_UNCHANGED", ftpSize: ftpItem.size, prevSize: prev.size, ftpMod: ftpItem.modifiedAt, prevMod: prev.modifiedAt });
   return false;
 }
 
 async function safePostWebhook(payload) {
   if (!WEBHOOK_URL) {
-    log("webhook:skip", "no WEBHOOK_URL configured");
     return false;
   }
-  log("webhook:send", { contentPreview: (payload.content || "").slice(0, 80) });
   try {
     const res = await fetch(WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    log("webhook:result", { status: res.status, ok: res.ok });
     if (!res.ok) warn("webhook:http-error", { status: res.status });
     return res.ok;
   } catch (err) {
@@ -239,18 +208,6 @@ function processFile(remotePath, content, ftpItem) {
   const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
   const events = [];
 
-  log("process:file", {
-    file: remotePath,
-    previousLines: previous.lineCount,
-    currentLines: current.lineCount,
-    newLines: Math.max(0, lines.length - startIndex),
-    startIndex,
-    rotated,
-    reset,
-    prevLastLine: previous.lastLine ? previous.lastLine.slice(0, 60) : "(none)",
-    currFirstLine: current.firstLine ? current.firstLine.slice(0, 60) : "(none)"
-  });
-
   let scanned = 0;
   let matched = 0;
   let duped = 0;
@@ -267,7 +224,6 @@ function processFile(remotePath, content, ftpItem) {
     const dedupeKey = `${remotePath}|${event.type}|${event.raw}`;
     if (state.lastEvents.has(dedupeKey)) {
       duped++;
-      log("process:dedupe", { file: remotePath, line: line.slice(0, 60) });
       continue;
     }
 
@@ -277,11 +233,8 @@ function processFile(remotePath, content, ftpItem) {
       if (first) state.lastEvents.delete(first);
     }
 
-    log("process:event-found", { file: remotePath, killer: event.killer, victim: event.victim, weapon: event.weapon });
     events.push({ ...event, file: remotePath });
   }
-
-  log("process:summary", { file: remotePath, scanned, matched, duped, emitted: events.length });
 
   state.fileMeta.set(remotePath, {
     ...current,
@@ -295,19 +248,17 @@ function processFile(remotePath, content, ftpItem) {
 async function handleEvents(events) {
   for (const evt of events) {
     const content = buildEventMessage(evt);
-    log("event:dispatch", { killer: evt.killer, victim: evt.victim, weapon: evt.weapon });
     await safePostWebhook({ content });
   }
 }
 
 async function pollOnce() {
   if (state.inFlight) {
-    warn("poll:skip", `cycle ${state.cycle + 1} skipped — previous poll still running`);
     return;
   }
   state.inFlight = true;
   state.cycle += 1;
-  dbg(`poll:start`, { cycle: state.cycle, seenFiles: state.seenFiles.size, retryQueue: state.retryQueue.size });
+  dbg("poll:start", { cycle: state.cycle, seenFiles: state.seenFiles.size, retryQueue: state.retryQueue.size });
 
   try {
     ensureConfig();
@@ -324,13 +275,10 @@ async function pollOnce() {
 
     for (const retryPath of state.retryQueue) {
       if (!ftpMap.has(retryPath)) {
-        log("poll:retry-inject", retryPath);
         ftpMap.set(retryPath, { name: path.basename(retryPath), remotePath: retryPath, size: -1, modifiedAt: null });
       }
     }
     state.retryQueue.clear();
-
-    dbg("poll:targets", { cycle: state.cycle, remoteAdmCount: ftpItems.length, totalTargets: ftpMap.size });
 
     let downloaded = 0;
     let skipped = 0;
@@ -354,7 +302,6 @@ async function pollOnce() {
 
       if (!state.seenFiles.has(remotePath)) {
         state.seenFiles.add(remotePath);
-        dbg("poll:new-file-seen", remotePath);
       }
 
       const events = processFile(remotePath, content, ftpItem);
@@ -363,8 +310,6 @@ async function pollOnce() {
       if (events.length) {
         dbg("poll:events", { file: remotePath, count: events.length });
         await handleEvents(events);
-      } else {
-        log("poll:no-events", remotePath);
       }
     }
 
@@ -378,13 +323,11 @@ async function pollOnce() {
     });
   } finally {
     state.inFlight = false;
-    dbg("poll:inFlight-cleared", { cycle: state.cycle });
   }
 }
 
 function scheduleNext() {
   if (!state.running) return;
-  dbg("schedule:next", { inMs: LOOP_INTERVAL, nextAt: new Date(Date.now() + LOOP_INTERVAL).toISOString() });
   state.timer = setTimeout(async () => {
     try {
       await pollOnce();
@@ -419,7 +362,6 @@ function stop() {
   state.running = false;
   if (state.timer) clearTimeout(state.timer);
   state.timer = null;
-  dbg("STOP", null);
 }
 
 module.exports = { start, stop, pollOnce, state };
