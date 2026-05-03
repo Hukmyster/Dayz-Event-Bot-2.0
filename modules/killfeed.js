@@ -11,13 +11,11 @@ const STAGING_LOG = path.join(LOCAL_DIR, "serverlog.ADM");
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+let running = false;
+let started = false;
+
 function ensureLogsDir() {
   fs.mkdirSync(LOCAL_DIR, { recursive: true });
-}
-
-function log(msg, data) {
-  if (data !== undefined) console.log(msg, data);
-  else console.log(msg);
 }
 
 function debug(msg, data) {
@@ -111,6 +109,7 @@ function countLines(filePath) {
 
 async function mirrorLatest(admRegex) {
   const remoteDir = process.env.KILLFEED_REMOTE_DIR || getPlatformDir();
+  debug("[proof] remote dir", remoteDir);
   const entries = await listFiles(remoteDir);
   const latest = pickLatestAdm(entries, admRegex);
   if (!latest) throw new Error(`No ADM file found in ${remoteDir}`);
@@ -121,11 +120,12 @@ async function mirrorLatest(admRegex) {
   return {
     name: latest.name,
     bytes: stats.size,
-    lines: countLines(LOCAL_LOG)
+    lines: countLines(LOCAL_LOG),
+    remoteDir
   };
 }
 
-async function main() {
+async function loopWatcher() {
   ensureLogsDir();
 
   const admRegex = getAdmRegex();
@@ -139,9 +139,7 @@ async function main() {
   let staleHits = 0;
   let everSucceeded = false;
 
-  log("[proof] starting ADM watcher");
-  debug("[proof] remote dir", process.env.KILLFEED_REMOTE_DIR || getPlatformDir());
-  debug("[proof] cycle ms", cycleMs);
+  console.log("[proof] starting ADM watcher");
 
   try {
     const snap = await mirrorLatest(admRegex);
@@ -149,12 +147,12 @@ async function main() {
     lastBytes = snap.bytes;
     lastLines = snap.lines;
     everSucceeded = true;
-    log(`[BRAg] brag: initial ADM snapshot ok | file=${lastName} bytes=${lastBytes} lines=${lastLines}`);
+    console.log(`[BRAg] brag: initial ADM snapshot ok | dir=${snap.remoteDir} file=${lastName} bytes=${lastBytes} lines=${lastLines}`);
   } catch (err) {
-    log("[proof] initial snapshot failed", err.message || err);
+    console.log("[proof] initial snapshot failed", err.message || err);
   }
 
-  while (true) {
+  while (running) {
     await sleep(cycleMs);
 
     try {
@@ -165,7 +163,7 @@ async function main() {
       if (nameChanged || grew) {
         staleHits = 0;
         const reason = nameChanged ? "new ADM file" : "new lines in existing ADM";
-        log(`[BRAg] brag: ${reason} | file=${snap.name} bytes=${snap.bytes} lines=${snap.lines}`);
+        console.log(`[BRAg] brag: ${reason} | dir=${snap.remoteDir} file=${snap.name} bytes=${snap.bytes} lines=${snap.lines}`);
         lastName = snap.name;
         lastBytes = snap.bytes;
         lastLines = snap.lines;
@@ -181,20 +179,27 @@ async function main() {
         }
       }
     } catch (err) {
-      log("[proof] poll failed", err.message || err);
+      console.log("[proof] poll failed", err.message || err);
     }
   }
 }
 
-process.on("unhandledRejection", err => {
-  console.error("[proof] unhandledRejection", err);
-});
+async function start() {
+  if (started) return;
+  started = true;
+  running = true;
+  try {
+    await loopWatcher();
+  } catch (err) {
+    console.error("[proof] fatal", err);
+  }
+}
 
-process.on("uncaughtException", err => {
-  console.error("[proof] uncaughtException", err);
-});
+function stop() {
+  running = false;
+}
 
-main().catch(err => {
-  console.error("[proof] fatal", err);
-  process.exit(1);
-});
+module.exports = {
+  start,
+  stop
+};
