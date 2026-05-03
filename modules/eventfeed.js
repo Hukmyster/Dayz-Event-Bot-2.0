@@ -2,6 +2,39 @@ const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
 const WEBHOOK_URL = process.env.EVENTFEED_WEBHOOK_URL || "";
 const LOOP_MS = 5 * 60 * 1000;
+const EVENTFEED_DEBUG = String(process.env.EVENTFEED_DEBUG || "false").toLowerCase() === "true";
+
+const MAX_FILES = 5;
+
+const TRIGGERS = {
+  "lootmax 1": { type: "Crate", location: "NEAF", coords: "12326.443 141.268 12445.012" },
+  "lootmax 2": { type: "Crate", location: "SWAF", coords: "5049.104 10.768 2440.176" },
+  "lootmax 3": { type: "Crate", location: "NWAF", coords: "4704.286 340.096 9823.721" },
+
+  "lootmax 4": { type: "Horde", location: "Cherno West", coords: "6561.959 2461.536" },
+  "lootmax 5": { type: "Horde", location: "Cherno East", coords: "7624.959 3225.536" },
+  "lootmax 6": { type: "Horde", location: "Berezino West", coords: "12275.959 9574.536" },
+  "lootmax 7": { type: "Horde", location: "Berezino East", coords: "12840.959 9812.536" },
+  "lootmax 8": { type: "Horde", location: "Electro", coords: "10489.959 2341.536" },
+  "lootmax 9": { type: "Horde", location: "Svet", coords: "13946.959 13236.536" },
+  "lootmax 10": { type: "Horde", location: "Novo", coords: "11495.959 14337.536" },
+  "lootmax 11": { type: "Horde", location: "Sevrograd", coords: "7730.959 12587.536" },
+  "lootmax 12": { type: "Horde", location: "Novoya", coords: "3455.959 13057.536" },
+  "lootmax 13": { type: "Horde", location: "Lopatino", coords: "2770.959 9938.536" },
+  "lootmax 14": { type: "Horde", location: "Pustoshka", coords: "3054.959 7865.536" },
+  "lootmax 15": { type: "Horde", location: "Pavlovo", coords: "1726.959 3871.536" },
+
+  "lootmax 16": { type: "AirDrop", location: "VMC", coords: "4293.901 314.482 8319.655" },
+  "lootmax 17": { type: "AirDrop", location: "Altar", coords: "8164.277 474.996 9092.780" },
+  "lootmax 18": { type: "AirDrop", location: "MB Kamensk", coords: "7999.17 341.301 14633.3" },
+  "lootmax 19": { type: "AirDrop", location: "Tisy", coords: "1647.59 452.303 14007.204" },
+  "lootmax 20": { type: "AirDrop", location: "NWAF", coords: "4166.85 339.750 10741.5" },
+  "lootmax 21": { type: "AirDrop", location: "NEAF", coords: "12383 141.924 12410" },
+  "lootmax 22": { type: "AirDrop", location: "Balota", coords: "5013.265 10.456 2472.806" },
+  "lootmax 23": { type: "AirDrop", location: "Pavlovo", coords: "2075.365 110.525 3502.136" },
+  "lootmax 24": { type: "AirDrop", location: "Green Mountain", coords: "3703.102 402.9561 5993.007" },
+  "lootmax 25": { type: "AirDrop", location: "Myshkino West Tents", coords: "1160.616 186.296 7252.222" }
+};
 
 const state = {
   started: false,
@@ -9,12 +42,12 @@ const state = {
   running: false,
   startedAt: new Date().toISOString(),
   username: "",
-  seenFiles: new Set(),
-  fileMeta: new Map(),
+  fileState: new Map(),
   sentEventIds: new Set()
 };
 
-function logLoop(tag, data) {
+function dbg(tag, data) {
+  if (!EVENTFEED_DEBUG) return;
   const ts = new Date().toISOString();
   const dataStr = data !== undefined ? JSON.stringify(data) : "";
   console.log(`[eventfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
@@ -30,29 +63,52 @@ function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
 
+function buildMessage(triggerKey) {
+  const entry = TRIGGERS[triggerKey];
+  if (!entry) return null;
+  return `A ${entry.type} has been spotted in ${entry.location} ${entry.coords} get there quick before you miss out!`;
+}
+
+function parseTrigger(line) {
+  const m = line.match(/\blootmax\s*(?:[1-9]|1[0-9]|2[0-5])\b/i);
+  if (!m) return null;
+  const key = `lootmax ${m[0].match(/\d+/)[0]}`;
+  return key.toLowerCase();
+}
+
 function parseEventLine(line) {
-  if (!/lootmax\s+1-25/i.test(line)) return null;
+  const triggerKey = parseTrigger(line);
+  if (!triggerKey) return null;
+
+  const trigger = TRIGGERS[triggerKey];
+  if (!trigger) return null;
 
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
   return {
     time: timeMatch ? timeMatch[1] : "unknown",
-    trigger: "lootmax 1-25",
-    message: normalizeLine(line),
+    trigger: triggerKey,
+    triggerLabel: `lootmax ${triggerKey.split(" ")[1]}`,
+    type: trigger.type,
+    location: trigger.location,
+    coords: trigger.coords,
+    message: buildMessage(triggerKey),
     raw: line
   };
 }
 
 function buildEventId(fileName, evt) {
-  return [fileName, evt.time, evt.trigger, evt.message].join("|");
+  return [fileName, evt.time, evt.trigger, evt.message, evt.raw].join("|");
 }
 
 function formatEmbed(evt) {
   return {
     title: "📡 EVENT DETECTED",
-    color: 0x3498db,
+    color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
     fields: [
-      { name: "Trigger", value: evt.trigger || "unknown", inline: true },
-      { name: "Time", value: evt.time || "unknown", inline: true },
+      { name: "Trigger", value: evt.triggerLabel || evt.trigger || "unknown", inline: true },
+      { name: "Type", value: evt.type || "unknown", inline: true },
+      { name: "Location", value: evt.location || "unknown", inline: true },
+      { name: "Coords", value: evt.coords || "unknown", inline: false },
       { name: "Message", value: evt.message || "Unknown", inline: false }
     ]
   };
@@ -85,11 +141,17 @@ async function fetchServerInfo() {
   return await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers`);
 }
 
+function parseLogTimestamp(filename) {
+  const m = String(filename || "").match(/_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+  if (!m) return 0;
+  return Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}Z`) || 0;
+}
+
 function collectCandidates(serverJson) {
   const gs = serverJson?.data?.gameserver || {};
   const username = gs?.username || "";
   const files = gs?.game_specific?.log_files || [];
-  const paths = [];
+  const list = [];
 
   for (const item of Array.isArray(files) ? files : []) {
     const raw = typeof item === "string" ? item : (item?.path || item?.file || item?.name || item?.filename || "");
@@ -97,12 +159,25 @@ function collectCandidates(serverJson) {
     if (!base) continue;
     const filename = base.split("/").pop();
     if (!/\.rpt$/i.test(filename)) continue;
-    paths.push(`/games/${username}/noftp/dayzps/config/${filename}`);
-    paths.push(`/games/${username}/noftp/${base.replace(/^\/+/, "")}`);
-    paths.push(base);
+
+    list.push({
+      filename,
+      sortKey: parseLogTimestamp(filename),
+      candidates: [
+        `/games/${username}/noftp/dayzps/config/${filename}`,
+        `/games/${username}/noftp/${base.replace(/^\/+/, "")}`,
+        base
+      ]
+    });
   }
 
-  return { username, paths: [...new Set(paths.map(normalizePath))] };
+  list.sort((a, b) => b.sortKey - a.sortKey || a.filename.localeCompare(b.filename));
+  const chosen = list.slice(0, MAX_FILES);
+
+  return {
+    username,
+    paths: [...new Set(chosen.flatMap(x => x.candidates).map(normalizePath))]
+  };
 }
 
 async function getDownloadToken(filePath) {
@@ -159,33 +234,38 @@ function fingerprint(content) {
 
 function processFile(remotePath, content) {
   const current = fingerprint(content);
-  const previous = state.fileMeta.get(remotePath) || { lineCount: 0, firstLine: "", lastLine: "" };
-  const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
-  const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
-
+  const previous = state.fileState.get(remotePath) || { lineCount: 0, lastLine: "" };
   const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
-  const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
+  const startIndex = current.lineCount >= previous.lineCount && previous.lineCount > 0 ? previous.lineCount : 0;
   const events = [];
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
-    if (!line || !/lootmax\s+1-25/i.test(line)) continue;
     const evt = parseEventLine(line);
     if (!evt) continue;
+
     const id = buildEventId(remotePath.split("/").pop() || remotePath, evt);
-    if (state.sentEventIds.has(id)) continue;
+    const duplicate = state.sentEventIds.has(id);
+
+    dbg("MATCH", { file: remotePath, line, parsed: evt, duplicate });
+
+    if (duplicate) continue;
     state.sentEventIds.add(id);
     events.push(evt);
   }
 
-  state.fileMeta.set(remotePath, current);
+  state.fileState.set(remotePath, {
+    lineCount: current.lineCount,
+    lastLine: current.lastLine
+  });
+
   return events;
 }
 
 async function loopOnce() {
-  logLoop("loop:start", { loopMs: LOOP_MS });
+  dbg("loop:start", { loopMs: LOOP_MS });
   if (state.running) {
-    logLoop("loop:end", { skipped: true });
+    dbg("loop:end", { skipped: true });
     return;
   }
 
@@ -194,15 +274,6 @@ async function loopOnce() {
     const serverJson = await fetchServerInfo();
     const { username, paths } = collectCandidates(serverJson);
     state.username = username;
-
-    const newFiles = [];
-    for (const p of paths) {
-      if (!state.seenFiles.has(p)) {
-        state.seenFiles.add(p);
-        newFiles.push(p);
-      }
-    }
-    logLoop("new:files", { count: newFiles.length });
 
     let newEvents = 0;
     for (const remotePath of paths) {
@@ -213,13 +284,20 @@ async function loopOnce() {
           newEvents++;
           await postWebhook(evt);
         }
-      } catch {}
+      } catch (err) {
+        if (EVENTFEED_DEBUG) {
+          console.log("[EVENTFEED][READ_ERROR]", JSON.stringify({
+            file: remotePath,
+            error: err?.message || String(err)
+          }));
+        }
+      }
     }
 
-    logLoop("new:events", { count: newEvents });
+    dbg("new:events", { count: newEvents });
   } finally {
     state.running = false;
-    logLoop("loop:end", {});
+    dbg("loop:end", {});
   }
 }
 
