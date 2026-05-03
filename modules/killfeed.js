@@ -4,13 +4,16 @@ const DEBUG = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "t
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
+
 const ROOT_DIRS = ["/", "/dayzps", "/dayzps/config", "/dayzps/storage", "/server"];
-const MAX_DEPTH = 12;
+const MAX_DEPTH = 20;
+const MAX_DIRS = 5000;
 
 const state = {
-  seenFiles: new Set(),
-  foundPaths: new Set(),
   visitedDirs: new Set(),
+  foundPaths: new Set(),
+  attemptedDirs: new Set(),
+  discoveredLogFiles: new Set(),
   lastEvents: new Set(),
   startedAt: new Date().toISOString()
 };
@@ -45,6 +48,12 @@ function normalizePath(p) {
   return s.startsWith("/") ? s : `/${s}`;
 }
 
+function joinChild(base, child) {
+  const b = normalizePath(base);
+  const c = String(child || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  return normalizePath(path.posix.join(b, c));
+}
+
 function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
@@ -54,8 +63,8 @@ function fingerprint(content) {
   const lines = raw[raw.length - 1] === "" ? raw.slice(0, -1) : raw;
   return {
     lineCount: lines.length,
-    lastLine: normalizeLine(lines[lines.length - 1] || ""),
-    firstLine: normalizeLine(lines[0] || "")
+    firstLine: normalizeLine(lines[0] || ""),
+    lastLine: normalizeLine(lines[lines.length - 1] || "")
   };
 }
 
@@ -63,10 +72,6 @@ function cleanNpcName(name) {
   const n = String(name || "").trim();
   if (!n || n === `"` || n === `""`) return "Unknown NPC";
   return n;
-}
-
-function buildEventMessage(event) {
-  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
 }
 
 function parseAdmKillLine(line) {
@@ -79,44 +84,49 @@ function parseAdmKillLine(line) {
   return {
     type: "kill",
     time: timeMatch ? timeMatch[1] : "unknown time",
-    victim: cleanNpcName(victimRaw && victimRaw[1] ? victimRaw[1] : "Unknown NPC"),
-    killer: killerMatch && killerMatch[1] ? killerMatch[1] : "Unknown",
-    weapon: weaponMatch && weaponMatch[1] ? weaponMatch[1].trim() : "Unknown",
-    distance: distanceMatch && distanceMatch[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
+    victim: cleanNpcName(victimRaw?.[1] || "Unknown NPC"),
+    killer: killerMatch?.[1] || "Unknown",
+    weapon: weaponMatch?.[1]?.trim() || "Unknown",
+    distance: distanceMatch?.[1] ? Number(distanceMatch[1]).toFixed(1) : "0.0",
     raw: line
   };
 }
 
-async function nitradoRequest(url, opts = {}) {
+function buildEventMessage(event) {
+  return `💀 **${event.victim}** killed by **${event.killer}** with **${event.weapon}** from **${event.distance}m** | ${event.time}`;
+}
+
+async function nitradoRequest(url) {
   const res = await fetch(url, {
-    ...opts,
     headers: {
       Authorization: `Bearer ${API_TOKEN}`,
-      Accept: "application/json",
-      ...(opts.headers || {})
+      Accept: "application/json"
     }
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Nitrado HTTP ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`Nitrado HTTP ${res.status}: ${text.slice(0, 250)}`);
   }
   return res;
 }
 
 function extractEntries(json) {
   const data = json?.data || json || {};
-  return data.entries || data.items || data.files || [];
-}
-
-function entryPath(entry) {
-  return normalizePath(entry?.path || entry?.filename || entry?.name || "");
+  return data.entries || data.items || data.files || data.children || [];
 }
 
 function isDir(entry) {
   const t = String(entry?.type || entry?.kind || entry?.entry_type || "").toLowerCase();
   if (t.includes("dir")) return true;
   if (entry?.is_dir === true || entry?.directory === true) return true;
-  return !entry?.name?.match(/\.[a-z0-9]+$/i) && !entry?.path?.match(/\.[a-z0-9]+$/i) && !entry?.size;
+  const p = String(entry?.path || entry?.filename || entry?.name || "");
+  return !/\.[a-z0-9]+$/i.test(p) && !entry?.size;
+}
+
+function entryPath(entry, fallbackDir) {
+  const raw = entry?.path || entry?.filename || entry?.name || "";
+  if (!raw) return fallbackDir ? joinChild(fallbackDir, entry?.name || "") : "/";
+  return normalizePath(raw);
 }
 
 async function listDirectory(dir) {
@@ -126,56 +136,116 @@ async function listDirectory(dir) {
   return extractEntries(json);
 }
 
+async function fetchGameServerInfo() {
+  const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers`;
+  const res = await nitradoRequest(url);
+  return await res.json();
+}
+
+function collectPrimaryPaths(gameServerJson) {
+  const files = gameServerJson?.data?.gameserver?.game_specific?.log_files || [];
+  const paths = [];
+
+  for (const item of Array.isArray(files) ? files : []) {
+    if (typeof item === "string") {
+      paths.push(normalizePath(item));
+      continue;
+    }
+    const p = item?.path || item?.file || item?.name || item?.filename || "";
+    if (p) paths.push(normalizePath(p));
+  }
+
+  return [...new Set(paths)];
+}
+
 async function discoverFromDir(dir, depth = 0) {
   const ndir = normalizePath(dir);
   if (depth > MAX_DEPTH) return;
   if (state.visitedDirs.has(ndir)) return;
-  state.visitedDirs.add(ndir);
+  if (state.visitedDirs.size >= MAX_DIRS) return;
 
+  state.visitedDirs.add(ndir);
+  state.attemptedDirs.add(ndir);
   log("scan:attempt", { dir: ndir, depth });
 
   let entries = [];
   try {
     entries = await listDirectory(ndir);
   } catch (err) {
-    warn("discover:list-failed", { dir: ndir, error: err.message });
+    warn("scan:list-failed", { dir: ndir, error: err.message });
     return;
   }
 
-  let loggedOne = false;
+  let loggedHit = false;
+
   for (const entry of Array.isArray(entries) ? entries : []) {
-    const p = entryPath(entry);
+    const p = entryPath(entry, ndir);
     const name = String(entry?.name || path.posix.basename(p) || "").trim();
     const looksAdm = /\.adm$/i.test(p) || /\.adm$/i.test(name);
 
     if (looksAdm) {
       state.foundPaths.add(p);
-      if (!loggedOne) {
+      if (!loggedHit) {
         log("found:adm", { path: p, dir: ndir });
-        loggedOne = true;
+        loggedHit = true;
       }
+      continue;
     }
 
     if (isDir(entry)) {
-      const child = p || normalizePath(path.posix.join(ndir, name));
-      if (child && child !== ndir) await discoverFromDir(child, depth + 1);
+      const child = p && p !== ndir ? p : joinChild(ndir, name);
+      if (child && child !== ndir) {
+        await discoverFromDir(child, depth + 1);
+      }
     }
   }
 }
 
-async function discoverAllAdmPaths() {
+async function fallbackRecursiveScan() {
   state.visitedDirs.clear();
   state.foundPaths.clear();
-  for (const root of ROOT_DIRS) await discoverFromDir(root, 0);
-  const paths = [...state.foundPaths].sort();
-  log("discover:done", { admPaths: paths.length, visitedDirs: state.visitedDirs.size });
-  return paths;
+
+  for (const root of ROOT_DIRS) {
+    await discoverFromDir(root, 0);
+  }
+
+  return [...state.foundPaths].sort();
+}
+
+async function discoverAllPaths() {
+  ensureConfig();
+
+  const serverJson = await fetchGameServerInfo();
+  const primaryPaths = collectPrimaryPaths(serverJson);
+  for (const p of primaryPaths) state.discoveredLogFiles.add(p);
+
+  if (DEBUG) {
+    log("primary:log_files", {
+      count: primaryPaths.length,
+      sample: primaryPaths.length ? primaryPaths[0] : null
+    });
+  }
+
+  const fallbackPaths = await fallbackRecursiveScan();
+  for (const p of fallbackPaths) state.discoveredLogFiles.add(p);
+
+  const combined = [...state.discoveredLogFiles].sort();
+
+  log("discover:done", {
+    primaryCount: primaryPaths.length,
+    fallbackCount: fallbackPaths.length,
+    totalCount: combined.length,
+    visitedDirs: state.visitedDirs.size
+  });
+
+  return { primaryPaths, fallbackPaths, combined, serverJson };
 }
 
 async function readRemoteFile(remotePath) {
   const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(remotePath)}`;
   const res = await nitradoRequest(url);
   const contentType = res.headers.get("content-type") || "";
+
   if (contentType.includes("application/json")) {
     const json = await res.json();
     const maybe = json?.data?.content || json?.data?.file?.content || json?.data?.download || json?.data?.url;
@@ -187,22 +257,13 @@ async function readRemoteFile(remotePath) {
     if (typeof maybe === "string") return maybe;
     return JSON.stringify(json);
   }
+
   return await res.text();
 }
 
-async function safePostWebhook(payload) {
-  if (!WEBHOOK_URL) return false;
-  try {
-    const res = await fetch(WEBHOOK_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-function processFile(remotePath, content, meta) {
+function processFile(remotePath, content) {
   const current = fingerprint(content);
-  const previous = state.fileMeta.get(remotePath) || { lineCount: 0, lastLine: "", firstLine: "", size: -1, modifiedAt: null };
+  const previous = state.lastEvents.get(remotePath) || { lineCount: 0, firstLine: "", lastLine: "" };
   const rotated = previous.lineCount > current.lineCount && current.lineCount > 0;
   const reset = rotated || (previous.lastLine && current.firstLine && previous.lastLine !== current.firstLine && current.lineCount <= previous.lineCount);
 
@@ -215,54 +276,70 @@ function processFile(remotePath, content, meta) {
     if (!line) continue;
     const event = parseAdmKillLine(line);
     if (!event) continue;
-    const dedupeKey = `${remotePath}|${event.type}|${event.raw}`;
-    if (state.lastEvents.has(dedupeKey)) continue;
-    state.lastEvents.add(dedupeKey);
-    if (state.lastEvents.size > 2000) state.lastEvents.delete(state.lastEvents.values().next().value);
+    const key = `${remotePath}|${event.raw}`;
+    if (state.lastEvents.has(key)) continue;
+    state.lastEvents.add(key);
     events.push({ ...event, file: remotePath });
   }
 
-  state.fileMeta.set(remotePath, { ...current, size: meta.size, modifiedAt: meta.modifiedAt });
+  state.lastEvents.set(remotePath, current);
   return events;
 }
 
-async function handleEvents(events) {
-  for (const evt of events) await safePostWebhook({ content: buildEventMessage(evt) });
+async function safePostWebhook(payload) {
+  if (!WEBHOOK_URL) return false;
+  try {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
-async function pollOnce() {
-  ensureConfig();
-  dbg("poll:start", { source: "nitrado-api" });
-  const discovered = await discoverAllAdmPaths();
+async function handleEvents(events) {
+  for (const evt of events) {
+    await safePostWebhook({ content: buildEventMessage(evt) });
+  }
+}
 
-  let totalEvents = 0;
-  for (const remotePath of discovered) {
-    let content;
+async function run() {
+  dbg("START", { debug: DEBUG, webhookEnabled: !!WEBHOOK_URL, source: "nitrado-api", serviceId: SERVICE_ID, startedAt: state.startedAt });
+
+  const discovered = await discoverAllPaths();
+  const readable = [];
+
+  for (const remotePath of discovered.combined) {
     try {
-      content = await readRemoteFile(remotePath);
+      const content = await readRemoteFile(remotePath);
+      readable.push(remotePath);
+      const events = processFile(remotePath, content);
+      if (events.length) {
+        log("poll:events", { file: remotePath, count: events.length });
+        await handleEvents(events);
+      } else {
+        log("read:ok", { path: remotePath, bytes: content.length });
+      }
     } catch (err) {
-      warn("poll:read-failed", { file: remotePath, error: err.message });
-      continue;
-    }
-
-    const meta = { size: content.length, modifiedAt: null };
-    state.seenFiles.add(remotePath);
-    const events = processFile(remotePath, content, meta);
-    totalEvents += events.length;
-    if (events.length) {
-      log("poll:events", { file: remotePath, count: events.length });
-      await handleEvents(events);
+      warn("read:failed", { path: remotePath, error: err.message });
     }
   }
 
-  dbg("poll:end", { totalEvents, discovered: discovered.length, visitedDirs: state.visitedDirs.size });
-  console.log(JSON.stringify({ admPaths: discovered, count: discovered.length }, null, 2));
+  console.log(JSON.stringify({
+    primaryPaths: discovered.primaryPaths,
+    fallbackPaths: discovered.fallbackPaths,
+    readablePaths: readable,
+    totalDiscovered: discovered.combined.length
+  }, null, 2));
 }
 
 function start() {
-  return pollOnce();
+  return run();
 }
 
 function stop() {}
 
-module.exports = { start, stop, pollOnce, state };
+module.exports = { start, stop };
