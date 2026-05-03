@@ -18,13 +18,6 @@ function ensureLogsDir() {
   fs.mkdirSync(LOCAL_DIR, { recursive: true });
 }
 
-function debug(msg, data) {
-  if (process.env.KILLFEED_DEBUG === "true") {
-    if (data !== undefined) console.log(msg, data);
-    else console.log(msg);
-  }
-}
-
 function getPlatformDir() {
   const platform = String(process.env.PLATFORM || "").toUpperCase();
   if (platform.includes("XBOX")) return "/noftp/dayzxb/config";
@@ -107,9 +100,18 @@ function countLines(filePath) {
   return txt.split(/\r?\n/).filter(Boolean).length;
 }
 
+function countTotalLinesFromEntries(entries) {
+  let total = 0;
+  for (const e of entries || []) {
+    if (e.type === "file" && typeof e.name === "string" && e.name.endsWith(".ADM")) {
+      total += Number(e.size || 0) > 0 ? 1 : 0;
+    }
+  }
+  return total;
+}
+
 async function mirrorLatest(admRegex) {
   const remoteDir = process.env.KILLFEED_REMOTE_DIR || getPlatformDir();
-  debug("[proof] remote dir", remoteDir);
   const entries = await listFiles(remoteDir);
   const latest = pickLatestAdm(entries, admRegex);
   if (!latest) throw new Error(`No ADM file found in ${remoteDir}`);
@@ -121,7 +123,9 @@ async function mirrorLatest(admRegex) {
     name: latest.name,
     bytes: stats.size,
     lines: countLines(LOCAL_LOG),
-    remoteDir
+    remoteDir,
+    fileCount: entries.filter(e => e.type === "file").length,
+    totalLinesAllFiles: entries.filter(e => e.type === "file").length
   };
 }
 
@@ -138,6 +142,7 @@ async function loopWatcher() {
   let lastLines = 0;
   let staleHits = 0;
   let everSucceeded = false;
+  let lastObservedAllLines = 0;
 
   console.log("[proof] starting ADM watcher");
 
@@ -146,6 +151,7 @@ async function loopWatcher() {
     lastName = snap.name;
     lastBytes = snap.bytes;
     lastLines = snap.lines;
+    lastObservedAllLines = snap.lines;
     everSucceeded = true;
     console.log(`[BRAg] brag: initial ADM snapshot ok | dir=${snap.remoteDir} file=${lastName} bytes=${lastBytes} lines=${lastLines}`);
   } catch (err) {
@@ -156,7 +162,39 @@ async function loopWatcher() {
     await sleep(cycleMs);
 
     try {
-      const snap = await mirrorLatest(admRegex);
+      const remoteDir = process.env.KILLFEED_REMOTE_DIR || getPlatformDir();
+      const entries = await listFiles(remoteDir);
+      const fileEntries = entries.filter(e => e.type === "file");
+      const latest = pickLatestAdm(entries, admRegex);
+
+      const loopFileCount = fileEntries.length;
+      const loopLineCount = fileEntries.reduce((sum, e) => sum + (e.name && e.name.endsWith(".ADM") ? 1 : 0), 0);
+
+      let snap = null;
+      if (latest) {
+        await downloadFile(`${remoteDir}/${latest.name}`);
+        fs.copyFileSync(STAGING_LOG, LOCAL_LOG);
+        const stats = fs.statSync(LOCAL_LOG);
+        snap = {
+          name: latest.name,
+          bytes: stats.size,
+          lines: countLines(LOCAL_LOG),
+          remoteDir
+        };
+      }
+
+      const currentLines = snap ? snap.lines : 0;
+      const newLinesThisCycle = Math.max(0, currentLines - lastObservedAllLines);
+
+      console.log(`[proof] files found: ${loopFileCount}`);
+      console.log(`[proof] lines found: ${currentLines}`);
+      console.log(`[proof] new lines this cycle: ${newLinesThisCycle}`);
+
+      if (!snap) {
+        console.log("[proof] poll failed No ADM file found in current loop");
+        continue;
+      }
+
       const nameChanged = snap.name !== lastName;
       const grew = snap.bytes > lastBytes || snap.lines > lastLines;
 
@@ -167,14 +205,14 @@ async function loopWatcher() {
         lastName = snap.name;
         lastBytes = snap.bytes;
         lastLines = snap.lines;
+        lastObservedAllLines = snap.lines;
         everSucceeded = true;
       } else {
         staleHits += 1;
-        debug("[proof] no change", { file: snap.name, bytes: snap.bytes, lines: snap.lines, staleHits });
         if (staleHits >= staleLimit) {
           staleHits = 0;
           if (standbyAfterSuccess && everSucceeded) {
-            debug("[proof] standing by after success");
+            console.log("[proof] standby after success");
           }
         }
       }
