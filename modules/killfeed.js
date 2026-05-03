@@ -11,7 +11,7 @@ const state = {
   username: "",
   seenFiles: new Set(),
   fileMeta: new Map(),
-  seenEvents: new Set()
+  sentEventIds: new Set()
 };
 
 function logLoop(tag, data) {
@@ -55,15 +55,39 @@ function parseKillLine(line) {
   };
 }
 
-function formatDiscordMessage(evt) {
+function buildEventId(fileName, evt) {
   return [
-    "💀 KILL CONFIRMED",
-    `Victim: ${evt.victim}`,
-    `Killer: ${evt.killer}`,
-    `Weapon: ${evt.weapon}`,
-    `Distance: ${evt.distance}m`,
-    `Time: ${evt.time}`
-  ].join("\n");
+    fileName,
+    evt.time,
+    evt.victim,
+    evt.killer,
+    evt.weapon,
+    evt.distance
+  ].join("|");
+}
+
+function formatEmbed(evt) {
+  return {
+    title: "💀 KILL CONFIRMED",
+    color: 0xc0392b,
+    fields: [
+      { name: "Victim", value: evt.victim || "NPC", inline: true },
+      { name: "Killer", value: evt.killer || "Unknown", inline: true },
+      { name: "Weapon", value: evt.weapon || "Unknown", inline: true },
+      { name: "Distance", value: `${evt.distance || "0"}m`, inline: true },
+      { name: "Time", value: evt.time || "unknown", inline: true }
+    ]
+  };
+}
+
+async function postWebhook(evt) {
+  if (!WEBHOOK_URL) return;
+  const payload = { embeds: [formatEmbed(evt)] };
+  await fetch(WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
 }
 
 async function nitradoRequest(url, opts = {}) {
@@ -170,9 +194,9 @@ function processFile(remotePath, content) {
     if (!line || !line.includes("killed by")) continue;
     const evt = parseKillLine(line);
     if (!evt) continue;
-    const key = `${remotePath}|${evt.raw}`;
-    if (state.seenEvents.has(key)) continue;
-    state.seenEvents.add(key);
+    const id = buildEventId(remotePath.split("/").pop() || remotePath, evt);
+    if (state.sentEventIds.has(id)) continue;
+    state.sentEventIds.add(id);
     events.push(evt);
   }
 
@@ -180,17 +204,8 @@ function processFile(remotePath, content) {
   return events;
 }
 
-async function postWebhook(evt) {
-  if (!WEBHOOK_URL) return;
-  await fetch(WEBHOOK_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: formatDiscordMessage(evt) })
-  });
-}
-
 async function loopOnce() {
-  logLoop("loop:start", { startedAt: state.startedAt, loopMs: LOOP_MS });
+  logLoop("loop:start", { loopMs: LOOP_MS });
   if (state.running) {
     logLoop("loop:end", { skipped: true });
     return;
@@ -212,9 +227,7 @@ async function loopOnce() {
     logLoop("new:files", { count: newFiles.length });
 
     let newEvents = 0;
-    const allTargets = [...new Set([...newFiles, ...paths])];
-
-    for (const remotePath of allTargets) {
+    for (const remotePath of paths) {
       try {
         const result = await readRemoteFile(remotePath, username);
         const events = processFile(remotePath, result.content);
