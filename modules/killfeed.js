@@ -80,13 +80,11 @@ function buildEventMessage(event) {
 
 function parseAdmKillLine(line) {
   if (!line.includes("killed by")) return null;
-
   const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
   const victimRaw = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
   const killerMatch = line.match(/killed by Player\s+"([^"]*)"/i);
   const weaponMatch = line.match(/with\s+(.+?)\s+from\s+[0-9.]+\s+meters/i);
   const distanceMatch = line.match(/from\s+([0-9.]+)\s+meters/i);
-
   return {
     type: "kill",
     time: timeMatch ? timeMatch[1] : "unknown time",
@@ -115,15 +113,15 @@ async function nitradoRequest(url, opts = {}) {
 }
 
 async function listAdmFilesFromNitrado() {
-  const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/list`;
+  const url = `https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/list?dir=${encodeURIComponent(REMOTE_DIR)}&search=.ADM`;
   const res = await nitradoRequest(url);
   const json = await res.json();
 
-  const raw = json?.data?.files || json?.data || json?.data?.items || [];
-  const items = (Array.isArray(raw) ? raw : [])
+  const entries = json?.data?.entries || [];
+  const items = (Array.isArray(entries) ? entries : [])
     .map(item => {
-      const name = item.filename || item.name || item.path?.split("/").pop() || "";
       const remotePath = item.path || item.filename || item.name || "";
+      const name = item.name || item.filename || path.basename(remotePath);
       const size = item.size ?? -1;
       const modifiedAt = item.modified_at || item.modifiedAt || item.mtime || null;
       return {
@@ -172,22 +170,18 @@ function fileNeedsDownload(remotePath, ftpItem) {
     log("download:decision", { file: remotePath, reason: "NEW_FILE", size: ftpItem.size, mod: ftpItem.modifiedAt });
     return true;
   }
-
   if (ftpItem.size > 0 && prev.size >= 0 && ftpItem.size > prev.size) {
     log("download:decision", { file: remotePath, reason: "SIZE_GREW", prevSize: prev.size, nowSize: ftpItem.size });
     return true;
   }
-
   if (ftpItem.modifiedAt && prev.modifiedAt && ftpItem.modifiedAt !== prev.modifiedAt) {
     log("download:decision", { file: remotePath, reason: "MODIFIED_AT_CHANGED", prev: prev.modifiedAt, now: ftpItem.modifiedAt });
     return true;
   }
-
   if (ftpItem.size <= 0 && !ftpItem.modifiedAt) {
     log("download:decision", { file: remotePath, reason: "NO_METADATA_FALLBACK" });
     return true;
   }
-
   return false;
 }
 
@@ -222,14 +216,9 @@ function processFile(remotePath, content, ftpItem) {
   const startIndex = !reset && current.lineCount >= previous.lineCount ? previous.lineCount : 0;
   const events = [];
 
-  const scanned = 0;
-  const matched = 0;
-  const duped = 0;
-
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     if (!line) continue;
-
     const event = parseAdmKillLine(line);
     if (!event) continue;
 
@@ -258,7 +247,7 @@ function processFile(remotePath, content, ftpItem) {
     startIndex,
     reset: String(reset)
   });
-  log("poll:summary", { remotePath, scanned: lines.length, matched: events.length, duped, emitted: events.length });
+  log("poll:summary", { remotePath, scanned: lines.length, matched: events.length, duped: 0, emitted: events.length });
 
   return events;
 }
