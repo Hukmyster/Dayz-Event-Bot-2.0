@@ -152,28 +152,11 @@ function formatEmbed(evt) {
 
 async function postWebhook(evt) {
   if (!WEBHOOK_URL) return;
-
-  const payload = { embeds: [formatEmbed(evt)] };
-
-  if (DEBUG_ENABLED) {
-    debugLog("WEBHOOK_PAYLOAD", payload);
-  }
-
-  const res = await fetch(WEBHOOK_URL, {
+  await fetch(WEBHOOK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ embeds: [formatEmbed(evt)] })
   });
-
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    errorLog("WEBHOOK_ERROR", {
-      status: res.status,
-      body: text.slice(0, 250)
-    });
-  } else if (DEBUG_ENABLED) {
-    debugLog("WEBHOOK_OK", { status: res.status });
-  }
 }
 
 async function nitradoRequest(url, opts = {}) {
