@@ -36,6 +36,12 @@ const TRIGGERS = {
   25: { type: "AirDrop", location: "Myshkino West Tents", coords: "1160.616 186.296 7252.222" }
 };
 
+const TYPE_ICONS = {
+  Crate: "📦",
+  Horde: "🧟",
+  AirDrop: "📦"
+};
+
 const state = {
   started: false,
   timer: null,
@@ -99,15 +105,9 @@ function buildEventId(fileName, evt) {
 
 function formatEmbed(evt) {
   return {
-    title: "📡 EVENT DETECTED",
+    title: `${TYPE_ICONS[evt.type] || "📡"} EVENT DETECTED`,
     color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
-    fields: [
-      { name: "Trigger", value: evt.trigger || "unknown", inline: true },
-      { name: "Type", value: evt.type || "unknown", inline: true },
-      { name: "Location", value: evt.location || "unknown", inline: true },
-      { name: "Coords", value: evt.coords || "unknown", inline: false },
-      { name: "Message", value: evt.message || "Unknown", inline: false }
-    ]
+    description: evt.message || "Unknown"
   };
 }
 
