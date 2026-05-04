@@ -1,18 +1,46 @@
 const API_TOKEN = process.env.API_TOKEN || "";
 const SERVICE_ID = process.env.SERVICE_ID || "";
-const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
-const LOOP_MS = Number(process.env.KILLFEED_INTERNAL_MS || 30000);
-const DEBUG_ENABLED = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
-
-const EXPLOSIVE_KILLERS = new Set([
-  "6-M7 Frag Grenade",
-  "LandMineTrap",
-  "Land Mine",
-  "Grenade",
-  "M67 Grenade"
-]);
+const WEBHOOK_URL = process.env.EVENTFEED_WEBHOOK_URL || "";
+const LOOP_MS = 5 * 60 * 1000;
+const EVENTFEED_DEBUG = String(process.env.EVENTFEED_DEBUG || "false").toLowerCase() === "true";
 
 const MAX_FILES = 5;
+
+const TRIGGERS = {
+  1: { type: "Crate", location: "NEAF", coords: "12326.443 141.268 12445.012" },
+  2: { type: "Crate", location: "SWAF", coords: "5049.104 10.768 2440.176" },
+  3: { type: "Crate", location: "NWAF", coords: "4704.286 340.096 9823.721" },
+
+  4: { type: "Horde", location: "Cherno West", coords: "6561.959 2461.536" },
+  5: { type: "Horde", location: "Cherno East", coords: "7624.959 3225.536" },
+  6: { type: "Horde", location: "Berezino West", coords: "12275.959 9574.536" },
+  7: { type: "Horde", location: "Berezino East", coords: "12840.959 9812.536" },
+  8: { type: "Horde", location: "Electro", coords: "10489.959 2341.536" },
+  9: { type: "Horde", location: "Svet", coords: "13946.959 13236.536" },
+  10: { type: "Horde", location: "Novo", coords: "11495.959 14337.536" },
+  11: { type: "Horde", location: "Sevrograd", coords: "7730.959 12587.536" },
+  12: { type: "Horde", location: "Novoya", coords: "3455.959 13057.536" },
+  13: { type: "Horde", location: "Lopatino", coords: "2770.959 9938.536" },
+  14: { type: "Horde", location: "Pustoshka", coords: "3054.959 7865.536" },
+  15: { type: "Horde", location: "Pavlovo", coords: "1726.959 3871.536" },
+
+  16: { type: "AirDrop", location: "VMC", coords: "4293.901 314.482 8319.655" },
+  17: { type: "AirDrop", location: "Altar", coords: "8164.277 474.996 9092.780" },
+  18: { type: "AirDrop", location: "MB Kamensk", coords: "7999.17 341.301 14633.3" },
+  19: { type: "AirDrop", location: "Tisy", coords: "1647.59 452.303 14007.204" },
+  20: { type: "AirDrop", location: "NWAF", coords: "4166.85 339.750 10741.5" },
+  21: { type: "AirDrop", location: "NEAF", coords: "12383 141.924 12410" },
+  22: { type: "AirDrop", location: "Balota", coords: "5013.265 10.456 2472.806" },
+  23: { type: "AirDrop", location: "Pavlovo", coords: "2075.365 110.525 3502.136" },
+  24: { type: "AirDrop", location: "Green Mountain", coords: "3703.102 402.9561 5993.007" },
+  25: { type: "AirDrop", location: "Myshkino West Tents", coords: "1160.616 186.296 7252.222" }
+};
+
+const TYPE_ICONS = {
+  Crate: "📦",
+  Horde: "🧟",
+  AirDrop: "📦"
+};
 
 const state = {
   started: false,
@@ -24,20 +52,11 @@ const state = {
   sentEventIds: new Set()
 };
 
-function logLoop(tag, data) {
-  if (!DEBUG_ENABLED) return;
+function dbg(tag, data) {
+  if (!EVENTFEED_DEBUG) return;
   const ts = new Date().toISOString();
   const dataStr = data !== undefined ? JSON.stringify(data) : "";
-  console.log(`[killfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
-}
-
-function debugLog(tag, data) {
-  if (!DEBUG_ENABLED) return;
-  console.log(`[KILLFEED][${tag}]`, data);
-}
-
-function errorLog(tag, data) {
-  console.log(`[KILLFEED][${tag}]`, data);
+  console.log(`[eventfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
 }
 
 function normalizePath(p) {
@@ -50,103 +69,45 @@ function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
 
-function cleanVictim(name) {
-  const n = String(name || "").trim();
-  return n ? n : "NPC";
+function buildMessage(triggerNum) {
+  const entry = TRIGGERS[triggerNum];
+  if (!entry) return null;
+  return `A ${entry.type} has been spotted in ${entry.location} ${entry.coords} get there quick before you miss out!`;
 }
 
-function cleanKillerName(name) {
-  const n = String(name || "").trim();
-  return n ? n : "Unknown";
+function parseTrigger(line) {
+  const m = line.match(/lootmax:\s*(\d+)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
 }
 
-function isExplosiveKiller(killer) {
-  return EXPLOSIVE_KILLERS.has(cleanKillerName(killer));
-}
+function parseEventLine(line) {
+  const triggerNum = parseTrigger(line);
+  if (!triggerNum || !TRIGGERS[triggerNum]) return null;
 
-function extractLocation(line) {
-  const m = line.match(/pos=<([^>]+)>/i);
-  if (!m) return "";
-  const parts = m[1].split(",").map(s => s.trim());
-  if (parts.length < 2) return "";
-  return `${parts[0]}, ${parts[1]}`;
-}
-
-function parseKillLine(line) {
-  if (!line.includes("killed by")) return null;
-
-  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)\s*\|\s*/);
-  const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
-
-  const playerKillMatch = line.match(
-    /killed by\s+Player\s+"([^"]*)"\s+\(id=.*?\)\s+with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i
-  );
-
-  const explosiveKillMatch = line.match(
-    /killed by\s+(LandMineTrap|Land Mine|6-M7 Frag Grenade|Grenade|M67 Grenade)\s*$/i
-  );
-
-  const location = extractLocation(line);
-
-  if (playerKillMatch) {
-    const killer = cleanKillerName(playerKillMatch[1]);
-    return {
-      time: timeMatch ? timeMatch[1] : "unknown",
-      victim: cleanVictim(victimMatch?.[1] || ""),
-      killer,
-      weapon: playerKillMatch[2].trim(),
-      distance: playerKillMatch[3],
-      location: "",
-      explosive: isExplosiveKiller(killer),
-      raw: line
-    };
-  }
-
-  if (explosiveKillMatch) {
-    const killer = cleanKillerName(explosiveKillMatch[1]);
-    return {
-      time: timeMatch ? timeMatch[1] : "unknown",
-      victim: cleanVictim(victimMatch?.[1] || ""),
-      killer,
-      weapon: "",
-      distance: "",
-      location,
-      explosive: true,
-      raw: line
-    };
-  }
-
-  return null;
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
+  return {
+    time: timeMatch ? timeMatch[1] : "unknown",
+    trigger: `lootmax: ${triggerNum}`,
+    triggerNum,
+    type: TRIGGERS[triggerNum].type,
+    location: TRIGGERS[triggerNum].location,
+    coords: TRIGGERS[triggerNum].coords,
+    message: buildMessage(triggerNum),
+    raw: line
+  };
 }
 
 function buildEventId(fileName, evt) {
-  return [fileName, evt.time, evt.victim, evt.killer, evt.weapon, evt.distance, evt.location, evt.raw].join("|");
+  return [fileName, evt.time, evt.trigger, evt.message, evt.raw].join("|");
 }
 
 function formatEmbed(evt) {
-  if (evt.explosive) {
-    return {
-      title: "💥 DEATH CONFIRMED 💥",
-      color: 0xe67e22,
-      fields: [
-        { name: "Killer", value: evt.killer || "Unknown", inline: true },
-        { name: "Victim", value: evt.victim || "NPC", inline: true },
-        { name: "Location", value: evt.location || "Unknown", inline: true },
-        { name: "Time", value: evt.time || "unknown", inline: true }
-      ]
-    };
-  }
-
   return {
-    title: "💀 KILL CONFIRMED 💀",
-    color: 0xc0392b,
-    fields: [
-      { name: "Victim", value: evt.victim || "NPC", inline: true },
-      { name: "Killer", value: evt.killer || "Unknown", inline: true },
-      { name: "Weapon", value: evt.weapon || "Unknown", inline: true },
-      { name: "Distance", value: `${evt.distance || "0"}m`, inline: true },
-      { name: "Time", value: evt.time || "unknown", inline: true }
-    ]
+    title: `${TYPE_ICONS[evt.type] || "📡"} EVENT DETECTED`,
+    color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
+    description: evt.message || "Unknown"
   };
 }
 
@@ -194,7 +155,7 @@ function collectCandidates(serverJson) {
     const base = String(raw || "").trim();
     if (!base) continue;
     const filename = base.split("/").pop();
-    if (!/\.adm$/i.test(filename)) continue;
+    if (!/\.rpt$/i.test(filename)) continue;
 
     list.push({
       filename,
@@ -277,21 +238,15 @@ function processFile(remotePath, content) {
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
-    const evt = parseKillLine(line);
+    const evt = parseEventLine(line);
     if (!evt) continue;
 
     const id = buildEventId(remotePath.split("/").pop() || remotePath, evt);
     const duplicate = state.sentEventIds.has(id);
 
-    debugLog("MATCH", {
-      file: remotePath,
-      line,
-      parsed: evt,
-      duplicate
-    });
+    dbg("MATCH", { file: remotePath, line, parsed: evt, duplicate });
 
     if (duplicate) continue;
-
     state.sentEventIds.add(id);
     events.push(evt);
   }
@@ -305,9 +260,9 @@ function processFile(remotePath, content) {
 }
 
 async function loopOnce() {
-  logLoop("loop:start", { loopMs: LOOP_MS });
+  dbg("loop:start", { loopMs: LOOP_MS });
   if (state.running) {
-    logLoop("loop:end", { skipped: true });
+    dbg("loop:end", { skipped: true });
     return;
   }
 
@@ -327,17 +282,19 @@ async function loopOnce() {
           await postWebhook(evt);
         }
       } catch (err) {
-        errorLog("READ_ERROR", {
-          file: remotePath,
-          error: err?.message || String(err)
-        });
+        if (EVENTFEED_DEBUG) {
+          console.log("[EVENTFEED][READ_ERROR]", JSON.stringify({
+            file: remotePath,
+            error: err?.message || String(err)
+          }));
+        }
       }
     }
 
-    logLoop("new:events", { count: newEvents });
+    dbg("new:events", { count: newEvents });
   } finally {
     state.running = false;
-    logLoop("loop:end", {});
+    dbg("loop:end", {});
   }
 }
 
