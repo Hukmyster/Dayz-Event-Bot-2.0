@@ -93,23 +93,23 @@ function parseKillLine(line) {
   const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
 
   const playerKillMatch = line.match(
-    /Player\s+"([^"]*)"\s+\(id=.*?\s+pos=<[^>]+>\)\s+killed by\s+Player\s+"([^"]*)"\s+\(id=.*?\s+pos=<[^>]+>\)\s+with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i
+    /killed by\s+Player\s+"([^"]*)"\s+\(id=.*?\)\s+with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i
   );
 
   const explosiveKillMatch = line.match(
-    /Player\s+"([^"]*)"\s+\(id=.*?\s+pos=<[^>]+>\)\s+killed by\s+(LandMineTrap|Land Mine|6-M7 Frag Grenade|Grenade|M67 Grenade)\s*$/i
+    /killed by\s+(LandMineTrap|Land Mine|6-M7 Frag Grenade|Grenade|M67 Grenade)\s*$/i
   );
 
   const location = extractLocation(line);
 
   if (playerKillMatch) {
-    const killer = cleanKillerName(playerKillMatch[2]);
+    const killer = cleanKillerName(playerKillMatch[1]);
     return {
       time: timeMatch ? timeMatch[1] : "unknown",
-      victim: cleanVictim(playerKillMatch[1] || victimMatch?.[1] || ""),
+      victim: cleanVictim(victimMatch?.[1] || ""),
       killer,
-      weapon: playerKillMatch[3].trim(),
-      distance: playerKillMatch[4],
+      weapon: playerKillMatch[2].trim(),
+      distance: playerKillMatch[3],
       location: "",
       explosive: isExplosiveKiller(killer),
       raw: line
@@ -117,10 +117,10 @@ function parseKillLine(line) {
   }
 
   if (explosiveKillMatch) {
-    const killer = cleanKillerName(explosiveKillMatch[2]);
+    const killer = cleanKillerName(explosiveKillMatch[1]);
     return {
       time: timeMatch ? timeMatch[1] : "unknown",
-      victim: cleanVictim(explosiveKillMatch[1] || victimMatch?.[1] || ""),
+      victim: cleanVictim(victimMatch?.[1] || ""),
       killer,
       weapon: "",
       distance: "",
