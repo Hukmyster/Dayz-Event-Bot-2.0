@@ -267,7 +267,7 @@ async function savePurchaseSnippets(purchase) {
   return { saved: true, record, data };
 }
 
-async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, playerId = null) {
+async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, playerId = null, guildId = null) {
   loadOrders();
   itemName = normalizeText(itemName);
   qty = normalizeNumber(qty);
@@ -276,8 +276,9 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
   method = normalizeText(method).toLowerCase() || "wallet";
   balance = normalizeNumber(balance);
   playerId = normalizeText(playerId);
+  guildId = normalizeText(guildId);
 
-  debug.step("shop.buyItem", { itemName, qty, x, z, method, balance, playerId });
+  debug.step("shop.buyItem", { itemName, qty, x, z, method, balance, playerId, guildId });
 
   if (!itemName) return { reply: "Item is required" };
   if (!Number.isInteger(qty) || qty <= 0) return { reply: "Quantity must be a positive integer" };
@@ -300,32 +301,30 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
     qty,
     totalCost,
     method,
-    balance
+    balance,
+    playerId,
+    guildId
   });
-
-  if (balance !== null && balance <= 0) {
-    return { reply: `You cannot afford this purchase. Cost: ${totalCost}. Available: ${balance}.` };
-  }
 
   if (balance !== null && balance < totalCost) {
     return { reply: `You cannot afford this purchase. Cost: ${totalCost}. Available: ${balance}.` };
   }
 
   try {
-    if (playerId) {
+    if (playerId && guildId) {
       if (method === "bank") {
-        debug.step("shop.buyItem.deduct", { source: "bank", amount: totalCost, playerId });
-        await economy.deductFromBank(playerId, String(x?.guildId || ""), totalCost, playerId, {
+        debug.step("shop.buyItem.deduct", { source: "bank", amount: totalCost, playerId, guildId });
+        await economy.deductFromBank(playerId, guildId, totalCost, playerId, {
           notes: `Shop purchase: ${item.name}`
         });
       } else {
-        debug.step("shop.buyItem.deduct", { source: "wallet", amount: totalCost, playerId });
-        await economy.deductFromWallet(playerId, String(x?.guildId || ""), totalCost, playerId, {
+        debug.step("shop.buyItem.deduct", { source: "wallet", amount: totalCost, playerId, guildId });
+        await economy.deductFromWallet(playerId, guildId, totalCost, playerId, {
           notes: `Shop purchase: ${item.name}`
         });
       }
     } else {
-      debug.step("shop.buyItem.deduct", { skipped: true, reason: "missing playerId" });
+      debug.step("shop.buyItem.deduct", { skipped: true, reason: "missing playerId or guildId" });
     }
   } catch (err) {
     debug.fail("shop.buyItem.deduct", err, {
@@ -333,7 +332,8 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
       qty,
       method,
       balance,
-      playerId
+      playerId,
+      guildId
     });
     return { reply: err.message || "Failed to charge player." };
   }
@@ -349,6 +349,7 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
     price,
     totalCost,
     playerId,
+    guildId,
     status: "queued"
   };
 
