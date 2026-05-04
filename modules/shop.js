@@ -223,7 +223,7 @@ async function getShopList() {
   }
 }
 
-async function buyItem(itemName, qty, x, z, method = "wallet", balance = null) {
+async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, playerId = null) {
   loadOrders();
   itemName = normalizeText(itemName);
   qty = normalizeNumber(qty);
@@ -231,8 +231,9 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null) {
   z = normalizeNumber(z);
   method = normalizeText(method).toLowerCase() || "wallet";
   balance = normalizeNumber(balance);
+  playerId = normalizeText(playerId);
 
-  debug.step("shop.buyItem", { itemName, qty, x, z, method, balance });
+  debug.step("shop.buyItem", { itemName, qty, x, z, method, balance, playerId });
 
   if (!itemName) return { reply: "Item is required" };
   if (!Number.isInteger(qty) || qty <= 0) return { reply: "Quantity must be a positive integer" };
@@ -265,12 +266,26 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null) {
     x,
     z,
     method,
+    price,
+    totalCost,
+    playerId,
     status: "queued"
   };
 
   orders.push(order);
   saveOrders();
-  debug.ok("shop.buyItem", { order });
+
+  let xmlResult = null;
+  try {
+    if (typeof buildAllXML === "function") {
+      xmlResult = await buildAllXML(orders, order);
+      lastXML = xmlResult || lastXML;
+    }
+  } catch (err) {
+    debug.fail("shop.buyItem.buildAllXML", err, { orderId: order.id });
+  }
+
+  debug.ok("shop.buyItem", { order, xmlSaved: !!xmlResult });
 
   return { reply: `Queued ${qty}x ${item.name} @ (${x},${z})` };
 }
@@ -285,7 +300,7 @@ async function buildXML() {
   loadOrders();
   debug.step("shop.buildXML", { orderCount: orders.length });
 
-  const xml = buildAllXML(orders);
+  const xml = typeof buildAllXML === "function" ? await buildAllXML(orders) : { eventsXML: "", posXML: "" };
   lastXML = xml;
   ensureCustomDir();
   if (xml.eventsXML) fs.writeFileSync(EVENTS_FILE, xml.eventsXML);
