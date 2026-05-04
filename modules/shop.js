@@ -227,23 +227,13 @@ async function getShopList() {
 async function savePurchaseSnippets(purchase) {
   if (!supabase) throw new Error("Supabase client not configured");
 
-  const eventsRef = `purchase_snippets/${purchase.id}_shopevents.xml`;
-  const posRef = `purchase_snippets/${purchase.id}_eventposdef.xml`;
-
   const record = {
     purchase_id: purchase.id,
     player_id: purchase.playerId,
     purchase_price: purchase.totalCost,
-    shopevents_ref: eventsRef,
-    cfgeventspawns_ref: posRef
+    shopevents_snippet: purchase.shopevents_snippet || "",
+    cfgeventspawns_snippet: purchase.cfgeventspawns_snippet || ""
   };
-
-  debug.step("shop.savePurchaseSnippets", {
-    table: "purchase_snippets",
-    purchase_id: record.purchase_id,
-    player_id: record.player_id,
-    purchase_price: record.purchase_price
-  });
 
   const { data, error } = await supabase
     .from("purchase_snippets")
@@ -350,9 +340,6 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
     debug.fail("shop.buyItem.buildAllXML", err, { orderId: order.id });
   }
 
-  const eventsSnippet = xmlResult?.eventsXML || "";
-  const posSnippet = xmlResult?.posXML || "";
-
   try {
     await savePurchaseSnippets({
       id: order.id,
@@ -361,8 +348,8 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
       type: order.type,
       x: order.x,
       z: order.z,
-      shopevents_snippet: eventsSnippet,
-      cfgeventspawns_snippet: posSnippet
+      shopevents_snippet: xmlResult?.eventsXML || "",
+      cfgeventspawns_snippet: xmlResult?.posXML || ""
     });
   } catch (err) {
     debug.fail("shop.buyItem.savePurchaseSnippets", err, { orderId: order.id });
