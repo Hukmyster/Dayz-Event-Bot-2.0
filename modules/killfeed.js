@@ -160,12 +160,21 @@ function formatEmbed(evt) {
 }
 
 async function postWebhook(evt) {
-  if (!WEBHOOK_URL) return;
-  await fetch(WEBHOOK_URL, {
+  if (!WEBHOOK_URL) {
+    errorLog("WEBHOOK_SKIP", { reason: "missing WEBHOOK_URL" });
+    return;
+  }
+
+  const res = await fetch(WEBHOOK_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ embeds: [formatEmbed(evt)] })
   });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
+  }
 }
 
 async function nitradoRequest(url, opts = {}) {
@@ -219,10 +228,13 @@ function collectCandidates(serverJson) {
 
   list.sort((a, b) => b.sortKey - a.sortKey || a.filename.localeCompare(b.filename));
   const chosen = list.slice(0, MAX_FILES);
+  const paths = [...new Set(chosen.flatMap(x => x.candidates).map(normalizePath))];
+
+  debugLog("CANDIDATES", { username, paths });
 
   return {
     username,
-    paths: [...new Set(chosen.flatMap(x => x.candidates).map(normalizePath))]
+    paths
   };
 }
 
@@ -258,14 +270,20 @@ function candidateReadPaths(originalPath, username) {
 
 async function readRemoteFile(remotePath, username) {
   const candidates = candidateReadPaths(remotePath, username);
+  debugLog("READ_TRY", { remotePath, candidates });
+
   for (const candidate of candidates) {
     try {
       const { tokenUrl, token } = await getDownloadToken(candidate);
       if (!tokenUrl || !token) throw new Error("No token returned");
       const content = await fetchFile(tokenUrl, token);
+      debugLog("READ_OK", { remotePath, candidate, bytes: content.length });
       return { pathUsed: candidate, content };
-    } catch {}
+    } catch (err) {
+      debugLog("READ_FAIL", { remotePath, candidate, error: err?.message || String(err) });
+    }
   }
+
   throw new Error(`All read attempts failed for ${remotePath}`);
 }
 
@@ -290,6 +308,8 @@ function processFile(remotePath, content) {
   }
 
   const events = [];
+
+  debugLog("FILE_STATE", { remotePath, current, previous, startIndex });
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
@@ -318,6 +338,8 @@ function processFile(remotePath, content) {
     lineCount: current.lineCount,
     lastLine: current.lastLine
   });
+
+  debugLog("EVENTS_FOUND", { remotePath, count: events.length });
 
   return events;
 }
