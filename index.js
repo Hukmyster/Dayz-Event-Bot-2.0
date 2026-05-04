@@ -53,11 +53,6 @@ async function handleCommand(interaction) {
         "shopremoveitem - remove an item",
         "shopeditprice - change an item price",
         "shopeditname - rename an item",
-        "shopqueue - view queued purchases",
-        "shopclearqueue - clear queued purchases",
-        "shopbuildxml - build XML files",
-        "shopviewxml - view built XML",
-        "shoppushxml - push XML output",
         "shopstatus - show status",
         "shopreload - reload data",
         "balance - show your wallet and bank balance",
@@ -125,7 +120,9 @@ async function handleCommand(interaction) {
       interaction.options.getInteger("x"),
       interaction.options.getInteger("z"),
       method,
-      available
+      available,
+      interaction.user.id,
+      interaction.guildId
     ));
   }
 
@@ -145,32 +142,6 @@ async function handleCommand(interaction) {
       interaction.options.getString("name"),
       interaction.options.getString("newname")
     ));
-  }
-
-  if (cmd === "shopqueue") {
-    const orders = shop.getOrders() || [];
-    debug.step("shopqueue", { count: orders.length });
-    return send({
-      reply: orders.length
-        ? orders.map(o => `• ${o.item} x${o.qty} @ (${o.x},${o.z}) [${o.status}]`).join("\n")
-        : "No orders"
-    });
-  }
-
-  if (cmd === "shopclearqueue") {
-    return send(await shop.clearOrders());
-  }
-
-  if (cmd === "shopbuildxml") {
-    return send(await shop.buildXML());
-  }
-
-  if (cmd === "shopviewxml") {
-    return send(await shop.viewXML());
-  }
-
-  if (cmd === "shoppushxml") {
-    return send(await shop.pushXML());
   }
 
   if (cmd === "shopstatus") {
