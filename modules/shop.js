@@ -72,6 +72,7 @@ function mapShopRow(row) {
 
 function buildPurchaseSnippets(purchase = {}) {
   const eventName = `ShopEvent_${purchase.id}`;
+  const qty = Number(purchase.qty ?? 1) || 1;
   const type = escapeXml(purchase.type);
   const x = Number(purchase.x) || 0;
   const z = Number(purchase.z) || 0;
@@ -79,31 +80,39 @@ function buildPurchaseSnippets(purchase = {}) {
   const totalCost = Number(purchase.totalCost || 0);
 
   const shopeventsSnippet = [
-    `<event name="${eventName}">`,
+    `\t<event name="${eventName}">`,
     `    <nominal>1</nominal>`,
     `    <min>1</min>`,
     `    <max>1</max>`,
-    `    <lifetime>3000</lifetime>`,
-    `    <restock>7200</restock>`,
-    `    <saferadius>800</saferadius>`,
-    `    <distanceradius>500</distanceradius>`,
-    `    <cleanupradius>150</cleanupradius>`,
+    `    <lifetime>10800</lifetime>`,
+    `    <restock>3888000</restock>`,
+    `    <saferadius>0</saferadius>`,
+    `    <distanceradius>0</distanceradius>`,
+    `    <cleanupradius>0</cleanupradius>`,
     `    <flags deletable="1" init_random="0" remove_damaged="0"/>`,
     `    <position>fixed</position>`,
     `    <limit>child</limit>`,
     `    <active>1</active>`,
-    `    <children/>`,
-    `</event>`
+    `\t<children>`,
+    `    <child lootmax="0" lootmin="0" max="${qty}" min="${qty}" type="${type}"/>`,
+    `    </children>`,
+    `    </event>`
   ].join("\n");
 
   const cfgeventspawnsSnippet = [
     `<!-- player:${playerId} amount:${totalCost} -->`,
     `<event name="${eventName}">`,
-    `    <pos x="${x}" y="0" z="${z}" a="0" group="${type}" />`,
-    `</event>`
+    `      <pos x="${x}" z="${z}" a="0" />`,
+    `    </event>`
   ].join("\n");
 
-  return { shopeventsSnippet, cfgeventspawnsSnippet };
+  return {
+    purchase_id: purchase.id,
+    player_id: purchase.playerId,
+    purchase_price: purchase.totalCost,
+    shopevents_snippet: shopeventsSnippet,
+    cfgeventspawns_snippet: cfgeventspawnsSnippet
+  };
 }
 
 async function loadShop() {
@@ -262,13 +271,7 @@ async function getShopList() {
 async function savePurchaseSnippets(purchase) {
   if (!supabase) throw new Error("Supabase client not configured");
 
-  const record = {
-    purchase_id: purchase.id,
-    player_id: purchase.playerId,
-    purchase_price: purchase.totalCost,
-    shopevents_snippet: purchase.shopevents_snippet || "",
-    cfgeventspawns_snippet: purchase.cfgeventspawns_snippet || ""
-  };
+  const record = buildPurchaseSnippets(purchase);
 
   const { data, error } = await supabase
     .from("purchase_snippets")
@@ -309,7 +312,9 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
   if (!item) return { reply: "Item not found" };
 
   const price = Number(item.price || 0);
-  if (!Number.isFinite(price) || price <= 0) return { reply: "This item cannot be purchased because its price is invalid." };
+  if (!Number.isFinite(price) || price <= 0) {
+    return { reply: "This item cannot be purchased because its price is invalid." };
+  }
 
   const totalCost = price * qty;
 
@@ -352,16 +357,10 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
   orders.push(order);
   saveOrders();
 
-  const { shopeventsSnippet, cfgeventspawnsSnippet } = buildPurchaseSnippets(order);
+  const record = buildPurchaseSnippets(order);
 
   try {
-    await savePurchaseSnippets({
-      id: order.id,
-      playerId: order.playerId,
-      totalCost: order.totalCost,
-      shopevents_snippet: shopeventsSnippet,
-      cfgeventspawns_snippet: cfgeventspawnsSnippet
-    });
+    await savePurchaseSnippets(record);
   } catch (err) {
     debug.fail("shop.buyItem.savePurchaseSnippets", err, { orderId: order.id });
   }
@@ -383,15 +382,8 @@ async function buildXML() {
 
   ensureCustomDir();
 
-  const eventsXML = orders.map(o => {
-    const { shopeventsSnippet } = buildPurchaseSnippets(o);
-    return shopeventsSnippet;
-  }).join("\n\n");
-
-  const posXML = orders.map(o => {
-    const { cfgeventspawnsSnippet } = buildPurchaseSnippets(o);
-    return cfgeventspawnsSnippet;
-  }).join("\n\n");
+  const eventsXML = orders.map(o => buildPurchaseSnippets(o).shopevents_snippet).join("\n\n");
+  const posXML = orders.map(o => buildPurchaseSnippets(o).cfgeventspawns_snippet).join("\n\n");
 
   fs.writeFileSync(EVENTS_FILE, eventsXML);
   fs.writeFileSync(POS_FILE, posXML);
@@ -402,7 +394,9 @@ async function buildXML() {
 
 function viewXML() {
   ensureCustomDir();
-  if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) return { reply: "No built XML found yet. Run /shopbuildxml first." };
+  if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) {
+    return { reply: "No built XML found yet. Run /shopbuildxml first." };
+  }
   const eventsXML = fs.readFileSync(EVENTS_FILE, "utf-8");
   const posXML = fs.readFileSync(POS_FILE, "utf-8");
   return { reply: `--- shopevents.xml ---\n${eventsXML.slice(0, 3500)}\n\n--- eventposdef.xml ---\n${posXML.slice(0, 3500)}` };
