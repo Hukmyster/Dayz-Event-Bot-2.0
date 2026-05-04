@@ -41,7 +41,7 @@ function errorLog(tag, data) {
 }
 
 function normalizePath(p) {
-  const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
+  const s = String(p || "").replace(/\\\\/g, "/").replace(/\\/+/g, "/");
   if (!s) return "/";
   return s.startsWith("/") ? s : `/${s}`;
 }
@@ -70,6 +70,20 @@ function extractLocation(line) {
   const parts = m[1].split(",").map(s => s.trim());
   if (parts.length < 2) return "";
   return `${parts[0]}, ${parts[1]}`;
+}
+
+function izurviveLinkFromLocation(location) {
+  const parts = String(location || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (parts.length < 2) return location || "Unknown";
+
+  const x = parts[0];
+  const y = parts[1];
+  const label = `${x}, ${y}`;
+  return `[${label}](https://www.izurvive.com/chernarus/#location=${x};${y};5)`;
 }
 
 function parseKillLine(line) {
@@ -133,7 +147,7 @@ function formatEmbed(evt) {
     fields.push({ name: "Weapon", value: evt.weapon || "Unknown", inline: true });
     fields.push({ name: "Distance", value: `${evt.distance || "0"}m`, inline: true });
   } else {
-    if (evt.location) fields.push({ name: "Location", value: evt.location, inline: true });
+    if (evt.location) fields.push({ name: "Location", value: izurviveLinkFromLocation(evt.location), inline: true });
   }
 
   fields.push({ name: "Time", value: evt.time || "unknown", inline: true });
