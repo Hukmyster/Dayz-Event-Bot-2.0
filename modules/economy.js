@@ -22,6 +22,8 @@ function formatMoney(value) {
 async function getOrCreateAccount(userId, guildId, username) {
   assertSupabase();
 
+  debug.step("economy.getOrCreateAccount", { userId, guildId, username });
+
   const { data, error } = await supabase
     .from("economy_accounts")
     .select("*")
@@ -34,7 +36,16 @@ async function getOrCreateAccount(userId, guildId, username) {
     throw error;
   }
 
-  if (data) return data;
+  if (data) {
+    debug.ok("economy.getOrCreateAccount", {
+      status: "found",
+      userId,
+      guildId,
+      wallet: data.wallet,
+      bank: data.bank
+    });
+    return data;
+  }
 
   const payload = {
     user_id: userId,
@@ -44,6 +55,8 @@ async function getOrCreateAccount(userId, guildId, username) {
     bank: 0,
     last_daily_claim_at: null
   };
+
+  debug.step("economy.getOrCreateAccount.insert", { payload });
 
   const { data: inserted, error: insertError } = await supabase
     .from("economy_accounts")
@@ -56,11 +69,21 @@ async function getOrCreateAccount(userId, guildId, username) {
     throw insertError;
   }
 
+  debug.ok("economy.getOrCreateAccount", {
+    status: "created",
+    userId,
+    guildId,
+    wallet: inserted?.wallet,
+    bank: inserted?.bank
+  });
+
   return inserted;
 }
 
 async function updateAccount(userId, guildId, updates) {
   assertSupabase();
+
+  debug.step("economy.updateAccount", { userId, guildId, updates });
 
   const { data, error } = await supabase
     .from("economy_accounts")
@@ -74,6 +97,13 @@ async function updateAccount(userId, guildId, updates) {
     debug.supabaseError("economy.updateAccount", "update", error, { userId, guildId, updates });
     throw error;
   }
+
+  debug.ok("economy.updateAccount", {
+    userId,
+    guildId,
+    wallet: data?.wallet,
+    bank: data?.bank
+  });
 
   return data;
 }
@@ -94,6 +124,8 @@ async function logTransaction(entry) {
     metadata: entry.metadata || {}
   };
 
+  debug.step("economy.logTransaction", { payload });
+
   const { error } = await supabase
     .from("economy_transactions")
     .insert([payload]);
@@ -102,6 +134,12 @@ async function logTransaction(entry) {
     debug.supabaseError("economy.logTransaction", "insert", error, { payload });
     throw error;
   }
+
+  debug.ok("economy.logTransaction", {
+    userId: entry.userId,
+    type: payload.type,
+    amount: payload.amount
+  });
 }
 
 async function adminAdjustWallet(userId, guildId, amount, username, extra = {}) {
@@ -232,6 +270,86 @@ async function addBank(userId, guildId, amount, username, extra = {}) {
   return updated;
 }
 
+async function deductFromWallet(userId, guildId, amount, username, extra = {}) {
+  assertSupabase();
+  amount = normalizeNumber(amount);
+
+  if (amount === null) throw new Error("Amount must be a valid number");
+  if (amount <= 0) throw new Error("Amount must be positive");
+
+  const account = await getOrCreateAccount(userId, guildId, username);
+  const wallet = Number(account.wallet || 0);
+
+  if (wallet < amount) {
+    throw new Error("Insufficient wallet funds");
+  }
+
+  const updated = await updateAccount(userId, guildId, {
+    wallet: wallet - amount
+  });
+
+  await logTransaction({
+    guildId,
+    userId,
+    username,
+    type: "shop_purchase",
+    amount: -amount,
+    balanceAfter: updated.wallet,
+    notes: extra.notes || null,
+    metadata: extra.metadata || {}
+  });
+
+  debug.ok("economy.deductFromWallet", {
+    userId,
+    guildId,
+    amount,
+    walletBefore: wallet,
+    walletAfter: updated.wallet
+  });
+
+  return updated;
+}
+
+async function deductFromBank(userId, guildId, amount, username, extra = {}) {
+  assertSupabase();
+  amount = normalizeNumber(amount);
+
+  if (amount === null) throw new Error("Amount must be a valid number");
+  if (amount <= 0) throw new Error("Amount must be positive");
+
+  const account = await getOrCreateAccount(userId, guildId, username);
+  const bank = Number(account.bank || 0);
+
+  if (bank < amount) {
+    throw new Error("Insufficient bank funds");
+  }
+
+  const updated = await updateAccount(userId, guildId, {
+    bank: bank - amount
+  });
+
+  await logTransaction({
+    guildId,
+    userId,
+    username,
+    type: "shop_purchase",
+    amount: -amount,
+    balanceAfter: updated.bank,
+    notes: extra.notes || null,
+    metadata: extra.metadata || {}
+  });
+
+  debug.ok("economy.deductFromBank", {
+    userId,
+    guildId,
+    amount,
+    bankBefore: bank,
+    bankAfter: updated.bank
+  });
+
+  return updated;
+}
+
 async function setDailyClaim(guildId, userId, isoString) {
   assertSupabase();
 
@@ -275,6 +393,8 @@ module.exports = {
   transferWalletToBank,
   transferBankToWallet,
   addBank,
+  deductFromWallet,
+  deductFromBank,
   setDailyClaim,
   getDailyClaim
 };
