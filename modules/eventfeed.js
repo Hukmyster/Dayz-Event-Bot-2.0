@@ -5,6 +5,7 @@ const LOOP_MS = 5 * 60 * 1000;
 const EVENTFEED_DEBUG = String(process.env.EVENTFEED_DEBUG || "false").toLowerCase() === "true";
 
 const MAX_FILES = 5;
+const MAP_SIZE = 15360;
 
 const TRIGGERS = {
   1: { type: "Crate", location: "NEAF", coords: "12326.443 141.268 12445.012" },
@@ -109,46 +110,33 @@ function parseDayzPoint(coords) {
   return { x: parts[0], y: parts.length >= 3 ? parts[2] : parts[1] };
 }
 
-function convertDAYZXYToMapXY(point, mapWidth = 15360, mapHeight = 15360) {
-  if (!point) return null;
-
-  const fullMapWidth = 15360;
-  const fullMapHeight = 15360;
-
-  const xDiv = fullMapWidth / mapWidth;
-  const yDiv = fullMapHeight / mapHeight;
-
-  const x = Math.round(point.x / xDiv);
-  const y = Math.round((fullMapHeight - point.y) / yDiv);
-
-  return { x, y };
+function flipAxisCoord(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(MAP_SIZE - n);
 }
 
-function buildIZurviveLink(coords) {
+function dayzToInGameXY(coords) {
   const p = parseDayzPoint(coords);
-  if (!p) return "";
-
-  const m = convertDAYZXYToMapXY(p);
-  if (!m) return "";
-
-  const url = `https://www.izurvive.com/chernarusplussatmap/#c=${m.x};${m.y};8`;
-  return url;
+  if (!p) return null;
+  const x = Math.round(p.x);
+  const y = flipAxisCoord(p.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
 }
 
 function formatCoordsLink(coords) {
   const p = parseDayzPoint(coords);
   if (!p) return String(coords || "Unknown");
 
-  const m = convertDAYZXYToMapXY(p);
+  const m = dayzToInGameXY(coords);
   if (!m) return String(coords || "Unknown");
 
-  const url = buildIZurviveLink(coords);
-  return `[${Math.floor(p.x)}, ${Math.floor(p.y)}](${url})`;
+  const url = `https://www.izurvive.com/chernarusplussatmap/#c=${m.x};${m.y};8`;
+  return `[${m.x}, ${m.y}](${url})`;
 }
 
 function formatEmbed(evt) {
-  const link = buildIZurviveLink(evt.coords);
-
   return {
     title: `${TYPE_ICONS[evt.type] || "📡"} EVENT DETECTED`,
     color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
@@ -156,8 +144,7 @@ function formatEmbed(evt) {
     fields: [
       { name: "Type", value: evt.type || "Unknown", inline: true },
       { name: "Location", value: evt.location || "Unknown", inline: true },
-      { name: "Coords", value: formatCoordsLink(evt.coords) || evt.coords || "Unknown", inline: false },
-      { name: "Map Link", value: link ? `[Open in iZurvive](${link})` : "Unknown", inline: false }
+      { name: "Coords", value: formatCoordsLink(evt.coords) || evt.coords || "Unknown", inline: false }
     ]
   };
 }
