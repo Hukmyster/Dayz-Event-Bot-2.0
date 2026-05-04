@@ -124,6 +124,17 @@ function convertDAYZXYToMapXY(point, mapWidth = 15360, mapHeight = 15360) {
   return { x, y };
 }
 
+function buildIZurviveLink(coords) {
+  const p = parseDayzPoint(coords);
+  if (!p) return "";
+
+  const m = convertDAYZXYToMapXY(p);
+  if (!m) return "";
+
+  const url = `https://www.izurvive.com/chernarusplussatmap/#c=${m.x};${m.y};8`;
+  return url;
+}
+
 function formatCoordsLink(coords) {
   const p = parseDayzPoint(coords);
   if (!p) return String(coords || "Unknown");
@@ -131,11 +142,13 @@ function formatCoordsLink(coords) {
   const m = convertDAYZXYToMapXY(p);
   if (!m) return String(coords || "Unknown");
 
-  const url = `https://www.izurvive.com/chernarusplussatmap/#c=${m.x};${m.y};8`;
+  const url = buildIZurviveLink(coords);
   return `[${Math.floor(p.x)}, ${Math.floor(p.y)}](${url})`;
 }
 
 function formatEmbed(evt) {
+  const link = buildIZurviveLink(evt.coords);
+
   return {
     title: `${TYPE_ICONS[evt.type] || "📡"} EVENT DETECTED`,
     color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
@@ -143,7 +156,8 @@ function formatEmbed(evt) {
     fields: [
       { name: "Type", value: evt.type || "Unknown", inline: true },
       { name: "Location", value: evt.location || "Unknown", inline: true },
-      { name: "Coords", value: formatCoordsLink(evt.coords) || evt.coords || "Unknown", inline: false }
+      { name: "Coords", value: formatCoordsLink(evt.coords) || evt.coords || "Unknown", inline: false },
+      { name: "Map Link", value: link ? `[Open in iZurvive](${link})` : "Unknown", inline: false }
     ]
   };
 }
