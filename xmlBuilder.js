@@ -47,7 +47,7 @@ function buildPurchaseSnippets(purchase = {}) {
 
   const cfgeventspawnsSnippet = [
     comment,
-    `<event name="${eventName}">`,
+    `    <event name="${eventName}">`,
     `      <pos x="${x}" z="${z}" a="0" />`,
     `    </event>`
   ].join("\n");
