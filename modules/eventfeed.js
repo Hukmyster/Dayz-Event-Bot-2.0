@@ -61,13 +61,13 @@ function dbg(tag, data) {
 }
 
 function normalizePath(p) {
-  const s = String(p || "").replace(/\\\\\\\\/g, "/").replace(/\\/+/g, "/");
+  const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
   if (!s) return "/";
   return s.startsWith("/") ? s : `/${s}`;
 }
 
 function normalizeLine(line) {
-  return String(line || "").replace(/\\r$/, "").trim();
+  return String(line || "").replace(/\r$/, "").trim();
 }
 
 function buildMessage(triggerNum) {
@@ -77,7 +77,7 @@ function buildMessage(triggerNum) {
 }
 
 function parseTrigger(line) {
-  const m = line.match(/lootmax:\\s*(\\d+)/i);
+  const m = line.match(/lootmax:\s*(\d+)/i);
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
@@ -87,7 +87,7 @@ function parseEventLine(line) {
   const triggerNum = parseTrigger(line);
   if (!triggerNum || !TRIGGERS[triggerNum]) return null;
 
-  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{3})?)/);
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)/);
   return {
     time: timeMatch ? timeMatch[1] : "unknown",
     trigger: `lootmax: ${triggerNum}`,
@@ -105,7 +105,7 @@ function buildEventId(fileName, evt) {
 }
 
 function parseDayzPoint(coords) {
-  const parts = String(coords || "").trim().split(/\\s+/).filter(Boolean).map(Number);
+  const parts = String(coords || "").trim().split(/\s+/).filter(Boolean).map(Number);
   if (parts.length < 2) return null;
   return { x: parts[0], y: parts.length >= 3 ? parts[2] : parts[1] };
 }
@@ -186,7 +186,7 @@ async function fetchServerInfo() {
 }
 
 function parseLogTimestamp(filename) {
-  const m = String(filename || "").match(/_(\\d{4}-\\d{2}-\\d{2})_(\\d{2})-(\\d{2})-(\\d{2})/);
+  const m = String(filename || "").match(/_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})/);
   if (!m) return 0;
   return Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}Z`) || 0;
 }
@@ -202,14 +202,14 @@ function collectCandidates(serverJson) {
     const base = String(raw || "").trim();
     if (!base) continue;
     const filename = base.split("/").pop();
-    if (!/\\.rpt$/i.test(filename)) continue;
+    if (!/\.rpt$/i.test(filename)) continue;
 
     list.push({
       filename,
       sortKey: parseLogTimestamp(filename),
       candidates: [
         `/games/${username}/noftp/dayzps/config/${filename}`,
-        `/games/${username}/noftp/${base.replace(/^\\/+/, "")}`,
+        `/games/${username}/noftp/${base.replace(/^\/+/, "")}`,
         base
       ]
     });
@@ -277,7 +277,7 @@ async function readRemoteFile(remotePath, username) {
 }
 
 function fingerprint(content) {
-  const lines = content.split(/\\r?\\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
   return {
     lineCount: lines.length,
     firstLine: normalizeLine(lines[0] || ""),
@@ -288,7 +288,7 @@ function fingerprint(content) {
 function processFile(remotePath, content) {
   const current = fingerprint(content);
   const previous = state.fileState.get(remotePath) || { lineCount: 0, lastLine: "" };
-  const lines = content.split(/\\r?\\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
   const startIndex = current.lineCount >= previous.lineCount && previous.lineCount > 0 ? previous.lineCount : 0;
   const events = [];
 
