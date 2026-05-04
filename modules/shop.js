@@ -2,7 +2,6 @@ const fs = require("fs");
 const path = require("path");
 const debug = require("../utils/debug");
 const { createClient } = require("@supabase/supabase-js");
-const { buildAllXML } = require("../xmlBuilder");
 const economy = require("./economy");
 
 const ORDERS_FILE = path.join(__dirname, "../data/orders.json");
@@ -15,7 +14,6 @@ const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
 let orders = [];
-let lastXML = { eventsXML: "", posXML: "" };
 
 function ensureOrdersFile() {
   const dir = path.dirname(ORDERS_FILE);
@@ -53,6 +51,15 @@ function normalizeNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function escapeXml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 function mapShopRow(row) {
   return {
     id: row.id,
@@ -61,6 +68,42 @@ function mapShopRow(row) {
     type: row.type,
     price: Number(row.price)
   };
+}
+
+function buildPurchaseSnippets(purchase = {}) {
+  const eventName = `ShopEvent_${purchase.id}`;
+  const type = escapeXml(purchase.type);
+  const x = Number(purchase.x) || 0;
+  const z = Number(purchase.z) || 0;
+  const playerId = purchase.playerId || "";
+  const totalCost = Number(purchase.totalCost || 0);
+
+  const shopeventsSnippet = [
+    `<event name="${eventName}">`,
+    `    <nominal>1</nominal>`,
+    `    <min>1</min>`,
+    `    <max>1</max>`,
+    `    <lifetime>3000</lifetime>`,
+    `    <restock>7200</restock>`,
+    `    <saferadius>800</saferadius>`,
+    `    <distanceradius>500</distanceradius>`,
+    `    <cleanupradius>150</cleanupradius>`,
+    `    <flags deletable="1" init_random="0" remove_damaged="0"/>`,
+    `    <position>fixed</position>`,
+    `    <limit>child</limit>`,
+    `    <active>1</active>`,
+    `    <children/>`,
+    `</event>`
+  ].join("\n");
+
+  const cfgeventspawnsSnippet = [
+    `<!-- player:${playerId} amount:${totalCost} -->`,
+    `<event name="${eventName}">`,
+    `    <pos x="${x}" y="0" z="${z}" a="0" group="${type}" />`,
+    `</event>`
+  ].join("\n");
+
+  return { shopeventsSnippet, cfgeventspawnsSnippet };
 }
 
 async function loadShop() {
@@ -88,10 +131,8 @@ async function loadShop() {
 async function findShopItemByName(name) {
   const clean = normalizeText(name).toLowerCase();
   const items = await loadShop();
-
   const exact = items.find(i => i.name.toLowerCase() === clean);
   if (exact) return exact;
-
   return items.find(i => i.name.toLowerCase().includes(clean)) || null;
 }
 
@@ -147,10 +188,7 @@ async function editPrice(name, price) {
     .select("id,displayname,type,price");
 
   if (error) {
-    debug.supabaseError("shop.editPrice", "update", error, {
-      id: item.id,
-      values: { price }
-    });
+    debug.supabaseError("shop.editPrice", "update", error, { id: item.id, values: { price } });
     return { reply: `Database error: ${error.message}` };
   }
 
@@ -182,10 +220,7 @@ async function editName(name, newname) {
     .select("id,displayname,type,price");
 
   if (error) {
-    debug.supabaseError("shop.editName", "update", error, {
-      id: item.id,
-      values: { displayname: newname }
-    });
+    debug.supabaseError("shop.editName", "update", error, { id: item.id, values: { displayname: newname } });
     return { reply: `Database error: ${error.message}` };
   }
 
@@ -248,11 +283,7 @@ async function savePurchaseSnippets(purchase) {
     throw error;
   }
 
-  debug.ok("shop.savePurchaseSnippets", {
-    saved: true,
-    inserted: data?.[0] || null
-  });
-
+  debug.ok("shop.savePurchaseSnippets", { saved: true, inserted: data?.[0] || null });
   return { saved: true, record, data };
 }
 
@@ -278,9 +309,7 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
   if (!item) return { reply: "Item not found" };
 
   const price = Number(item.price || 0);
-  if (!Number.isFinite(price) || price <= 0) {
-    return { reply: "This item cannot be purchased because its price is invalid." };
-  }
+  if (!Number.isFinite(price) || price <= 0) return { reply: "This item cannot be purchased because its price is invalid." };
 
   const totalCost = price * qty;
 
@@ -301,14 +330,7 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
       }
     }
   } catch (err) {
-    debug.fail("shop.buyItem.deduct", err, {
-      itemName,
-      qty,
-      method,
-      balance,
-      playerId,
-      guildId
-    });
+    debug.fail("shop.buyItem.deduct", err, { itemName, qty, method, balance, playerId, guildId });
     return { reply: err.message || "Failed to charge player." };
   }
 
@@ -330,32 +352,21 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
   orders.push(order);
   saveOrders();
 
-  let xmlResult = null;
-  try {
-    if (typeof buildAllXML === "function") {
-      xmlResult = await buildAllXML(orders, order);
-      lastXML = xmlResult || lastXML;
-    }
-  } catch (err) {
-    debug.fail("shop.buyItem.buildAllXML", err, { orderId: order.id });
-  }
+  const { shopeventsSnippet, cfgeventspawnsSnippet } = buildPurchaseSnippets(order);
 
   try {
     await savePurchaseSnippets({
       id: order.id,
       playerId: order.playerId,
       totalCost: order.totalCost,
-      type: order.type,
-      x: order.x,
-      z: order.z,
-      shopevents_snippet: xmlResult?.eventsXML || "",
-      cfgeventspawns_snippet: xmlResult?.posXML || ""
+      shopevents_snippet: shopeventsSnippet,
+      cfgeventspawns_snippet: cfgeventspawnsSnippet
     });
   } catch (err) {
     debug.fail("shop.buyItem.savePurchaseSnippets", err, { orderId: order.id });
   }
 
-  debug.ok("shop.buyItem", { order, xmlSaved: !!xmlResult });
+  debug.ok("shop.buyItem", { order, xmlSaved: true });
 
   return { reply: `Purchase successful: ${qty}x ${item.name} @ (${x},${z})` };
 }
@@ -370,19 +381,23 @@ async function buildXML() {
   loadOrders();
   debug.step("shop.buildXML", { orderCount: orders.length });
 
-  const xml = typeof buildAllXML === "function" ? await buildAllXML(orders) : { eventsXML: "", posXML: "" };
-  lastXML = xml;
   ensureCustomDir();
-  if (xml.eventsXML) fs.writeFileSync(EVENTS_FILE, xml.eventsXML);
-  if (xml.posXML) fs.writeFileSync(POS_FILE, xml.posXML);
 
-  debug.ok("shop.buildXML", {
-    eventsFile: EVENTS_FILE,
-    posFile: POS_FILE,
-    orders: orders.length
-  });
+  const eventsXML = orders.map(o => {
+    const { shopeventsSnippet } = buildPurchaseSnippets(o);
+    return shopeventsSnippet;
+  }).join("\n\n");
 
-  return { reply: `XML built successfully (${orders.length} orders)`, xml };
+  const posXML = orders.map(o => {
+    const { cfgeventspawnsSnippet } = buildPurchaseSnippets(o);
+    return cfgeventspawnsSnippet;
+  }).join("\n\n");
+
+  fs.writeFileSync(EVENTS_FILE, eventsXML);
+  fs.writeFileSync(POS_FILE, posXML);
+
+  debug.ok("shop.buildXML", { eventsFile: EVENTS_FILE, posFile: POS_FILE, orders: orders.length });
+  return { reply: `XML built successfully (${orders.length} orders)`, xml: { eventsXML, posXML } };
 }
 
 function viewXML() {
@@ -396,7 +411,7 @@ function viewXML() {
 async function pushXML() {
   debug.step("shop.pushXML", {});
   const res = await buildXML();
-  return { reply: `XML pushed to /custom folder. ${res.xml?.eventsFile ? "Files updated." : ""}` };
+  return { reply: `XML pushed to /custom folder. ${res.xml ? "Files updated." : ""}` };
 }
 
 async function reloadData() {
