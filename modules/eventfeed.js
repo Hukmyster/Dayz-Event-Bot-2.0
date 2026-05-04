@@ -60,7 +60,7 @@ function dbg(tag, data) {
 }
 
 function normalizePath(p) {
-  const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
+  const s = String(p || "").replace(/\\\\/g, "/").replace(/\\/+/g, "/");
   if (!s) return "/";
   return s.startsWith("/") ? s : `/${s}`;
 }
@@ -103,11 +103,24 @@ function buildEventId(fileName, evt) {
   return [fileName, evt.time, evt.trigger, evt.message, evt.raw].join("|");
 }
 
+function formatCoordsLink(coords) {
+  const parts = String(coords || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return "";
+  const x = parts[0];
+  const z = parts[parts.length - 1];
+  return `[${x}, ${z}](https://www.izurvive.com/chernarus/#location=${x};${z};5)`;
+}
+
 function formatEmbed(evt) {
   return {
     title: `${TYPE_ICONS[evt.type] || "📡"} EVENT DETECTED`,
     color: evt.type === "AirDrop" ? 0x9b59b6 : evt.type === "Horde" ? 0xe67e22 : 0x3498db,
-    description: evt.message || "Unknown"
+    description: evt.message || "Unknown",
+    fields: [
+      { name: "Type", value: evt.type || "Unknown", inline: true },
+      { name: "Location", value: evt.location || "Unknown", inline: true },
+      { name: "Coords", value: formatCoordsLink(evt.coords) || evt.coords || "Unknown", inline: false }
+    ]
   };
 }
 
