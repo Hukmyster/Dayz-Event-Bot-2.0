@@ -72,8 +72,6 @@ async function loadShop() {
     throw new Error("Supabase client not configured");
   }
 
-  debug.step("shop.loadShop", { table: "shop" });
-
   const { data, error } = await supabase
     .from("shop")
     .select("id,displayname,type,price");
@@ -229,21 +227,22 @@ async function getShopList() {
 async function savePurchaseSnippets(purchase) {
   if (!supabase) throw new Error("Supabase client not configured");
 
+  const eventsRef = `purchase_snippets/${purchase.id}_shopevents.xml`;
+  const posRef = `purchase_snippets/${purchase.id}_eventposdef.xml`;
+
   const record = {
     purchase_id: purchase.id,
     player_id: purchase.playerId,
     purchase_price: purchase.totalCost,
-    shopevents_snippet: purchase.shopevents_snippet,
-    cfgeventspawns_snippet: purchase.cfgeventspawns_snippet
+    shopevents_ref: eventsRef,
+    cfgeventspawns_ref: posRef
   };
 
   debug.step("shop.savePurchaseSnippets", {
     table: "purchase_snippets",
     purchase_id: record.purchase_id,
     player_id: record.player_id,
-    purchase_price: record.purchase_price,
-    shopevents_len: String(record.shopevents_snippet || "").length,
-    cfgeventspawns_len: String(record.cfgeventspawns_snippet || "").length
+    purchase_price: record.purchase_price
   });
 
   const { data, error } = await supabase
@@ -295,17 +294,6 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
 
   const totalCost = price * qty;
 
-  debug.step("shop.buyItem.cost", {
-    item: item.name,
-    price,
-    qty,
-    totalCost,
-    method,
-    balance,
-    playerId,
-    guildId
-  });
-
   if (balance !== null && balance < totalCost) {
     return { reply: `You cannot afford this purchase. Cost: ${totalCost}. Available: ${balance}.` };
   }
@@ -313,18 +301,14 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
   try {
     if (playerId && guildId) {
       if (method === "bank") {
-        debug.step("shop.buyItem.deduct", { source: "bank", amount: totalCost, playerId, guildId });
         await economy.deductFromBank(playerId, guildId, totalCost, playerId, {
           notes: `Shop purchase: ${item.name}`
         });
       } else {
-        debug.step("shop.buyItem.deduct", { source: "wallet", amount: totalCost, playerId, guildId });
         await economy.deductFromWallet(playerId, guildId, totalCost, playerId, {
           notes: `Shop purchase: ${item.name}`
         });
       }
-    } else {
-      debug.step("shop.buyItem.deduct", { skipped: true, reason: "missing playerId or guildId" });
     }
   } catch (err) {
     debug.fail("shop.buyItem.deduct", err, {
@@ -366,6 +350,9 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
     debug.fail("shop.buyItem.buildAllXML", err, { orderId: order.id });
   }
 
+  const eventsSnippet = xmlResult?.eventsXML || "";
+  const posSnippet = xmlResult?.posXML || "";
+
   try {
     await savePurchaseSnippets({
       id: order.id,
@@ -374,8 +361,8 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
       type: order.type,
       x: order.x,
       z: order.z,
-      shopevents_snippet: xmlResult?.eventsXML || "",
-      cfgeventspawns_snippet: xmlResult?.posXML || ""
+      shopevents_snippet: eventsSnippet,
+      cfgeventspawns_snippet: posSnippet
     });
   } catch (err) {
     debug.fail("shop.buyItem.savePurchaseSnippets", err, { orderId: order.id });
@@ -383,7 +370,7 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
 
   debug.ok("shop.buyItem", { order, xmlSaved: !!xmlResult });
 
-  return { reply: `Queued ${qty}x ${item.name} @ (${x},${z})` };
+  return { reply: `Purchase successful: ${qty}x ${item.name} @ (${x},${z})` };
 }
 
 function getOrders() {
@@ -416,7 +403,7 @@ function viewXML() {
   if (!fs.existsSync(EVENTS_FILE) || !fs.existsSync(POS_FILE)) return { reply: "No built XML found yet. Run /shopbuildxml first." };
   const eventsXML = fs.readFileSync(EVENTS_FILE, "utf-8");
   const posXML = fs.readFileSync(POS_FILE, "utf-8");
-  return { reply: `--- shopevents.xml ---\\n${eventsXML.slice(0, 3500)}\\n\\n--- eventposdef.xml ---\\n${posXML.slice(0, 3500)}` };
+  return { reply: `--- shopevents.xml ---\n${eventsXML.slice(0, 3500)}\n\n--- eventposdef.xml ---\n${posXML.slice(0, 3500)}` };
 }
 
 async function pushXML() {
