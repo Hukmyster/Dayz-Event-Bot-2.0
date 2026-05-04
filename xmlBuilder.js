@@ -26,28 +26,30 @@ function buildPurchaseSnippets(purchase = {}) {
   const comment = makeComment(purchase);
 
   const shopeventsSnippet = [
-    `<event name="${eventName}">`,
+    `\t<event name="${eventName}">`,
     `    <nominal>1</nominal>`,
     `    <min>1</min>`,
     `    <max>1</max>`,
-    `    <lifetime>3000</lifetime>`,
-    `    <restock>7200</restock>`,
-    `    <saferadius>800</saferadius>`,
-    `    <distanceradius>500</distanceradius>`,
-    `    <cleanupradius>150</cleanupradius>`,
+    `    <lifetime>10800</lifetime>`,
+    `    <restock>3888000</restock>`,
+    `    <saferadius>0</saferadius>`,
+    `    <distanceradius>0</distanceradius>`,
+    `    <cleanupradius>0</cleanupradius>`,
     `    <flags deletable="1" init_random="0" remove_damaged="0"/>`,
     `    <position>fixed</position>`,
     `    <limit>child</limit>`,
     `    <active>1</active>`,
-    `    <children/>`,
-    `</event>`
+    `\t<children>`,
+    `    <child lootmax="0" lootmin="0" max="${qty}" min="${qty}" type="${type}"/>`,
+    `    </children>`,
+    `    </event>`
   ].join("\n");
 
   const cfgeventspawnsSnippet = [
     comment,
     `<event name="${eventName}">`,
-    `    <pos x="${x}" y="0" z="${z}" a="0" group="${type}" />`,
-    `</event>`
+    `      <pos x="${x}" z="${z}" a="0" />`,
+    `    </event>`
   ].join("\n");
 
   return {
