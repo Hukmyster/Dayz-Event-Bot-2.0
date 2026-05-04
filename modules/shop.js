@@ -3,6 +3,7 @@ const path = require("path");
 const debug = require("../utils/debug");
 const { createClient } = require("@supabase/supabase-js");
 const { buildAllXML } = require("../xmlBuilder");
+const economy = require("./economy");
 
 const ORDERS_FILE = path.join(__dirname, "../data/orders.json");
 const CUSTOM_DIR = path.join(__dirname, "../custom");
@@ -70,6 +71,8 @@ async function loadShop() {
     });
     throw new Error("Supabase client not configured");
   }
+
+  debug.step("shop.loadShop", { table: "shop" });
 
   const { data, error } = await supabase
     .from("shop")
@@ -223,6 +226,47 @@ async function getShopList() {
   }
 }
 
+async function savePurchaseSnippets(purchase) {
+  if (!supabase) throw new Error("Supabase client not configured");
+
+  const record = {
+    purchase_id: purchase.id,
+    player_id: purchase.playerId,
+    purchase_price: purchase.totalCost,
+    shopevents_snippet: purchase.shopevents_snippet,
+    cfgeventspawns_snippet: purchase.cfgeventspawns_snippet
+  };
+
+  debug.step("shop.savePurchaseSnippets", {
+    table: "purchase_snippets",
+    purchase_id: record.purchase_id,
+    player_id: record.player_id,
+    purchase_price: record.purchase_price,
+    shopevents_len: String(record.shopevents_snippet || "").length,
+    cfgeventspawns_len: String(record.cfgeventspawns_snippet || "").length
+  });
+
+  const { data, error } = await supabase
+    .from("purchase_snippets")
+    .insert([record])
+    .select();
+
+  if (error) {
+    debug.supabaseError("shop.savePurchaseSnippets", "insert", error, {
+      table: "purchase_snippets",
+      record
+    });
+    throw error;
+  }
+
+  debug.ok("shop.savePurchaseSnippets", {
+    saved: true,
+    inserted: data?.[0] || null
+  });
+
+  return { saved: true, record, data };
+}
+
 async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, playerId = null) {
   loadOrders();
   itemName = normalizeText(itemName);
@@ -250,12 +294,48 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
 
   const totalCost = price * qty;
 
+  debug.step("shop.buyItem.cost", {
+    item: item.name,
+    price,
+    qty,
+    totalCost,
+    method,
+    balance
+  });
+
   if (balance !== null && balance <= 0) {
     return { reply: `You cannot afford this purchase. Cost: ${totalCost}. Available: ${balance}.` };
   }
 
   if (balance !== null && balance < totalCost) {
     return { reply: `You cannot afford this purchase. Cost: ${totalCost}. Available: ${balance}.` };
+  }
+
+  try {
+    if (playerId) {
+      if (method === "bank") {
+        debug.step("shop.buyItem.deduct", { source: "bank", amount: totalCost, playerId });
+        await economy.deductFromBank(playerId, String(x?.guildId || ""), totalCost, playerId, {
+          notes: `Shop purchase: ${item.name}`
+        });
+      } else {
+        debug.step("shop.buyItem.deduct", { source: "wallet", amount: totalCost, playerId });
+        await economy.deductFromWallet(playerId, String(x?.guildId || ""), totalCost, playerId, {
+          notes: `Shop purchase: ${item.name}`
+        });
+      }
+    } else {
+      debug.step("shop.buyItem.deduct", { skipped: true, reason: "missing playerId" });
+    }
+  } catch (err) {
+    debug.fail("shop.buyItem.deduct", err, {
+      itemName,
+      qty,
+      method,
+      balance,
+      playerId
+    });
+    return { reply: err.message || "Failed to charge player." };
   }
 
   const order = {
@@ -283,6 +363,21 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
     }
   } catch (err) {
     debug.fail("shop.buyItem.buildAllXML", err, { orderId: order.id });
+  }
+
+  try {
+    await savePurchaseSnippets({
+      id: order.id,
+      playerId: order.playerId,
+      totalCost: order.totalCost,
+      type: order.type,
+      x: order.x,
+      z: order.z,
+      shopevents_snippet: xmlResult?.eventsXML || "",
+      cfgeventspawns_snippet: xmlResult?.posXML || ""
+    });
+  } catch (err) {
+    debug.fail("shop.buyItem.savePurchaseSnippets", err, { orderId: order.id });
   }
 
   debug.ok("shop.buyItem", { order, xmlSaved: !!xmlResult });
