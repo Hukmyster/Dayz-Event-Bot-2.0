@@ -106,10 +106,13 @@ function buildEventId(fileName, evt) {
 function formatCoordsLink(coords) {
   const parts = String(coords || "").trim().split(/\s+/).filter(Boolean);
   if (parts.length < 2) return "";
+
   const x = Math.floor(Number(parts[0]));
   const z = Math.floor(Number(parts[parts.length - 1]));
+
   if (!Number.isFinite(x) || !Number.isFinite(z)) return "";
-  const url = `https://www.izurvive.com/chernarus/#location=${x};${z};5`;
+
+  const url = `https://www.izurvive.com/chernarusplussatmap/#c=${x};${z};8`;
   return `[${x}, ${z}](${url})`;
 }
 
