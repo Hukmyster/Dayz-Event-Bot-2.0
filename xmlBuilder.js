@@ -1,13 +1,8 @@
-const fs = require("fs");
-const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
 
-const CUSTOM_DIR = path.join(__dirname, "custom");
-const EVENTS_FILE = path.join(CUSTOM_DIR, "shopevents.xml");
-const POS_FILE = path.join(CUSTOM_DIR, "eventposdef.xml");
-
-function ensureDir() {
-  if (!fs.existsSync(CUSTOM_DIR)) fs.mkdirSync(CUSTOM_DIR, { recursive: true });
-}
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
 function escapeXml(value) {
   return String(value ?? "")
@@ -18,55 +13,73 @@ function escapeXml(value) {
     .replace(/'/g, "&apos;");
 }
 
-function buildAllXML(orders = []) {
-  ensureDir();
+function makeComment(purchase) {
+  return `<!-- player:${purchase.playerId} amount:${purchase.totalCost} -->`;
+}
 
-  const nl = "\r\n";
-  const events = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<events>'];
-  const pos = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<eventposdef>'];
+function buildPurchaseSnippets(purchase = {}) {
+  const eventName = `ShopEvent_${purchase.id}`;
+  const qty = Number(purchase.qty ?? 1) || 1;
+  const type = escapeXml(purchase.type);
+  const x = Number(purchase.x) || 0;
+  const z = Number(purchase.z) || 0;
+  const comment = makeComment(purchase);
 
-  for (const order of orders) {
-    const eventName = `ShopEvent_${order.id}`;
-    const qty = Number(order.qty ?? order.quantity ?? 1) || 1;
-    const type = escapeXml(order.type);
-    const x = Number(order.x) || 0;
-    const z = Number(order.z) || 0;
+  const shopeventsSnippet = [
+    `<event name="${eventName}">`,
+    `    <nominal>1</nominal>`,
+    `    <min>1</min>`,
+    `    <max>1</max>`,
+    `    <lifetime>3000</lifetime>`,
+    `    <restock>7200</restock>`,
+    `    <saferadius>800</saferadius>`,
+    `    <distanceradius>500</distanceradius>`,
+    `    <cleanupradius>150</cleanupradius>`,
+    `    <flags deletable="1" init_random="0" remove_damaged="0"/>`,
+    `    <position>fixed</position>`,
+    `    <limit>child</limit>`,
+    `    <active>1</active>`,
+    `    <children/>`,
+    `</event>`
+  ].join("\n");
 
-    events.push(`  <event name="${eventName}">`);
-    events.push(`   <nominal>1</nominal>`);
-    events.push(`   <min>1</min>`);
-    events.push(`   <max>1</max>`);
-    events.push(`   <lifetime>3000</lifetime>`);
-    events.push(`   <restock>3888000</restock>`);
-    events.push(`   <saferadius>0</saferadius>`);
-    events.push(`   <distanceradius>0</distanceradius>`);
-    events.push(`   <cleanupradius>0</cleanupradius>`);
-    events.push(`   <flags deletable="0" init_random="0" remove_damaged="1"/>`);
-    events.push(`   <position>fixed</position>`);
-    events.push(`   <limit>child</limit>`);
-    events.push(`   <active>1</active>`);
-    events.push(`   <children>`);
-    events.push(`     <child lootmax="0" lootmin="0" max="${qty}" min="${qty}" type="${type}"/>`);
-    events.push(`   </children>`);
-    events.push(`  </event>`);
+  const cfgeventspawnsSnippet = [
+    comment,
+    `<event name="${eventName}">`,
+    `    <pos x="${x}" y="0" z="${z}" a="0" group="${type}" />`,
+    `</event>`
+  ].join("\n");
 
-    pos.push(`    <event name="${eventName}">`);
-    pos.push(`        <pos x="${x}" z="${z}" a="0" />`);
-    pos.push(`    </event>`);
-  }
+  return {
+    purchase_id: purchase.id,
+    player_id: purchase.playerId,
+    purchase_price: purchase.totalCost,
+    shopevents_snippet: shopeventsSnippet,
+    cfgeventspawns_snippet: cfgeventspawnsSnippet
+  };
+}
 
-  events.push("</events>");
-  pos.push("</eventposdef>");
+async function savePurchaseSnippets(purchase) {
+  if (!supabase) throw new Error("Supabase client not configured");
 
-  const eventsXML = events.join(nl);
-  const posXML = pos.join(nl);
+  const record = buildPurchaseSnippets(purchase);
 
-  fs.writeFileSync(EVENTS_FILE, eventsXML);
-  fs.writeFileSync(POS_FILE, posXML);
+  const { data, error } = await supabase
+    .from("purchase_snippets")
+    .insert([record])
+    .select();
 
-  return { eventsXML, posXML, eventsFile: EVENTS_FILE, posFile: POS_FILE };
+  if (error) throw error;
+
+  return { saved: true, record, data };
+}
+
+async function buildPurchaseSnippetsAndSave(purchase) {
+  return await savePurchaseSnippets(purchase);
 }
 
 module.exports = {
-  buildAllXML
+  buildPurchaseSnippets,
+  savePurchaseSnippets,
+  buildPurchaseSnippetsAndSave
 };
