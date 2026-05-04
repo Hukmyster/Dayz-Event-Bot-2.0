@@ -83,7 +83,7 @@ function izurviveLinkFromLocation(location) {
   const x = parts[0];
   const y = parts[1];
   const label = `${x}, ${y}`;
-  return `[${label}](https://www.izurvive.com/chernarus/#location=${x};${y};5)`;
+  return `[${label}](https://www.izurvive.com/chernarusplussatmap/#location=${x};${y};8)`;
 }
 
 function parseKillLine(line) {
