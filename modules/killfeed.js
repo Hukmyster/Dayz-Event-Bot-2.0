@@ -41,7 +41,7 @@ function errorLog(tag, data) {
 }
 
 function normalizePath(p) {
-  const s = String(p || "").replace(/\\\\/g, "/").replace(/\\/+/g, "/");
+  const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
   if (!s) return "/";
   return s.startsWith("/") ? s : `/${s}`;
 }
