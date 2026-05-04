@@ -60,7 +60,7 @@ function dbg(tag, data) {
 }
 
 function normalizePath(p) {
-  const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
+  const s = String(p || "").replace(/\\\\/g, "/").replace(/\/+/g, "/");
   if (!s) return "/";
   return s.startsWith("/") ? s : `/${s}`;
 }
@@ -103,17 +103,36 @@ function buildEventId(fileName, evt) {
   return [fileName, evt.time, evt.trigger, evt.message, evt.raw].join("|");
 }
 
+function parseDayzPoint(coords) {
+  const parts = String(coords || "").trim().split(/\s+/).filter(Boolean).map(Number);
+  if (parts.length < 2) return null;
+  return { x: parts[0], y: parts.length >= 3 ? parts[2] : parts[1] };
+}
+
+function convertDAYZXYToMapXY(point, mapWidth = 15360, mapHeight = 15360) {
+  if (!point) return null;
+
+  const fullMapWidth = 15360;
+  const fullMapHeight = 15360;
+
+  const xDiv = fullMapWidth / mapWidth;
+  const yDiv = fullMapHeight / mapHeight;
+
+  const x = Math.round(point.x / xDiv);
+  const y = Math.round((fullMapHeight - point.y) / yDiv);
+
+  return { x, y };
+}
+
 function formatCoordsLink(coords) {
-  const parts = String(coords || "").trim().split(/\s+/).filter(Boolean);
-  if (parts.length < 2) return "";
+  const p = parseDayzPoint(coords);
+  if (!p) return String(coords || "Unknown");
 
-  const x = Math.floor(Number(parts[0]));
-  const z = Math.floor(Number(parts[parts.length - 1]));
+  const m = convertDAYZXYToMapXY(p);
+  if (!m) return String(coords || "Unknown");
 
-  if (!Number.isFinite(x) || !Number.isFinite(z)) return "";
-
-  const url = `https://www.izurvive.com/chernarusplussatmap/#c=${x};${z};8`;
-  return `[${x}, ${z}](${url})`;
+  const url = `https://www.izurvive.com/chernarusplussatmap/#c=${m.x};${m.y};8`;
+  return `[${Math.floor(p.x)}, ${Math.floor(p.y)}](${url})`;
 }
 
 function formatEmbed(evt) {
