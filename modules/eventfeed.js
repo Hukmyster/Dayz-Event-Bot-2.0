@@ -73,7 +73,7 @@ function normalizeLine(line) {
 function buildMessage(triggerNum) {
   const entry = TRIGGERS[triggerNum];
   if (!entry) return null;
-  return `A ${entry.type} has been spotted in ${entry.location} ${entry.coords} get there quick before you miss out!`;
+  return `A ${entry.type} has been spotted in ${entry.location} get there quick before you miss out!`;
 }
 
 function parseTrigger(line) {
@@ -110,30 +110,14 @@ function parseDayzPoint(coords) {
   return { x: parts[0], y: parts.length >= 3 ? parts[2] : parts[1] };
 }
 
-function flipAxisCoord(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return null;
-  return Math.round(MAP_SIZE - n);
-}
-
-function dayzToInGameXY(coords) {
-  const p = parseDayzPoint(coords);
-  if (!p) return null;
-  const x = Math.round(p.x);
-  const y = flipAxisCoord(p.y);
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-  return { x, y };
-}
-
 function formatCoordsLink(coords) {
   const p = parseDayzPoint(coords);
   if (!p) return String(coords || "Unknown");
 
-  const m = dayzToInGameXY(coords);
-  if (!m) return String(coords || "Unknown");
-
-  const url = `https://www.izurvive.com/chernarusplussatmap/#location=${m.x};${m.y};8`;
-  return `[${m.x}, ${m.y}](${url})`;
+  const x = Math.round(p.x);
+  const y = Math.round(p.y);
+  const url = `https://www.izurvive.com/chernarusplussatmap/#location=${x};${y};8`;
+  return `[${x}, ${y}](${url})`;
 }
 
 function formatEmbed(evt) {
