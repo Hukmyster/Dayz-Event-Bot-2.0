@@ -76,10 +76,10 @@ function buildPurchaseSnippets(purchase = {}) {
   const type = escapeXml(purchase.type);
   const x = Number(purchase.x) || 0;
   const z = Number(purchase.z) || 0;
-  const playerId = purchase.playerId || "";
-  const totalCost = Number(purchase.totalCost || 0);
+  const playerId = String(purchase.playerId ?? "");
+  const totalCost = Number(purchase.totalCost ?? 0);
 
-  const shopeventsSnippet = [
+  const shopevents_snippet = [
     `\t<event name="${eventName}">`,
     `    <nominal>1</nominal>`,
     `    <min>1</min>`,
@@ -99,7 +99,7 @@ function buildPurchaseSnippets(purchase = {}) {
     `    </event>`
   ].join("\n");
 
-  const cfgeventspawnsSnippet = [
+  const cfgeventspawns_snippet = [
     `<!-- player:${playerId} amount:${totalCost} -->`,
     `<event name="${eventName}">`,
     `      <pos x="${x}" z="${z}" a="0" />`,
@@ -107,11 +107,11 @@ function buildPurchaseSnippets(purchase = {}) {
   ].join("\n");
 
   return {
-    purchase_id: purchase.id,
-    player_id: purchase.playerId,
-    purchase_price: purchase.totalCost,
-    shopevents_snippet: shopeventsSnippet,
-    cfgeventspawns_snippet: cfgeventspawnsSnippet
+    purchase_id: String(purchase.id ?? ""),
+    player_id: playerId,
+    purchase_price: totalCost,
+    shopevents_snippet,
+    cfgeventspawns_snippet
   };
 }
 
@@ -268,10 +268,10 @@ async function getShopList() {
   }
 }
 
-async function savePurchaseSnippets(purchase) {
+async function savePurchaseSnippets(order) {
   if (!supabase) throw new Error("Supabase client not configured");
 
-  const record = buildPurchaseSnippets(purchase);
+  const record = buildPurchaseSnippets(order);
 
   const { data, error } = await supabase
     .from("purchase_snippets")
@@ -357,10 +357,8 @@ async function buyItem(itemName, qty, x, z, method = "wallet", balance = null, p
   orders.push(order);
   saveOrders();
 
-  const record = buildPurchaseSnippets(order);
-
   try {
-    await savePurchaseSnippets(record);
+    await savePurchaseSnippets(order);
   } catch (err) {
     debug.fail("shop.buyItem.savePurchaseSnippets", err, { orderId: order.id });
   }
