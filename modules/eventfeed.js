@@ -108,7 +108,8 @@ function formatCoordsLink(coords) {
   if (parts.length < 2) return "";
   const x = parts[0];
   const z = parts[parts.length - 1];
-  return `[${x}, ${z}](https://www.izurvive.com/chernarus/#location=${x};${z};5)`;
+  const url = `https://www.izurvive.com/chernarus/#location=${x};${z};5`;
+  return `[${x}, ${z}](${url})`;
 }
 
 function formatEmbed(evt) {
