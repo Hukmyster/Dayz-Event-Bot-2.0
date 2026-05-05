@@ -215,6 +215,23 @@ async function autocomplete(query) {
     .map(i => ({ name: i.name, value: i.name }));
 }
 
+async function buyItem(itemName, quantity, x, z, method, available, userId, guildId) {
+  assertSupabase();
+
+  const item = await findShopItemByName(itemName);
+  if (!item) return { reply: "Item not found" };
+
+  const qty = Math.max(1, Number(quantity || 1));
+  const total = Number(item.price || 0) * qty;
+  const funds = Number(available || 0);
+
+  debug.debug("shop.buyItem", { itemName, quantity: qty, x, z, method, available: funds, userId, guildId, total });
+
+  if (funds < total) return { reply: `Not enough funds. Need ${total} dollars.` };
+
+  return { reply: `Bought ${qty}x ${item.name} for ${total} dollars using ${method}.` };
+}
+
 module.exports = {
   supabase,
   getShopList,
@@ -225,5 +242,6 @@ module.exports = {
   deleteItem,
   autocomplete,
   supportsAttachments,
-  buildAttachmentWhitelist
+  buildAttachmentWhitelist,
+  buyItem
 };
