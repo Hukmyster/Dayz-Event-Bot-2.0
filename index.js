@@ -52,7 +52,6 @@ async function handleCommand(interaction) {
         "shopadditem - add a new item",
         "shopremoveitem - remove an item",
         "shopeditprice - change an item price",
-        "shopeditname - rename an item",
         "shopstatus - show status",
         "shopreload - reload data",
         "balance - show your wallet and bank balance",
@@ -134,13 +133,6 @@ async function handleCommand(interaction) {
     return send(await shop.editPrice(
       interaction.options.getString("name"),
       interaction.options.getInteger("price")
-    ));
-  }
-
-  if (cmd === "shopeditname") {
-    return send(await shop.editName(
-      interaction.options.getString("name"),
-      interaction.options.getString("newname")
     ));
   }
 
