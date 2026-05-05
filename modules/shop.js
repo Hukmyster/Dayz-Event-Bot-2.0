@@ -229,6 +229,38 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
 
   if (funds < total) return { reply: `Not enough funds. Need ${total} dollars.` };
 
+  const purchaseId = `${guildId}-${userId}-${Date.now()}`;
+  const jsonSnippet = JSON.stringify({
+    item_name: item.name,
+    quantity: qty,
+    x,
+    z,
+    method,
+    total,
+    user_id: userId,
+    guild_id: guildId,
+    purchased_at: new Date().toISOString()
+  });
+
+  const { error } = await supabase
+    .from("purchase_snippets")
+    .insert([{
+      purchase_id: purchaseId,
+      player_id: String(userId),
+      purchase_price: total,
+      json_snippet: jsonSnippet
+    }]);
+
+  if (error) {
+    debug.supabaseError("shop.buyItem", "insert", error, {
+      purchase_id: purchaseId,
+      player_id: String(userId),
+      purchase_price: total,
+      json_snippet: jsonSnippet
+    });
+    return { reply: `Database error: ${error.message}` };
+  }
+
   return { reply: `Bought ${qty}x ${item.name} for ${total} dollars using ${method}.` };
 }
 
