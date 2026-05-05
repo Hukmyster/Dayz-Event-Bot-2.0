@@ -58,11 +58,37 @@ async function chargePurchase({ userId, guildId, username, amount, method = "wal
     throw new Error("Amount must be a valid number greater than 0");
   }
 
+  debug.step("shopPurchase.chargePurchase", {
+    userId,
+    guildId,
+    username,
+    amount: cleanAmount,
+    method: cleanMethod
+  });
+
   if (cleanMethod === "bank") {
-    return await economy.deductFromBank(userId, guildId, cleanAmount, username, { notes });
+    const updated = await economy.deductFromBank(userId, guildId, cleanAmount, username, { notes });
+    debug.ok("shopPurchase.chargePurchase", {
+      method: "bank",
+      userId,
+      guildId,
+      amount: cleanAmount,
+      wallet: updated.wallet,
+      bank: updated.bank
+    });
+    return updated;
   }
 
-  return await economy.deductFromWallet(userId, guildId, cleanAmount, username, { notes });
+  const updated = await economy.deductFromWallet(userId, guildId, cleanAmount, username, { notes });
+  debug.ok("shopPurchase.chargePurchase", {
+    method: "wallet",
+    userId,
+    guildId,
+    amount: cleanAmount,
+    wallet: updated.wallet,
+    bank: updated.bank
+  });
+  return updated;
 }
 
 async function buyItem({
@@ -94,6 +120,7 @@ async function buyItem({
   const qty = Math.max(1, Math.floor(normalizeNumber(quantity) || 1));
   const cleanX = normalizeNumber(x);
   const cleanZ = normalizeNumber(z);
+  const cleanY = normalizeNumber(y) ?? 0;
 
   if (!cleanItemName) return { reply: "Item is required" };
   if (cleanX === null || cleanZ === null) return { reply: "Coordinates must be valid numbers" };
@@ -122,6 +149,8 @@ async function buyItem({
       debug.fail("shopPurchase.chargePurchase", err, { itemName: cleanItemName, qty, method });
       return { reply: err.message || "Failed to charge player." };
     }
+  } else {
+    return { reply: "Missing player or guild information for charging." };
   }
 
   const rows = buildShopObjectRows({
@@ -129,7 +158,7 @@ async function buyItem({
     quantity: qty,
     x: cleanX,
     z: cleanZ,
-    y: normalizeNumber(y, 0),
+    y: cleanY,
     attachments,
     customString
   });
@@ -140,7 +169,7 @@ async function buyItem({
     type: shopItem.type,
     qty,
     x: cleanX,
-    y: normalizeNumber(y, 0),
+    y: cleanY,
     z: cleanZ,
     method: normalizeText(method).toLowerCase() || "wallet",
     price,
