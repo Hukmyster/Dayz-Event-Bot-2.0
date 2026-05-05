@@ -1,6 +1,7 @@
 const { createClient } = require("@supabase/supabase-js");
 const ws = require("ws");
 const debug = require("../utils/debug");
+const { buildSingleEntry } = require("./shopSnippetBuilder");
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
@@ -230,26 +231,30 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
   if (funds < total) return { reply: `Not enough funds. Need ${total} dollars.` };
 
   const purchaseId = `${Date.now()}`;
-  const jsonSnippet = JSON.stringify({
-    item_name: item.name,
-    x,
-    z,
-    method,
-    total,
-    purchased_at: new Date().toISOString()
-  });
+  const rows = [];
+
+  for (let i = 0; i < qty; i++) {
+    const entry = buildSingleEntry({
+      name: item.type,
+      x,
+      y: 0,
+      z
+    });
+
+    rows.push({
+      purchase_id: purchaseId,
+      json_snippet: JSON.stringify(entry)
+    });
+  }
 
   const { error } = await supabase
     .from("purchase_snippets")
-    .insert([{
-      purchase_id: purchaseId,
-      json_snippet: jsonSnippet
-    }]);
+    .insert(rows);
 
   if (error) {
     debug.supabaseError("shop.buyItem", "insert", error, {
       purchase_id: purchaseId,
-      json_snippet: jsonSnippet
+      rows: rows.length
     });
     return { reply: `Database error: ${error.message}` };
   }
