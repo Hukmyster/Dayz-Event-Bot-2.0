@@ -1,4 +1,4 @@
-const DEFAULT_SCALE = 0.9999998807907105;
+const DEFAULT_SCALE = 1.0;
 
 function normalizeNumber(value, fallback = 0) {
   const n = Number(value);
