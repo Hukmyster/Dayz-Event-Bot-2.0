@@ -24,7 +24,6 @@ module.exports = {
     try {
       const focused = interaction.options.getFocused(true);
       if (focused.name !== 'name') return interaction.respond([]);
-
       const results = await shop.autocomplete(focused.value);
       return interaction.respond(results);
     } catch (error) {
