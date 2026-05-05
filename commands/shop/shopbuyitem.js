@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const economy = require('../../modules/economy');
 const shop = require('../../modules/shop');
+const shopPurchase = require('../../modules/shopPurchase');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -42,11 +43,23 @@ module.exports = {
         )
     ),
 
+  async autocomplete(interaction) {
+    try {
+      const focused = interaction.options.getFocused(true);
+      if (focused.name !== 'item') return interaction.respond([]);
+      const results = await shop.autocomplete(focused.value);
+      return interaction.respond(results);
+    } catch (error) {
+      console.error('shopbuyitem autocomplete error:', error);
+      return interaction.respond([]);
+    }
+  },
+
   async execute(interaction) {
     try {
       if (!economy.hasAccess(interaction.member)) {
         return interaction.reply({
-          content: 'You do not have the required role to use economy commands.',
+          content: 'You do not have the required role to use shop commands.',
           ephemeral: true
         });
       }
@@ -64,65 +77,41 @@ module.exports = {
         });
       }
 
-      const items = await shop.getShopList();
-      const item = items.find(i =>
-        i.name.toLowerCase() === itemName.toLowerCase() ||
-        i.name.toLowerCase().includes(itemName.toLowerCase())
-      );
+      const attachmentsEnabled = shop.supportsAttachments(itemName);
+      const attachments = [];
 
-      if (!item) {
-        return interaction.reply({
-          content: 'Item not found.',
-          ephemeral: true
-        });
+      const result = await shopPurchase.buyItem({
+        itemName,
+        quantity,
+        x,
+        z,
+        method,
+        playerId: interaction.user.id,
+        guildId: interaction.guildId,
+        username: interaction.user.username,
+        attachments
+      });
+
+      if (result.reply && result.reply !== `Purchase successful: ${quantity}x ${itemName}`) {
+        return interaction.reply({ content: result.reply, ephemeral: true });
       }
 
-      const totalCost = Number(item.price || 0) * Number(quantity || 0);
-      const account = await economy.getOrCreateAccount(
+      const updatedAccount = await economy.getOrCreateAccount(
         interaction.user.id,
         interaction.guildId,
         interaction.user.username
       );
 
-      const available = method === 'bank'
-        ? Number(account.bank || 0)
-        : Number(account.wallet || 0);
-
-      if (available < totalCost) {
-        return interaction.reply({
-          content: `You cannot afford this purchase using your ${method}. Cost: ${economy.formatMoney(totalCost)}. Available: ${economy.formatMoney(available)}.`,
-          ephemeral: true
-        });
-      }
-
-      const updated = await economy.chargeByMethod(
-        interaction.user.id,
-        interaction.guildId,
-        totalCost,
-        method,
-        interaction.user.username,
-        {
-          notes: `Shop purchase ${quantity}x ${item.name} using ${method}`,
-          item: item.name,
-          item_type: item.type,
-          quantity,
-          x,
-          z
-        }
-      );
-
-      const orderResult = await shop.buyItem(item.name, quantity, x, z);
-
       const embed = new EmbedBuilder()
         .setTitle('Purchase Queued')
-        .setDescription(orderResult.reply || `Queued ${quantity}x ${item.name}.`)
+        .setDescription(result.reply || `Queued ${quantity}x ${itemName}.`)
         .addFields(
-          { name: 'Item', value: item.name, inline: true },
+          { name: 'Item', value: itemName, inline: true },
           { name: 'Quantity', value: String(quantity), inline: true },
-          { name: 'Total Cost', value: economy.formatMoney(totalCost), inline: true },
           { name: 'Method', value: method, inline: true },
-          { name: 'Wallet', value: economy.formatMoney(updated.wallet), inline: true },
-          { name: 'Bank', value: economy.formatMoney(updated.bank), inline: true }
+          { name: 'Attachments', value: attachmentsEnabled ? 'Enabled' : 'Disabled', inline: true },
+          { name: 'Wallet', value: economy.formatMoney(updatedAccount.wallet), inline: true },
+          { name: 'Bank', value: economy.formatMoney(updatedAccount.bank), inline: true }
         )
         .setColor(0x3498db)
         .setTimestamp();
