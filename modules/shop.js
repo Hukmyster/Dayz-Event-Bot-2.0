@@ -242,7 +242,6 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
   const { error } = await supabase
     .from("purchase_snippets")
     .insert([{
-      id: undefined,
       purchase_id: purchaseId,
       json_snippet: jsonSnippet
     }]);
