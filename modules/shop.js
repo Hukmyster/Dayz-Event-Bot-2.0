@@ -2,6 +2,7 @@ const { createClient } = require("@supabase/supabase-js");
 const ws = require("ws");
 const debug = require("../utils/debug");
 const { buildSingleEntry } = require("./shopSnippetBuilder");
+const economy = require("./economy");
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
@@ -216,7 +217,7 @@ async function autocomplete(query) {
     .map(i => ({ name: i.name, value: i.name }));
 }
 
-async function buyItem(itemName, quantity, x, z, method, available, userId, guildId) {
+async function buyItem(itemName, quantity, x, z, method, available, userId, guildId, username) {
   assertSupabase();
 
   const item = await findShopItemByName(itemName);
@@ -229,6 +230,37 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
   debug.debug("shop.buyItem", { itemName, quantity: qty, x, z, method, available: funds, userId, guildId, total });
 
   if (funds < total) return { reply: `Not enough funds. Need ${total} dollars.` };
+
+  if (userId && guildId) {
+    debug.step("shop.buyItem.charge", {
+      userId,
+      guildId,
+      method,
+      total
+    });
+
+    if (String(method || "wallet").toLowerCase() === "bank") {
+      await economy.deductFromBank(userId, guildId, total, username || userId, {
+        notes: `Shop purchase: ${item.name}`
+      });
+    } else {
+      await economy.deductFromWallet(userId, guildId, total, username || userId, {
+        notes: `Shop purchase: ${item.name}`
+      });
+    }
+
+    const after = await economy.getOrCreateAccount(userId, guildId, username || userId);
+    debug.ok("shop.buyItem.charge", {
+      userId,
+      guildId,
+      method,
+      total,
+      wallet: after.wallet,
+      bank: after.bank
+    });
+  } else {
+    return { reply: "Missing player or guild information for charging." };
+  }
 
   const purchaseId = `${Date.now()}`;
   const rows = [];
