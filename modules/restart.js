@@ -1,98 +1,94 @@
-const fs = require('fs');
-const path = require('path');
-const { createClient } = require('@supabase/supabase-js');
+const fs = require("fs");
+const path = require("path");
+const { createClient } = require("@supabase/supabase-js");
+const debug = require("./utils/debug");
+const { buildJsonFile } = require("./modules/shopSnippetBuilder");
 
 const RESTART_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const CUSTOM_DIR = path.join(__dirname, 'custom');
-const EVENTS_FILE = path.join(CUSTOM_DIR, 'shopevents.xml');
-const POS_FILE = path.join(CUSTOM_DIR, 'eventposdef.xml');
-
-const EVENTS_HEADER = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<events>
-  <!-- [PURCHASE_SNIPPETS_START] -->`;
-const EVENTS_FOOTER = `  <!-- [PURCHASE_SNIPPETS_END] -->
-</events>`;
-
-const POS_HEADER = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<eventposdef>
-  <!-- [PURCHASE_SNIPPETS_START] -->`;
-const POS_FOOTER = `  <!-- [PURCHASE_SNIPPETS_END] -->
-</eventposdef>`;
-
-async function fetchSnippets() {
-  const { data, error } = await supabase
-    .from('purchase_snippets')
-    .select('id, shopevents_snippet, cfgeventspawns_snippet, created_at')
-    .order('created_at', { ascending: true });
-
-  if (error) throw error;
-  return data || [];
-}
-
-function buildXml(snippets) {
-  const eventsList = snippets.map(s => s.shopevents_snippet).filter(Boolean).join('\n');
-  const posList = snippets.map(s => s.cfgeventspawns_snippet).filter(Boolean).join('\n');
-
-  const finalEventsXML = `${EVENTS_HEADER}\n${eventsList}\n${EVENTS_FOOTER}`;
-  const finalPosXML = `${POS_HEADER}\n${posList}\n${POS_FOOTER}`;
-
-  return { finalEventsXML, finalPosXML };
-}
+const CUSTOM_DIR = path.join(__dirname, "custom");
+const OUTPUT_FILE = path.join(CUSTOM_DIR, "shopobjects.json");
+const JSON_TABLE = "purchase_json_snippets";
 
 function ensureOutputDir() {
   if (!fs.existsSync(CUSTOM_DIR)) fs.mkdirSync(CUSTOM_DIR, { recursive: true });
 }
 
-async function writeFiles(eventsXML, posXML) {
+async function fetchSnippets() {
+  const { data, error } = await supabase
+    .from(JSON_TABLE)
+    .select("id, object_json, created_at")
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
+function parseSnippet(row) {
+  if (!row) return null;
+  if (row.object_json && typeof row.object_json === "object") return row.object_json;
+  if (typeof row.object_json === "string") {
+    try {
+      return JSON.parse(row.object_json);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function buildFinalJson(snippets) {
+  const entries = snippets
+    .map(parseSnippet)
+    .filter(Boolean);
+
+  return buildJsonFile(entries);
+}
+
+async function writeFiles(jsonObject) {
   ensureOutputDir();
-  fs.writeFileSync(EVENTS_FILE, eventsXML, 'utf8');
-  fs.writeFileSync(POS_FILE, posXML, 'utf8');
+  fs.writeFileSync(OUTPUT_FILE, JSON.stringify(jsonObject, null, 2), "utf8");
 }
 
 async function clearProcessedSnippets(ids) {
   if (!ids.length) return;
   const { error } = await supabase
-    .from('purchase_snippets')
+    .from(JSON_TABLE)
     .delete()
-    .in('id', ids);
+    .in("id", ids);
 
   if (error) throw error;
 }
 
 async function runRestartProcedure() {
-  console.log('[RESTART] Starting multi-step procedure...');
+  debug.step("restart.runRestartProcedure", { phase: "start" });
 
-  console.log('[RESTART] Fetching snippets from Supabase...');
   const snippets = await fetchSnippets();
-
   if (!snippets.length) {
-    console.log('[RESTART] No snippets found. Skipping XML rebuild.');
+    debug.step("restart.runRestartProcedure", { phase: "no-snippets" });
     return;
   }
 
-  console.log(`[RESTART] Snippets fetched: ${snippets.length}`);
-  const { finalEventsXML, finalPosXML } = buildXml(snippets);
-
-  await writeFiles(finalEventsXML, finalPosXML);
-  console.log('[RESTART] XML files rebuilt successfully.');
-
+  const finalJson = buildFinalJson(snippets);
+  await writeFiles(finalJson);
   await clearProcessedSnippets(snippets.map(s => s.id));
-  console.log('[RESTART] Processed snippet rows cleared from Supabase.');
 
-  console.log('[RESTART] Triggering Nitrado restart logic here...');
+  debug.ok("restart.runRestartProcedure", {
+    snippets: snippets.length,
+    file: OUTPUT_FILE
+  });
 }
 
 function start() {
-  console.log('[RESTART] Restart module initialized.');
+  debug.ok("restart.start", { intervalMs: RESTART_INTERVAL_MS });
   setInterval(async () => {
     try {
       await runRestartProcedure();
     } catch (error) {
-      console.error('[RESTART] Restart cycle failed:', error);
+      debug.fail("restart.loop", error);
     }
   }, RESTART_INTERVAL_MS);
 }
