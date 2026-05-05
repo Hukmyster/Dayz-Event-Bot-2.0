@@ -36,7 +36,7 @@ function buildJsonFile(entries = []) {
 }
 
 function buildSingleEntry(item = {}) {
-  return buildObjectEntry(item);
+  return buildJsonFile([item]);
 }
 
 function stackEntries(...groups) {
