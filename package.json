@@ -5,7 +5,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node index.js",
-    "deploy-commands": "node deploy-commands.js"
+    "deploy-commands": "node deploy-commands.js",
+    "postinstall": "npm install ws"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
