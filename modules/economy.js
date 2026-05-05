@@ -92,11 +92,17 @@ async function updateAccount(userId, guildId, updates) {
     .eq("user_id", userId)
     .eq("guild_id", guildId)
     .select("*")
-    .single();
+    .maybeSingle();
 
   if (error) {
     debug.supabaseError("economy.updateAccount", "update", error, { userId, guildId, updates });
     throw error;
+  }
+
+  if (!data) {
+    const err = new Error("Account update returned no rows");
+    debug.supabaseError("economy.updateAccount", "no_rows", err, { userId, guildId, updates });
+    throw err;
   }
 
   debug.ok("economy.updateAccount", {
