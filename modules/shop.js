@@ -243,7 +243,7 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
 
     rows.push({
       purchase_id: purchaseId,
-      json_snippet: JSON.stringify(entry)
+      json_snippet: JSON.stringify(entry, null, 2)
     });
   }
 
