@@ -22,7 +22,6 @@ module.exports = {
       }
 
       const name = interaction.options.getString('name', true);
-
       const result = await shop.deleteItem(name);
 
       return interaction.reply({
