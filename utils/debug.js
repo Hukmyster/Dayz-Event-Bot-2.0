@@ -3,6 +3,7 @@ const path = require("path");
 
 const DEBUG_FILE = path.join(__dirname, "../logs/debug-trace.log");
 const VERBOSE = true;
+const SHOP_DEBUG = String(process.env.SHOP_DEBUG || "false").toLowerCase() === "true";
 
 function ensureDebugFile() {
   const dir = path.dirname(DEBUG_FILE);
@@ -41,7 +42,8 @@ function start(command, meta = {}) {
       hasSupabaseUrl: !!process.env.SUPABASE_URL,
       hasSupabaseKey: !!process.env.SUPABASE_KEY,
       hasDiscordToken: !!process.env.DISCORD_TOKEN,
-      hasGuildId: !!process.env.GUILD_ID
+      hasGuildId: !!process.env.GUILD_ID,
+      shopDebug: SHOP_DEBUG
     }
   });
 }
@@ -77,6 +79,11 @@ function supabaseError(command, action, err, meta = {}) {
   });
 }
 
+function debug(command, meta = {}) {
+  if (!SHOP_DEBUG) return;
+  write("DEBUG", command, meta);
+}
+
 function init() {
   process.on("unhandledRejection", (err) => {
     write("ERROR", "unhandledRejection", { error: err?.stack || err?.message || String(err) });
@@ -84,7 +91,7 @@ function init() {
   process.on("uncaughtException", (err) => {
     write("ERROR", "uncaughtException", { error: err?.stack || err?.message || String(err) });
   });
-  write("OK", "debug", { message: "debug logger initialized" });
+  write("OK", "debug", { message: "debug logger initialized", shopDebug: SHOP_DEBUG });
 }
 
 init();
@@ -96,5 +103,7 @@ module.exports = {
   fail,
   reply,
   supabase,
-  supabaseError
+  supabaseError,
+  debug,
+  SHOP_DEBUG
 };
