@@ -125,9 +125,39 @@ const commands = [
     ]
   },
 
-  { name: "playerradaradd", description: "Add a player radar in this channel" },
-  { name: "playerradarremove", description: "Remove a player radar" },
-  { name: "playerradarview", description: "View all player radars" }
+  {
+    name: "playerradaradd",
+    description: "Add a player radar in this channel",
+    options: [
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true },
+      { name: "x", type: ApplicationCommandOptionType.Number, description: "X coordinate", required: true },
+      { name: "z", type: ApplicationCommandOptionType.Number, description: "Z coordinate", required: true },
+      {
+        name: "radius",
+        type: ApplicationCommandOptionType.String,
+        description: "Radar radius",
+        required: true,
+        choices: [
+          { name: "100m", value: "100" },
+          { name: "200m", value: "200" },
+          { name: "300m", value: "300" },
+          { name: "400m", value: "400" },
+          { name: "500m", value: "500" }
+        ]
+      }
+    ]
+  },
+  {
+    name: "playerradarremove",
+    description: "Remove a player radar",
+    options: [
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true }
+    ]
+  },
+  {
+    name: "playerradarview",
+    description: "View all player radars"
+  }
 ];
 
 async function main() {
