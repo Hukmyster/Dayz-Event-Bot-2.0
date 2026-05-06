@@ -3,6 +3,7 @@ const path = require("path");
 const debug = require("../utils/debug");
 
 const LOG_DIR = process.env.DAYZ_LOG_DIR || path.join(__dirname, "../logs");
+const ADMIN_WEBHOOK_URL = process.env.ADMIN_WEBHOOK_URL || "";
 const RPT_FILES = [".rpt", ".RPT"];
 const ADM_FILES = [".adm", ".ADM"];
 const PLAYERLIST_FILES = [".log", ".txt"];
@@ -24,12 +25,18 @@ let cache = {
   raw: {}
 };
 
+let webhookQueue = Promise.resolve();
+
 function readText(file) {
   return fs.readFileSync(file, "utf8");
 }
 
 function exists(file) {
-  try { return fs.existsSync(file); } catch { return false; }
+  try {
+    return fs.existsSync(file);
+  } catch {
+    return false;
+  }
 }
 
 function safeListDir(dir) {
@@ -104,6 +111,27 @@ function parseAdm(text) {
   return events;
 }
 
+async function postWebhook(payload) {
+  if (!ADMIN_WEBHOOK_URL) return false;
+  const res = await fetch(ADMIN_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return res.ok;
+}
+
+function queueWebhook(payload) {
+  webhookQueue = webhookQueue
+    .catch(() => {})
+    .then(() => postWebhook(payload))
+    .catch(err => {
+      debug.fail("serverstate.webhook", err, { hasWebhook: !!ADMIN_WEBHOOK_URL });
+      return false;
+    });
+  return webhookQueue;
+}
+
 function refresh() {
   const files = pickFiles();
   const out = {
@@ -154,12 +182,30 @@ function refresh() {
     .slice(0, 200);
 
   cache = out;
-  debug.step("serverstate.refresh", {
+  const summary = {
     files: out.files,
     capabilities: out.capabilities,
     players: out.players.length,
     events: out.recentEvents.length
-  });
+  };
+
+  if (ADMIN_WEBHOOK_URL) {
+    queueWebhook({
+      username: "Server State",
+      content: [
+        "**DayZ scan complete**",
+        `Files: ${Object.values(out.files).filter(Boolean).length}`,
+        `Players: ${out.players.length}`,
+        `Events: ${out.recentEvents.length}`,
+        `Connections: ${out.capabilities.connections ? "yes" : "no"}`,
+        `Disconnects: ${out.capabilities.disconnects ? "yes" : "no"}`,
+        `Admin events: ${out.capabilities.adminEvents ? "yes" : "no"}`
+      ].join("\n")
+    });
+  } else {
+    debug.step("serverstate.refresh", summary);
+  }
+
   return out;
 }
 
