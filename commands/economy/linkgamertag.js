@@ -14,11 +14,18 @@ module.exports = {
     ),
 
   async execute(interaction) {
-    const gamertag = interaction.options.getString("gamertag", true);
+    const gamertag = interaction.options.getString("gamertag", true).trim();
 
     try {
-      const matched = await findGamertagInServerstate(gamertag);
+      const files = typeof serverstate.getFiles === "function" ? serverstate.getFiles() : [];
+      if (!files.length) {
+        return interaction.reply({
+          content: "Server logs are still loading. Try again in a moment.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
 
+      const matched = await findGamertagInServerstate(gamertag);
       if (!matched) {
         return interaction.reply({
           content: "Link failed, make sure you spelled it exactly and are in the server currently.",
@@ -26,13 +33,38 @@ module.exports = {
         });
       }
 
-      const { error } = await economy.supabase
+      const { data: existing, error: selectError } = await economy.supabase
         .from("economy_accounts")
-        .update({ gamertag })
+        .select("id")
         .eq("user_id", interaction.user.id)
-        .eq("guild_id", interaction.guildId);
+        .eq("guild_id", interaction.guildId)
+        .maybeSingle();
 
-      if (error) throw error;
+      if (selectError) throw selectError;
+
+      if (existing) {
+        const { error } = await economy.supabase
+          .from("economy_accounts")
+          .update({ gamertag })
+          .eq("user_id", interaction.user.id)
+          .eq("guild_id", interaction.guildId);
+
+        if (error) throw error;
+      } else {
+        const { error } = await economy.supabase
+          .from("economy_accounts")
+          .insert([{
+            user_id: interaction.user.id,
+            guild_id: interaction.guildId,
+            username: interaction.user.username,
+            wallet: 0,
+            bank: 0,
+            last_daily_claim_at: null,
+            gamertag
+          }]);
+
+        if (error) throw error;
+      }
 
       return interaction.reply({
         content: `Gamertag linked: ${gamertag}`,
@@ -50,12 +82,12 @@ module.exports = {
 
 async function findGamertagInServerstate(gamertag) {
   const files = typeof serverstate.getFiles === "function" ? serverstate.getFiles() : [];
-  const latestFile = files
-    .filter(f => typeof f?.content === "string" && /\.adm$/i.test(f.path || ""))
-    .sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))[0];
+  const admFiles = files.filter(f => typeof f?.content === "string" && /\.adm$/i.test(f.path || ""));
 
-  if (!latestFile?.content) return false;
+  for (const file of admFiles.sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))) {
+    const lines = String(file.content).split(/\r?\n/).filter(Boolean);
+    if (lines.some(line => line.includes(gamertag))) return true;
+  }
 
-  const lines = String(latestFile.content).split(/\r?\n/).filter(Boolean);
-  return lines.some(line => line.includes(gamertag));
+  return false;
 }
