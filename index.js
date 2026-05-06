@@ -392,4 +392,42 @@ client.once(Events.ClientReady, async () => {
   console.log("[EVENTFEED] module started");
 });
 
-client.on(Events.InteractionCreate, async (interac
+client.on(Events.InteractionCreate, async (interaction) => {
+  try {
+    if (!interaction.guild) return;
+
+    if (interaction.isAutocomplete()) {
+      const focused = interaction.options.getFocused();
+      const query = typeof focused === "string" ? focused : "";
+      debug.step("autocomplete", { query });
+      const results = await shop.autocomplete(query);
+      logger.interaction({ type: "autocomplete", query, results });
+      debug.step("autocomplete", { query, resultsCount: results.length });
+      return interaction.respond(results.slice(0, 25)).catch(err => {
+        logger.error("AUTOCOMPLETE ERROR", err);
+        debug.fail("autocomplete", err, { query });
+      });
+    }
+
+    if (!interaction.isChatInputCommand()) return;
+
+    logger.interaction({ type: "command", cmd: interaction.commandName, user: interaction.user?.tag });
+    return handleCommand(interaction).catch(err => {
+      logger.error("COMMAND ERROR", err);
+      debug.fail(interaction.commandName || "unknown", err, {
+        user: interaction.user?.tag,
+        options: serializeOptions(interaction)
+      });
+      return replyOnce(interaction, { content: "Error executing command", ephemeral: true }, interaction.commandName || "unknown");
+    });
+  } catch (err) {
+    logger.error("INTERACTION ERROR", err);
+    debug.fail(interaction.commandName || "unknown", err, {
+      user: interaction.user?.tag,
+      options: serializeOptions(interaction)
+    });
+    return replyOnce(interaction, { content: "Error executing command", ephemeral: true }, interaction.commandName || "unknown");
+  }
+});
+
+client.login(process.env.DISCORD_TOKEN);
