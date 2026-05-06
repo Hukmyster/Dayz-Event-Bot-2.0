@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const { start: startServerState, getFiles } = require('./serverstate');
@@ -191,6 +191,85 @@ function stopScanning() {
   state.running = false;
 }
 
+async function handleAdd(interaction) {
+  await loadRadars();
+
+  const name = interaction.options.getString('name', true).trim();
+  const x = interaction.options.getNumber('x', true);
+  const z = interaction.options.getNumber('z', true);
+  const radius = interaction.options.getString('radius', true);
+
+  if (radars[name]) {
+    return interaction.reply({ content: `Radar **${name}** already exists.`, ephemeral: true });
+  }
+
+  const webhook = await interaction.channel.createWebhook({
+    name: `Radar - ${name}`,
+    reason: 'Player radar detection webhook'
+  });
+
+  radars[name] = {
+    x,
+    z,
+    radius: parseInt(radius, 10),
+    webhookUrl: webhook.url,
+    channelId: interaction.channelId,
+    webhookId: webhook.id
+  };
+
+  await saveRadars();
+
+  return interaction.reply({
+    content: `✅ Radar **${name}** created for this channel.`,
+    ephemeral: true
+  });
+}
+
+async function handleRemove(interaction) {
+  await loadRadars();
+
+  const name = interaction.options.getString('name', true).trim();
+
+  if (!radars[name]) {
+    return interaction.reply({ content: `Radar **${name}** was not found.`, ephemeral: true });
+  }
+
+  delete radars[name];
+  await saveRadars();
+
+  return interaction.reply({
+    content: `✅ Radar **${name}** removed.`,
+    ephemeral: true
+  });
+}
+
+async function handleView(interaction) {
+  await loadRadars();
+
+  const names = Object.keys(radars);
+
+  if (!names.length) {
+    return interaction.reply({ content: 'No radars are saved yet.', ephemeral: true });
+  }
+
+  const list = names
+    .map(n => {
+      const r = radars[n];
+      return `• **${n}** — ${r.radius}m at ${coordLink(r.x, r.z, `${r.x}, ${r.z}`)}`;
+    })
+    .join('\n');
+
+  const embed = new EmbedBuilder()
+    .setTitle('Player Radars')
+    .setColor(0x3498db)
+    .setDescription(list);
+
+  return interaction.reply({
+    embeds: [embed],
+    ephemeral: true
+  });
+}
+
 function handleInteraction(interaction) {
   return;
 }
@@ -208,4 +287,11 @@ async function init(client) {
   console.log('PlayerRadars module loaded');
 }
 
-module.exports = { init, stop: stopScanning, state };
+module.exports = {
+  init,
+  stop: stopScanning,
+  state,
+  handleAdd,
+  handleRemove,
+  handleView
+};
