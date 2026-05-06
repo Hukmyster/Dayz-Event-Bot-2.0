@@ -18,11 +18,19 @@ module.exports = {
         });
       }
 
-      const last = await getPlayerLastLocation(linked, interaction.guildId);
+      const files = typeof serverstate.getFiles === "function" ? serverstate.getFiles() : [];
+      if (!files.length) {
+        return interaction.reply({
+          content: "Server logs are still loading. Try again in a moment.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const last = await getPlayerLastLocation(linked);
 
       if (!last) {
         return interaction.reply({
-          content: "Stay on the server a little longer and try again.",
+          content: "No location found yet. Stay on the server a little longer and try again.",
           flags: MessageFlags.Ephemeral
         });
       }
@@ -64,23 +72,17 @@ async function getLinkedGamertag(userId, guildId) {
   return data?.gamertag?.trim() || "";
 }
 
-async function getPlayerLastLocation(gamertag, guildId) {
+async function getPlayerLastLocation(gamertag) {
   const files = typeof serverstate.getFiles === "function" ? serverstate.getFiles() : [];
   const latestFile = files
     .filter(f => typeof f?.content === "string" && /\.adm$/i.test(f.path || ""))
-    .sort((a, b) => {
-      const at = Number(a?.current?.lineCount || 0);
-      const bt = Number(b?.current?.lineCount || 0);
-      return bt - at;
-    })[0];
+    .sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))[0];
 
-  if (!latestFile || !latestFile.content) return null;
+  if (!latestFile?.content) return null;
 
-  const lines = String(latestFile.content)
-    .split(/\r?\n/)
-    .filter(Boolean);
-
+  const lines = String(latestFile.content).split(/\r?\n/).filter(Boolean);
   const matches = [];
+
   for (const line of lines) {
     if (!line.includes(gamertag)) continue;
     const parsed = parseLocationLine(line);
