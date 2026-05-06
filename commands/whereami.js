@@ -1,4 +1,6 @@
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require("discord.js");
+const economy = require("../../modules/economy");
+const serverstate = require("../../modules/serverstate");
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -7,18 +9,30 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      const last = await getPlayerLastLocation(interaction.user.id, interaction.guildId);
+      const linked = await getLinkedGamertag(interaction.user.id, interaction.guildId);
 
-      if (!last) {
+      if (!linked) {
         return interaction.reply({
-          content: "No recent location found for you.",
-          ephemeral: true
+          content: "Link your gamertag first using /linkgamertag.",
+          flags: MessageFlags.Ephemeral
         });
       }
 
+      const last = await getPlayerLastLocation(linked, interaction.guildId);
+
+      if (!last) {
+        return interaction.reply({
+          content: "Stay on the server a little longer and try again.",
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const coordText = `${last.x}, ${last.y}, ${last.z}`;
+      const mapLink = `https://www.izurvive.com/chernarusplussatmap/#location=${last.x};${last.z};8`;
+
       const embed = new EmbedBuilder()
         .setTitle("Your Latest Location")
-        .setDescription("You were last seen at:")
+        .setDescription(`Last seen for **${linked}**\n\n[${coordText}](${mapLink})`)
         .addFields(
           { name: "X", value: String(last.x), inline: true },
           { name: "Y", value: String(last.y ?? 0), inline: true },
@@ -27,35 +41,63 @@ module.exports = {
         .setColor(0x3498db)
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed] });
+      return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     } catch (error) {
       console.error("whereami command error:", error);
       return interaction.reply({
         content: "Something went wrong while looking up your location.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }
 };
 
-async function getPlayerLastLocation(userId, guildId) {
-  const now = Date.now();
-  const thirtyMinsAgo = now - 30 * 60 * 1000;
+async function getLinkedGamertag(userId, guildId) {
+  const { data, error } = await economy.supabase
+    .from("economy_accounts")
+    .select("gamertag")
+    .eq("user_id", userId)
+    .eq("guild_id", guildId)
+    .maybeSingle();
 
-  const rows = await getNitradoLogEntries(userId, guildId, thirtyMinsAgo);
-  const latest = rows
-    .filter(r => Number(r.timestamp) >= thirtyMinsAgo)
-    .sort((a, b) => Number(b.timestamp) - Number(a.timestamp))[0];
-
-  if (!latest) return null;
-
-  return {
-    x: Number(latest.location_x) || 0,
-    y: Number(latest.location_y) || 0,
-    z: Number(latest.location_z) || 0
-  };
+  if (error) throw error;
+  return data?.gamertag?.trim() || "";
 }
 
-async function getNitradoLogEntries(userId, guildId, fromTimestamp) {
-  return [];
+async function getPlayerLastLocation(gamertag, guildId) {
+  const files = typeof serverstate.getFiles === "function" ? serverstate.getFiles() : [];
+  const latestFile = files
+    .filter(f => typeof f?.content === "string" && /\.adm$/i.test(f.path || ""))
+    .sort((a, b) => {
+      const at = Number(a?.current?.lineCount || 0);
+      const bt = Number(b?.current?.lineCount || 0);
+      return bt - at;
+    })[0];
+
+  if (!latestFile || !latestFile.content) return null;
+
+  const lines = String(latestFile.content)
+    .split(/\r?\n/)
+    .filter(Boolean);
+
+  const matches = [];
+  for (const line of lines) {
+    if (!line.includes(gamertag)) continue;
+    const parsed = parseLocationLine(line);
+    if (parsed) matches.push(parsed);
+  }
+
+  if (!matches.length) return null;
+  return matches[matches.length - 1];
+}
+
+function parseLocationLine(line) {
+  const m = String(line).match(/pos=<\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*>/i);
+  if (!m) return null;
+
+  return {
+    x: Number(m[1]) || 0,
+    y: Number(m[2]) || 0,
+    z: Number(m[3]) || 0
+  };
 }
