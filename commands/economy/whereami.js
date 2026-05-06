@@ -84,13 +84,19 @@ async function getPlayerLastLocation(gamertag) {
   const matches = [];
 
   for (const line of lines) {
-    if (!line.includes(gamertag)) continue;
+    const extracted = extractQuotedName(line);
+    if (extracted !== gamertag) continue;
     const parsed = parseLocationLine(line);
     if (parsed) matches.push(parsed);
   }
 
   if (!matches.length) return null;
   return matches[matches.length - 1];
+}
+
+function extractQuotedName(line) {
+  const m = String(line).match(/"([^"]+)"/);
+  return m ? m[1] : "";
 }
 
 function parseLocationLine(line) {
