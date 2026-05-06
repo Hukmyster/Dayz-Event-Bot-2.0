@@ -1,217 +1,225 @@
-const fs = require("fs");
-const path = require("path");
-const debug = require("../utils/debug");
+const API_TOKEN = process.env.API_TOKEN || "";
+const SERVICE_ID = process.env.SERVICE_ID || "";
+const LOOP_MS = Number(process.env.SERVERSTATE_INTERNAL_MS || 30000);
+const DEBUG_ENABLED = String(process.env.SERVERSTATE_DEBUG || "false").toLowerCase() === "true";
+const MAX_FILES = 5;
 
-const ADMIN_WEBHOOK_URL = process.env.ADMIN_WEBHOOK_URL || "";
-const NITRADO_API_KEY = process.env.API_TOKEN || process.env.NITRADO_API_KEY || process.env.NITRADO_TOKEN || "";
-const NITRADO_SERVICE_ID = process.env.SERVICE_ID || process.env.NITRADO_SERVICE_ID || "";
-const DAYZ_IP = process.env.DAYZ_IP || "";
-const DAYZ_PORT = process.env.DAYZ_PORT || "";
-const LOG_DIR = process.env.DAYZ_LOG_DIR || path.join(__dirname, "../logs");
-
-let cache = {
-  lastScanAt: null,
-  sources: {},
-  capabilities: {},
-  report: [],
-  raw: {},
-  players: [],
-  recentEvents: []
+const state = {
+  started: false,
+  timer: null,
+  running: false,
+  startedAt: new Date().toISOString(),
+  username: "",
+  fileState: new Map(),
+  files: new Map()
 };
 
-let webhookQueue = Promise.resolve();
-
-function safe(obj) {
-  try { return JSON.stringify(obj, null, 2); } catch { return String(obj); }
+function dbg(tag, data) {
+  if (!DEBUG_ENABLED) return;
+  const ts = new Date().toISOString();
+  const dataStr = data !== undefined ? JSON.stringify(data) : "";
+  console.log(`[serverstate][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
 }
 
-function chunkText(text, size = 1800) {
-  const chunks = [];
-  for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
-  return chunks;
+function normalizePath(p) {
+  const s = String(p || "").replace(/\\\\/g, "/").replace(/\\/+/g, "/");
+  if (!s) return "/";
+  return s.startsWith("/") ? s : `/${s}`;
 }
 
-async function postWebhook(payload) {
-  if (!ADMIN_WEBHOOK_URL) return false;
-  const res = await fetch(ADMIN_WEBHOOK_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+function normalizeLine(line) {
+  return String(line || "").replace(/\r$/, "").trim();
+}
+
+async function nitradoRequest(url, opts = {}) {
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      Authorization: `Bearer ${API_TOKEN}`,
+      Accept: "application/json",
+      ...(opts.headers || {})
+    }
   });
-  return res.ok;
+  const text = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`Nitrado HTTP ${res.status}: ${text.slice(0, 250)}`);
+  return JSON.parse(text);
 }
 
-function queueWebhook(payload) {
-  webhookQueue = webhookQueue
-    .catch(() => {})
-    .then(() => postWebhook(payload))
-    .catch(err => {
-      debug.fail("serverstate.webhook", err, { hasWebhook: !!ADMIN_WEBHOOK_URL });
-      return false;
+async function fetchServerInfo() {
+  return await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers`);
+}
+
+function parseLogTimestamp(filename) {
+  const m = String(filename || "").match(/_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})/);
+  if (!m) return 0;
+  return Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}Z`) || 0;
+}
+
+function collectCandidates(serverJson) {
+  const gs = serverJson?.data?.gameserver || {};
+  const username = gs?.username || "";
+  const files = gs?.game_specific?.log_files || [];
+  const list = [];
+
+  for (const item of Array.isArray(files) ? files : []) {
+    const raw = typeof item === "string" ? item : (item?.path || item?.file || item?.name || item?.filename || "");
+    const base = String(raw || "").trim();
+    if (!base) continue;
+    const filename = base.split("/").pop();
+    if (!/\.(adm|rpt)$/i.test(filename)) continue;
+
+    list.push({
+      filename,
+      sortKey: parseLogTimestamp(filename),
+      candidates: [
+        `/games/${username}/noftp/dayzps/config/${filename}`,
+        `/games/${username}/noftp/${base.replace(/^\/+/, "")}`,
+        base
+      ]
     });
-  return webhookQueue;
-}
-
-async function fetchJson(url, options = {}) {
-  const res = await fetch(url, options);
-  const text = await res.text();
-  let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch {}
-  return { ok: res.ok, status: res.status, text, json, headers: Object.fromEntries(res.headers.entries()) };
-}
-
-function addReport(report, source, ok, summary, data) {
-  report.push({ source, ok, summary: summary || "", data: data || null });
-}
-
-function guessPublicUrls() {
-  const urls = [];
-  if (DAYZ_IP && DAYZ_PORT) {
-    urls.push(`https://gamemonitoring.net/dayz/servers/${encodeURIComponent(DAYZ_IP)}/${encodeURIComponent(DAYZ_PORT)}/api`);
-    urls.push(`https://www.battlemetrics.com/servers/dayz/${encodeURIComponent(DAYZ_IP)}:${encodeURIComponent(DAYZ_PORT)}`);
   }
-  return urls;
+
+  list.sort((a, b) => b.sortKey - a.sortKey || a.filename.localeCompare(b.filename));
+  const chosen = list.slice(0, MAX_FILES);
+  const paths = [...new Set(chosen.flatMap(x => x.candidates).map(normalizePath))];
+
+  dbg("CANDIDATES", { username, paths });
+
+  return { username, paths };
 }
 
-function guessNitradoUrls() {
-  if (!NITRADO_SERVICE_ID || !NITRADO_API_KEY) return [];
-  const base = "https://api.nitrado.net";
-  return [
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/status`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/settings`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/files`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/logs`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/players`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/query`
-  ];
+async function getDownloadToken(filePath) {
+  const json = await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`);
+  const tokenUrl = json?.data?.token?.url || null;
+  const token = json?.data?.token?.token || null;
+  return { tokenUrl, token };
 }
 
-function authHeaders() {
-  return NITRADO_API_KEY ? { Authorization: `Bearer ${NITRADO_API_KEY}`, "Content-Type": "application/json" } : {};
+async function fetchFile(tokenUrl, token) {
+  const u = new URL(tokenUrl);
+  if (token) u.searchParams.set("token", token);
+  const res = await fetch(u.toString(), {
+    headers: {
+      Authorization: `Bearer ${API_TOKEN}`,
+      Accept: "application/octet-stream,*/*"
+    }
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`Token fetch HTTP ${res.status}: ${text.slice(0, 250)}`);
+  return text;
 }
 
-function extractInteresting(obj) {
-  if (!obj || typeof obj !== "object") return obj;
-  const keys = ["game", "game_name", "ip", "port", "players", "player_count", "status", "status_text", "map", "name", "hostname", "server", "service", "services", "game_server", "settings", "files", "server_settings", "query", "data"];
-  const out = {};
-  for (const k of keys) if (k in obj) out[k] = obj[k];
-  return Object.keys(out).length ? out : obj;
+function candidateReadPaths(originalPath, username) {
+  const filename = String(originalPath || "").split("/").pop();
+  return [...new Set([
+    `/games/${username}/noftp/dayzps/config/${filename}`,
+    `/games/${username}/noftp/${filename}`,
+    normalizePath(originalPath)
+  ])];
 }
 
-async function probeUrls(urls, headers = {}) {
-  const out = {};
-  for (const url of urls) {
+async function readRemoteFile(remotePath, username) {
+  const candidates = candidateReadPaths(remotePath, username);
+  dbg("READ_TRY", { remotePath, candidates });
+
+  for (const candidate of candidates) {
     try {
-      const res = await fetchJson(url, { method: "GET", headers });
-      out[url] = {
-        ok: res.ok,
-        status: res.status,
-        preview: res.json ? extractInteresting(res.json) : res.text.slice(0, 700)
-      };
+      const { tokenUrl, token } = await getDownloadToken(candidate);
+      if (!tokenUrl || !token) throw new Error("No token returned");
+      const content = await fetchFile(tokenUrl, token);
+      dbg("READ_OK", { remotePath, candidate, bytes: content.length });
+      return { pathUsed: candidate, content };
     } catch (err) {
-      out[url] = { ok: false, error: err.message };
+      dbg("READ_FAIL", { remotePath, candidate, error: err?.message || String(err) });
     }
   }
-  return out;
+
+  throw new Error(`All read attempts failed for ${remotePath}`);
 }
 
-function parseLocalFiles() {
-  const result = { dir: LOG_DIR, exists: false, files: [] };
-  try {
-    result.exists = fs.existsSync(LOG_DIR);
-    if (result.exists) result.files = fs.readdirSync(LOG_DIR).slice(0, 30);
-  } catch (err) {
-    result.error = err.message;
-  }
-  return result;
-}
-
-function buildDiscordContent() {
-  const lines = [];
-  lines.push("**DayZ/Nitrado Discovery Scan**");
-  lines.push(`Time: ${cache.lastScanAt}`);
-  lines.push(`Local logs dir: ${cache.sources.local?.exists ? "found" : "missing"}`);
-  lines.push(`API_TOKEN: ${NITRADO_API_KEY ? "present" : "missing"}`);
-  lines.push(`SERVICE_ID: ${NITRADO_SERVICE_ID ? "present" : "missing"}`);
-  lines.push(`Public IP/port: ${DAYZ_IP && DAYZ_PORT ? `${DAYZ_IP}:${DAYZ_PORT}` : "missing"}`);
-  lines.push(`Public status hits: ${cache.capabilities.publicStatus ? "yes" : "no"}`);
-  lines.push(`Nitrado hits: ${cache.capabilities.nitrado ? "yes" : "no"}`);
-  lines.push(`Any live data: ${cache.capabilities.anyData ? "yes" : "no"}`);
-  return lines.join("\n");
-}
-
-async function sendLongWebhook(title, body) {
-  const chunks = chunkText(body);
-  for (let i = 0; i < chunks.length; i++) {
-    await queueWebhook({
-      username: "Server State",
-      content: i === 0 ? `**${title}**\n\n${chunks[i]}` : chunks[i]
-    });
-  }
-}
-
-async function refresh() {
-  const report = [];
-  const sources = {};
-
-  sources.local = parseLocalFiles();
-  addReport(report, "local", true, sources.local.exists ? `logDir exists: ${LOG_DIR}` : `logDir missing: ${LOG_DIR}`, sources.local);
-
-  sources.publicStatus = await probeUrls(guessPublicUrls());
-  const publicOk = Object.values(sources.publicStatus).some(v => v && v.ok);
-  addReport(report, "publicStatus", publicOk, publicOk ? "at least one public status source responded" : "no public status source responded", sources.publicStatus);
-
-  sources.nitrado = await probeUrls(guessNitradoUrls(), authHeaders());
-  const nitradoOk = Object.values(sources.nitrado).some(v => v && v.ok);
-  addReport(report, "nitrado", nitradoOk, nitradoOk ? "at least one Nitrado endpoint responded" : "no Nitrado endpoint responded", sources.nitrado);
-
-  const anyData = publicOk || nitradoOk || sources.local.exists;
-
-  cache = {
-    lastScanAt: new Date().toISOString(),
-    sources,
-    capabilities: {
-      publicStatus: publicOk,
-      nitrado: nitradoOk,
-      localFiles: sources.local.exists,
-      anyData
-    },
-    report,
-    raw: sources,
-    players: [],
-    recentEvents: []
+function fingerprint(content) {
+  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+  return {
+    lineCount: lines.length,
+    firstLine: normalizeLine(lines[0] || ""),
+    lastLine: normalizeLine(lines[lines.length - 1] || "")
   };
+}
 
-  debug.step("serverstate.refresh", {
-    capabilities: cache.capabilities,
-    publicUrls: Object.keys(sources.publicStatus || {}).length,
-    nitradoUrls: Object.keys(sources.nitrado || {}).length,
-    localDir: sources.local.dir
-  });
-
-  if (ADMIN_WEBHOOK_URL) {
-    await sendLongWebhook("DayZ/Nitrado Discovery Scan", `${buildDiscordContent()}\n\n${safe(report)}`);
+async function loopOnce() {
+  dbg("loop:start", { loopMs: LOOP_MS });
+  if (state.running) {
+    dbg("loop:end", { skipped: true });
+    return;
   }
 
-  return cache;
+  state.running = true;
+  try {
+    const serverJson = await fetchServerInfo();
+    const { username, paths } = collectCandidates(serverJson);
+    state.username = username;
+
+    const nextFiles = new Map();
+
+    for (const remotePath of paths) {
+      try {
+        const result = await readRemoteFile(remotePath, username);
+        const current = fingerprint(result.content);
+        const previous = state.fileState.get(remotePath) || { lineCount: 0, lastLine: "" };
+        nextFiles.set(remotePath, {
+          path: remotePath,
+          pathUsed: result.pathUsed,
+          content: result.content,
+          current,
+          previous
+        });
+        state.fileState.set(remotePath, {
+          lineCount: current.lineCount,
+          lastLine: current.lastLine
+        });
+        dbg("FILE_READY", { remotePath, bytes: result.content.length });
+      } catch (err) {
+        console.log("[SERVERSTATE][READ_ERROR]", JSON.stringify({
+          file: remotePath,
+          error: err?.message || String(err)
+        }));
+      }
+    }
+
+    state.files = nextFiles;
+    dbg("FILES_READY", { count: state.files.size });
+  } finally {
+    state.running = false;
+    dbg("loop:end", {});
+  }
 }
 
-function getState() { return cache; }
-function getPlayers() { return cache.players || []; }
-function getPlayerByName(name) { return getPlayers().find(p => String(p.name || "").toLowerCase() === String(name || "").toLowerCase()) || null; }
-function getLastKnownLocation(name) {
-  const p = getPlayerByName(name);
-  if (!p) return null;
-  return { name: p.name, x: p.x ?? p.location_x, y: p.y ?? p.location_y, z: p.z ?? p.location_z, timestamp: p.timestamp };
-}
-function getCapabilityReport() { return { lastScanAt: cache.lastScanAt, capabilities: cache.capabilities, sources: Object.keys(cache.sources || {}) }; }
-
-function init() {
-  try { refresh(); } catch (err) { debug.fail("serverstate.init", err, { logDir: LOG_DIR }); }
+function start() {
+  if (state.started) return;
+  state.started = true;
+  loopOnce().catch(() => {});
+  state.timer = setInterval(() => {
+    loopOnce().catch(() => {});
+  }, LOOP_MS);
 }
 
-init();
+function stop() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = null;
+  state.running = false;
+  state.started = false;
+}
 
-module.exports = { refresh, getState, getPlayers, getPlayerByName, getLastKnownLocation, getCapabilityReport };
+function getFiles() {
+  return [...state.files.values()].map(x => ({ ...x }));
+}
+
+function getFileContent(filePath) {
+  return state.files.get(filePath)?.content || "";
+}
+
+function getFileState(filePath) {
+  return state.fileState.get(filePath) || { lineCount: 0, lastLine: "" };
+}
+
+module.exports = { start, stop, state, getFiles, getFileContent, getFileState };
