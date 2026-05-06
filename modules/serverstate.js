@@ -2,113 +2,28 @@ const fs = require("fs");
 const path = require("path");
 const debug = require("../utils/debug");
 
-const LOG_DIR = process.env.DAYZ_LOG_DIR || path.join(__dirname, "../logs");
 const ADMIN_WEBHOOK_URL = process.env.ADMIN_WEBHOOK_URL || "";
-const RPT_FILES = [".rpt", ".RPT"];
-const ADM_FILES = [".adm", ".ADM"];
-const PLAYERLIST_FILES = [".log", ".txt"];
+const DAYZ_IP = process.env.DAYZ_IP || "";
+const DAYZ_PORT = process.env.DAYZ_PORT || "";
+const NITRADO_SERVICE_ID = process.env.NITRADO_SERVICE_ID || "";
+const NITRADO_API_KEY = process.env.NITRADO_API_KEY || "";
+const NITRADO_REFRESH_URL = process.env.NITRADO_REFRESH_URL || "";
+const LOG_DIR = process.env.DAYZ_LOG_DIR || path.join(__dirname, "../logs");
 
 let cache = {
   lastScanAt: null,
-  files: {},
-  capabilities: {
-    rpt: false,
-    adm: false,
-    playerList: false,
-    positions: false,
-    connections: false,
-    disconnects: false,
-    adminEvents: false
-  },
+  sources: {},
+  capabilities: {},
+  raw: {},
+  report: [],
   players: [],
-  recentEvents: [],
-  raw: {}
+  recentEvents: []
 };
 
 let webhookQueue = Promise.resolve();
 
-function readText(file) {
-  return fs.readFileSync(file, "utf8");
-}
-
-function exists(file) {
-  try {
-    return fs.existsSync(file);
-  } catch {
-    return false;
-  }
-}
-
-function safeListDir(dir) {
-  try {
-    return fs.readdirSync(dir).map(f => path.join(dir, f));
-  } catch {
-    return [];
-  }
-}
-
-function pickFiles() {
-  const all = safeListDir(LOG_DIR);
-  const rpt = all.filter(f => RPT_FILES.some(ext => f.endsWith(ext)));
-  const adm = all.filter(f => ADM_FILES.some(ext => f.endsWith(ext)));
-  const playerList = all.filter(f => /player|players|online|pos|position/i.test(path.basename(f)));
-  return {
-    rpt: rpt.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0] || null,
-    adm: adm.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0] || null,
-    playerList: playerList.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0] || null
-  };
-}
-
-function parseTimestampFromLine(line) {
-  const m = line.match(/\b(\d{4})[-./](\d{2})[-./](\d{2})[ T](\d{2}):(\d{2}):(\d{2})\b/);
-  if (!m) return null;
-  const [, y, mo, d, h, mi, s] = m;
-  const iso = `${y}-${mo}-${d}T${h}:${mi}:${s}Z`;
-  const t = Date.parse(iso);
-  return Number.isFinite(t) ? t : null;
-}
-
-function parsePlayerList(text) {
-  const players = [];
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    const ts = parseTimestampFromLine(line);
-    const name = line.match(/(?:player|name)[:=]\s*([^|,]+?)(?:\s*[|,]|$)/i)?.[1]?.trim();
-    const x = line.match(/\bX[:=]\s*(-?\d+(?:\.\d+)?)\b/i)?.[1];
-    const y = line.match(/\bY[:=]\s*(-?\d+(?:\.\d+)?)\b/i)?.[1];
-    const z = line.match(/\bZ[:=]\s*(-?\d+(?:\.\d+)?)\b/i)?.[1];
-    if (!name && !x && !y && !z) continue;
-    players.push({
-      name: name || null,
-      timestamp: ts,
-      location_x: x != null ? Number(x) : null,
-      location_y: y != null ? Number(y) : null,
-      location_z: z != null ? Number(z) : null,
-      raw: line
-    });
-  }
-  return players;
-}
-
-function parseRpt(text) {
-  const events = [];
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    const ts = parseTimestampFromLine(line);
-    if (/connected|login|join/i.test(line)) events.push({ type: "connect", timestamp: ts, raw: line });
-    else if (/disconnected|logout|leave/i.test(line)) events.push({ type: "disconnect", timestamp: ts, raw: line });
-  }
-  return events;
-}
-
-function parseAdm(text) {
-  const events = [];
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    const ts = parseTimestampFromLine(line);
-    if (/admin|build|base|destroy|construction|placed/i.test(line)) events.push({ type: "admin", timestamp: ts, raw: line });
-  }
-  return events;
+function safeJson(x) {
+  try { return JSON.stringify(x); } catch { return String(x); }
 }
 
 async function postWebhook(payload) {
@@ -132,81 +47,183 @@ function queueWebhook(payload) {
   return webhookQueue;
 }
 
-function refresh() {
-  const files = pickFiles();
-  const out = {
+function addReport(report, source, ok, summary, data) {
+  report.push({
+    source,
+    ok,
+    summary: summary || "",
+    data: data || null
+  });
+}
+
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch {}
+  return { ok: res.ok, status: res.status, text, json, headers: Object.fromEntries(res.headers.entries()) };
+}
+
+function guessQueryUrls() {
+  const urls = [];
+  if (DAYZ_IP && DAYZ_PORT) {
+    urls.push(`https://api.gamemonitoring.net/dayz/servers/${encodeURIComponent(DAYZ_IP)}:${encodeURIComponent(DAYZ_PORT)}/api`);
+    urls.push(`https://gamemonitoring.net/dayz/servers/${encodeURIComponent(DAYZ_IP)}/${encodeURIComponent(DAYZ_PORT)}/api`);
+    urls.push(`https://www.battlemetrics.com/servers/dayz/${encodeURIComponent(DAYZ_IP)}:${encodeURIComponent(DAYZ_PORT)}`);
+  }
+  if (NITRADO_REFRESH_URL) urls.push(NITRADO_REFRESH_URL);
+  return urls;
+}
+
+async function probePublicStatus() {
+  const out = {};
+  const urls = guessQueryUrls();
+  for (const url of urls) {
+    try {
+      const res = await fetchJson(url, { method: "GET" });
+      out[url] = {
+        ok: res.ok,
+        status: res.status,
+        hasJson: !!res.json,
+        preview: res.json ? res.json : res.text.slice(0, 500)
+      };
+    } catch (err) {
+      out[url] = { ok: false, error: err.message };
+    }
+  }
+  return out;
+}
+
+async function probeNitrado() {
+  const out = {};
+  if (!NITRADO_SERVICE_ID || !NITRADO_API_KEY) return out;
+
+  const base = "https://api.nitrado.net";
+  const headers = {
+    Authorization: `Bearer ${NITRADO_API_KEY}`,
+    "Content-Type": "application/json"
+  };
+
+  const urls = [
+    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}`,
+    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers`,
+    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/settings`,
+    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/status`,
+    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/files`
+  ];
+
+  for (const url of urls) {
+    try {
+      const res = await fetchJson(url, { method: "GET", headers });
+      out[url] = {
+        ok: res.ok,
+        status: res.status,
+        hasJson: !!res.json,
+        preview: res.json ? res.json : res.text.slice(0, 500)
+      };
+    } catch (err) {
+      out[url] = { ok: false, error: err.message };
+    }
+  }
+
+  return out;
+}
+
+function readText(file) {
+  return fs.readFileSync(file, "utf8");
+}
+
+function exists(file) {
+  try { return fs.existsSync(file); } catch { return false; }
+}
+
+function safeListDir(dir) {
+  try {
+    return fs.readdirSync(dir).map(f => path.join(dir, f));
+  } catch {
+    return [];
+  }
+}
+
+async function probeLocalFiles() {
+  const files = {};
+  const all = safeListDir(LOG_DIR);
+  files.dirExists = !!all.length || exists(LOG_DIR);
+  files.sample = all.slice(0, 25);
+  return files;
+}
+
+async function refresh() {
+  const report = [];
+  const sources = {};
+
+  sources.local = await probeLocalFiles();
+  addReport(report, "local", true, `logDir=${LOG_DIR}`, sources.local);
+
+  sources.publicStatus = await probePublicStatus();
+  addReport(report, "publicStatus", true, "queried public/status endpoints", sources.publicStatus);
+
+  sources.nitrado = await probeNitrado();
+  addReport(report, "nitrado", true, "queried Nitrado endpoints", sources.nitrado);
+
+  const capabilityHints = {
+    publicStatus: Object.values(sources.publicStatus || {}).some(x => x && x.ok),
+    nitrado: Object.values(sources.nitrado || {}).some(x => x && x.ok),
+    anyData: false
+  };
+
+  const hasAnyData =
+    capabilityHints.publicStatus ||
+    capabilityHints.nitrado ||
+    (sources.local && sources.local.dirExists);
+
+  capabilityHints.anyData = hasAnyData;
+
+  cache = {
     lastScanAt: new Date().toISOString(),
-    files: { ...files },
-    capabilities: {
-      rpt: !!files.rpt,
-      adm: !!files.adm,
-      playerList: !!files.playerList,
-      positions: false,
-      connections: false,
-      disconnects: false,
-      adminEvents: false
+    sources,
+    capabilities: capabilityHints,
+    raw: {
+      publicStatus: sources.publicStatus,
+      nitrado: sources.nitrado,
+      local: sources.local
     },
+    report,
     players: [],
-    recentEvents: [],
-    raw: {}
+    recentEvents: []
   };
 
-  if (files.rpt && exists(files.rpt)) {
-    const rptText = readText(files.rpt);
-    out.raw.rpt = rptText;
-    const rptEvents = parseRpt(rptText);
-    out.recentEvents.push(...rptEvents);
-    out.capabilities.connections = rptEvents.some(e => e.type === "connect");
-    out.capabilities.disconnects = rptEvents.some(e => e.type === "disconnect");
-  }
-
-  if (files.adm && exists(files.adm)) {
-    const admText = readText(files.adm);
-    out.raw.adm = admText;
-    const admEvents = parseAdm(admText);
-    out.recentEvents.push(...admEvents);
-    out.capabilities.adminEvents = admEvents.length > 0;
-  }
-
-  if (files.playerList && exists(files.playerList)) {
-    const pText = readText(files.playerList);
-    out.raw.playerList = pText;
-    const players = parsePlayerList(pText);
-    out.players = players;
-    out.capabilities.positions = players.some(p => p.location_x != null && p.location_z != null);
-  }
-
-  out.recentEvents = out.recentEvents
-    .filter(e => e.timestamp != null)
-    .sort((a, b) => b.timestamp - a.timestamp)
-    .slice(0, 200);
-
-  cache = out;
-  const summary = {
-    files: out.files,
-    capabilities: out.capabilities,
-    players: out.players.length,
-    events: out.recentEvents.length
-  };
+  const summaryLines = [
+    `**DayZ/Nitrado discovery scan**`,
+    `Local log dir: ${sources.local?.dirExists ? "found" : "not found"}`,
+    `Public status hits: ${capabilityHints.publicStatus ? "yes" : "no"}`,
+    `Nitrado hits: ${capabilityHints.nitrado ? "yes" : "no"}`
+  ];
 
   if (ADMIN_WEBHOOK_URL) {
     queueWebhook({
       username: "Server State",
-      content: [
-        "**DayZ scan complete**",
-        `Files: ${Object.values(out.files).filter(Boolean).length}`,
-        `Players: ${out.players.length}`,
-        `Events: ${out.recentEvents.length}`,
-        `Connections: ${out.capabilities.connections ? "yes" : "no"}`,
-        `Disconnects: ${out.capabilities.disconnects ? "yes" : "no"}`,
-        `Admin events: ${out.capabilities.adminEvents ? "yes" : "no"}`
-      ].join("\n")
+      content: summaryLines.join("\n"),
+      embeds: [
+        {
+          title: "Discovery results",
+          color: 0x2ecc71,
+          fields: report.slice(0, 25).map(r => ({
+            name: r.source,
+            value: r.ok ? (r.summary || "ok") : "failed",
+            inline: false
+          }))
+        }
+      ]
     });
   } else {
-    debug.step("serverstate.refresh", summary);
+    debug.step("serverstate.refresh", {
+      capabilities: cache.capabilities,
+      sources: Object.keys(sources)
+    });
   }
 
-  return out;
+  return cache;
 }
 
 function getState() {
@@ -236,12 +253,10 @@ function getLastKnownLocation(name) {
 
 function getCapabilityReport() {
   return {
-    logDir: LOG_DIR,
-    files: cache.files,
-    capabilities: cache.capabilities,
     lastScanAt: cache.lastScanAt,
-    playersFound: (cache.players || []).length,
-    eventsFound: (cache.recentEvents || []).length
+    capabilities: cache.capabilities,
+    sources: Object.keys(cache.sources || {}),
+    localLogDir: LOG_DIR
   };
 }
 
