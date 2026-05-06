@@ -99,7 +99,7 @@ async function handleCommand(interaction) {
 
   if (cmd === "serverstate") {
     return replyOnce(interaction, {
-      content: JSON.stringify(serverstate.getCapabilityReport(), null, 2),
+      content: JSON.stringify(serverstate.state, null, 2),
       ephemeral: true
     }, cmd);
   }
@@ -381,18 +381,21 @@ client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   debug.start("startup", { bot: client.user.tag });
   console.log("[DISCORD] Bot is ready. Commands are handled from Discord now.");
+
   if (!feedState.killfeedStarted) {
     killfeed.start();
     feedState.killfeedStarted = true;
   }
   console.log("[KILLFEED] module started");
+
   if (!feedState.eventfeedStarted) {
     eventfeed.start();
     feedState.eventfeedStarted = true;
   }
   console.log("[EVENTFEED] module started");
+
   if (!feedState.serverstateStarted) {
-    serverstate.refresh();
+    serverstate.start();
     feedState.serverstateStarted = true;
   }
   console.log("[SERVERSTATE] module started");
