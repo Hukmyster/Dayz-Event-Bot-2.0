@@ -86,8 +86,21 @@ async function findGamertagInServerstate(gamertag) {
 
   for (const file of admFiles.sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))) {
     const lines = String(file.content).split(/\r?\n/).filter(Boolean);
-    if (lines.some(line => line.includes(gamertag))) return true;
+
+    for (const line of lines) {
+      if (!line.includes(gamertag)) continue;
+      if (isValidGamertagLine(line, gamertag)) return true;
+    }
   }
 
   return false;
+}
+
+function isValidGamertagLine(line, gamertag) {
+  const text = String(line);
+  if (!text.includes(gamertag)) return false;
+
+  const escaped = gamertag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exact = new RegExp(`(^|\\W)${escaped}(\\W|$)`, "i");
+  return exact.test(text);
 }
