@@ -6,6 +6,7 @@ const economy = require("./modules/economy");
 const daily = require("./commands/shop/daily");
 const killfeed = require("./modules/killfeed");
 const eventfeed = require("./modules/eventfeed");
+const serverstate = require("./modules/serverstate");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
@@ -22,7 +23,8 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 const feedState = {
   killfeedStarted: false,
-  eventfeedStarted: false
+  eventfeedStarted: false,
+  serverstateStarted: false
 };
 
 function serializeOptions(interaction) {
@@ -91,6 +93,13 @@ async function handleCommand(interaction) {
   if (cmd === "eventfeed") {
     return replyOnce(interaction, {
       content: "Eventfeed runs automatically on bot startup.",
+      ephemeral: true
+    }, cmd);
+  }
+
+  if (cmd === "serverstate") {
+    return replyOnce(interaction, {
+      content: JSON.stringify(serverstate.getCapabilityReport(), null, 2),
       ephemeral: true
     }, cmd);
   }
@@ -382,6 +391,11 @@ client.once(Events.ClientReady, async () => {
     feedState.eventfeedStarted = true;
   }
   console.log("[EVENTFEED] module started");
+  if (!feedState.serverstateStarted) {
+    serverstate.refresh();
+    feedState.serverstateStarted = true;
+  }
+  console.log("[SERVERSTATE] module started");
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
