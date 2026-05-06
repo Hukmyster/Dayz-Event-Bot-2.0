@@ -19,6 +19,7 @@ if (!process.env.CLIENT_ID) {
 const commands = [
   { name: 'shop', description: 'Alias for shophelp' },
   { name: 'shoplist', description: 'List all shop items' },
+
   {
     name: 'shopbuyitem',
     description: 'Buy an item from the shop',
@@ -26,6 +27,7 @@ const commands = [
       { name: 'item', type: ApplicationCommandOptionType.String, description: 'Item name', required: true, autocomplete: true },
       { name: 'quantity', type: ApplicationCommandOptionType.Integer, description: 'Quantity', required: true },
       { name: 'x', type: ApplicationCommandOptionType.Integer, description: 'X coordinate', required: true },
+      { name: 'y', type: ApplicationCommandOptionType.Integer, description: 'Y coordinate', required: false },
       { name: 'z', type: ApplicationCommandOptionType.Integer, description: 'Z coordinate', required: true },
       {
         name: 'method',
@@ -39,48 +41,10 @@ const commands = [
       }
     ]
   },
-  {
-    name: 'shopadditem',
-    description: 'Add a new item to the shop',
-    options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true },
-      { name: 'type', type: ApplicationCommandOptionType.String, description: 'DayZ type name', required: true },
-      { name: 'price', type: ApplicationCommandOptionType.Integer, description: 'Price', required: true }
-    ]
-  },
-  {
-    name: 'shopremoveitem',
-    description: 'Remove an item from the shop',
-    options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true }
-    ]
-  },
-  {
-    name: 'shopeditprice',
-    description: 'Change the price of an item',
-    options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true, autocomplete: true },
-      { name: 'price', type: ApplicationCommandOptionType.Integer, description: 'New price', required: true }
-    ]
-  },
-  {
-    name: 'shopeditname',
-    description: 'Rename an item',
-    options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Current item display name', required: true, autocomplete: true },
-      { name: 'newname', type: ApplicationCommandOptionType.String, description: 'New display name', required: true }
-    ]
-  },
-  { name: 'shopqueue', description: 'View queued purchases' },
-  { name: 'shopclearqueue', description: 'Clear queued purchases' },
-  { name: 'shopbuildxml', description: 'Build the XML files' },
-  { name: 'shopviewxml', description: 'View the built XML in Discord' },
-  { name: 'shoppushxml', description: 'Push the built XML to the output folder' },
-  { name: 'shophelp', description: 'List all shop commands' },
-  { name: 'shopstatus', description: 'Show bot and shop status' },
-  { name: 'shopreload', description: 'Reload shop data from disk' },
 
+  { name: 'account', description: 'Show your account details' },
   { name: 'balance', description: 'Show your wallet and bank balance' },
+
   {
     name: 'deposit',
     description: 'Move money from your wallet to your bank',
@@ -103,8 +67,10 @@ const commands = [
       { name: 'amount', type: ApplicationCommandOptionType.Integer, description: 'Amount to send', required: true }
     ]
   },
+
   { name: 'leaderboard', description: 'Show the richest players in the server' },
   { name: 'daily', description: 'Claim your daily reward' },
+  { name: 'info', description: 'Show bot and economy info' },
 
   {
     name: 'addmoney',
@@ -128,6 +94,35 @@ const commands = [
     options: [
       { name: 'member', type: ApplicationCommandOptionType.User, description: 'The member to reset', required: true }
     ]
+  },
+
+  {
+    name: 'shopadditems',
+    description: 'Add new items to the shop'
+  },
+  {
+    name: 'shopeditprice',
+    description: 'Change the price of an item',
+    options: [
+      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true, autocomplete: true },
+      { name: 'price', type: ApplicationCommandOptionType.Integer, description: 'New price', required: true }
+    ]
+  },
+  {
+    name: 'shopremoveitem',
+    description: 'Remove an item from the shop',
+    options: [
+      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true }
+    ]
+  },
+
+  { name: 'whereami', description: 'Show your latest known location' },
+  {
+    name: 'linkgamertag',
+    description: 'Link your in-game gamer tag to your Discord account',
+    options: [
+      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Exact in-game account name', required: true }
+    ]
   }
 ];
 
@@ -136,12 +131,12 @@ async function main() {
 
   try {
     console.log('[DISCORD] Registering guild commands...');
-    await rest.put(
+    const data = await rest.put(
       Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
       { body: commands }
     );
 
-    console.log('[DISCORD] Commands registered successfully.');
+    console.log(`[DISCORD] Commands registered successfully: ${data.length}`);
   } catch (err) {
     console.error('[COMMAND REGISTER ERROR]', err);
     process.exit(1);
