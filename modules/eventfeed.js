@@ -1,5 +1,5 @@
-const API_TOKEN = process.env.API_TOKEN || "";
-const SERVICE_ID = process.env.SERVICE_ID || "";
+const { getFiles, start: startServerState } = require("./serverstate");
+
 const WEBHOOK_URL = process.env.EVENTFEED_WEBHOOK_URL || "";
 const LOOP_MS = 5 * 60 * 1000;
 const EVENTFEED_DEBUG = String(process.env.EVENTFEED_DEBUG || "false").toLowerCase() === "true";
@@ -58,12 +58,6 @@ function dbg(tag, data) {
   const ts = new Date().toISOString();
   const dataStr = data !== undefined ? JSON.stringify(data) : "";
   console.log(`[eventfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
-}
-
-function normalizePath(p) {
-  const s = String(p || "").replace(/\\/g, "/").replace(/\/+/g, "/");
-  if (!s) return "/";
-  return s.startsWith("/") ? s : `/${s}`;
 }
 
 function normalizeLine(line) {
@@ -151,155 +145,40 @@ async function postWebhook(evt) {
   }
 }
 
-async function nitradoRequest(url, opts = {}) {
-  const res = await fetch(url, {
-    ...opts,
-    headers: {
-      Authorization: `Bearer ${API_TOKEN}`,
-      Accept: "application/json",
-      ...(opts.headers || {})
-    }
-  });
-  const text = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(`Nitrado HTTP ${res.status}: ${text.slice(0, 250)}`);
-  return JSON.parse(text);
-}
-
-async function fetchServerInfo() {
-  return await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers`);
-}
-
-function parseLogTimestamp(filename) {
-  const m = String(filename || "").match(/_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})/);
-  if (!m) return 0;
-  return Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}Z`) || 0;
-}
-
-function collectCandidates(serverJson) {
-  const gs = serverJson?.data?.gameserver || {};
-  const username = gs?.username || "";
-  const files = gs?.game_specific?.log_files || [];
-  const list = [];
-
-  for (const item of Array.isArray(files) ? files : []) {
-    const raw = typeof item === "string" ? item : (item?.path || item?.file || item?.name || item?.filename || "");
-    const base = String(raw || "").trim();
-    if (!base) continue;
-    const filename = base.split("/").pop();
-    if (!/\.rpt$/i.test(filename)) continue;
-
-    list.push({
-      filename,
-      sortKey: parseLogTimestamp(filename),
-      candidates: [
-        `/games/${username}/noftp/dayzps/config/${filename}`,
-        `/games/${username}/noftp/${base.replace(/^\/+/, "")}`,
-        base
-      ]
-    });
-  }
-
-  list.sort((a, b) => b.sortKey - a.sortKey || a.filename.localeCompare(b.filename));
-  const chosen = list.slice(0, MAX_FILES);
-  const paths = [...new Set(chosen.flatMap(x => x.candidates).map(normalizePath))];
-
-  dbg("CANDIDATES", { username, paths });
-
-  return {
-    username,
-    paths
-  };
-}
-
-async function getDownloadToken(filePath) {
-  const json = await nitradoRequest(`https://api.nitrado.net/services/${SERVICE_ID}/gameservers/file_server/download?file=${encodeURIComponent(filePath)}`);
-  const tokenUrl = json?.data?.token?.url || null;
-  const token = json?.data?.token?.token || null;
-  return { tokenUrl, token };
-}
-
-async function fetchFile(tokenUrl, token) {
-  const u = new URL(tokenUrl);
-  if (token) u.searchParams.set("token", token);
-  const res = await fetch(u.toString(), {
-    headers: {
-      Authorization: `Bearer ${API_TOKEN}`,
-      Accept: "application/octet-stream,*/*"
-    }
-  });
-  const text = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(`Token fetch HTTP ${res.status}: ${text.slice(0, 250)}`);
-  return text;
-}
-
-function candidateReadPaths(originalPath, username) {
-  const filename = String(originalPath || "").split("/").pop();
-  return [...new Set([
-    `/games/${username}/noftp/dayzps/config/${filename}`,
-    `/games/${username}/noftp/${filename}`,
-    normalizePath(originalPath)
-  ])];
-}
-
-async function readRemoteFile(remotePath, username) {
-  const candidates = candidateReadPaths(remotePath, username);
-  dbg("READ_TRY", { remotePath, candidates });
-
-  for (const candidate of candidates) {
-    try {
-      const { tokenUrl, token } = await getDownloadToken(candidate);
-      if (!tokenUrl || !token) throw new Error("No token returned");
-      const content = await fetchFile(tokenUrl, token);
-      dbg("READ_OK", { remotePath, candidate, bytes: content.length });
-      return { pathUsed: candidate, content };
-    } catch (err) {
-      dbg("READ_FAIL", { remotePath, candidate, error: err?.message || String(err) });
-    }
-  }
-
-  throw new Error(`All read attempts failed for ${remotePath}`);
-}
-
-function fingerprint(content) {
-  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
-  return {
+function parseFileEvents(file) {
+  const lines = String(file.content || "").split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+  const previous = state.fileState.get(file.path) || { lineCount: 0, lastLine: "" };
+  const current = {
     lineCount: lines.length,
     firstLine: normalizeLine(lines[0] || ""),
     lastLine: normalizeLine(lines[lines.length - 1] || "")
   };
-}
-
-function processFile(remotePath, content) {
-  const current = fingerprint(content);
-  const previous = state.fileState.get(remotePath) || { lineCount: 0, lastLine: "" };
-  const lines = content.split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
   const startIndex = current.lineCount >= previous.lineCount && previous.lineCount > 0 ? previous.lineCount : 0;
   const events = [];
 
-  dbg("FILE_STATE", { remotePath, current, previous, startIndex });
+  dbg("FILE_STATE", { remotePath: file.path, current, previous, startIndex });
 
   for (let i = startIndex; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
     const evt = parseEventLine(line);
     if (!evt) continue;
 
-    const id = buildEventId(remotePath.split("/").pop() || remotePath, evt);
+    const id = buildEventId(file.path.split("/").pop() || file.path, evt);
     const duplicate = state.sentEventIds.has(id);
 
-    dbg("MATCH", { file: remotePath, line, parsed: evt, duplicate });
+    dbg("MATCH", { file: file.path, line, parsed: evt, duplicate });
 
     if (duplicate) continue;
     state.sentEventIds.add(id);
     events.push(evt);
   }
 
-  state.fileState.set(remotePath, {
+  state.fileState.set(file.path, {
     lineCount: current.lineCount,
     lastLine: current.lastLine
   });
 
-  dbg("EVENTS_FOUND", { remotePath, count: events.length });
-
+  dbg("EVENTS_FOUND", { remotePath: file.path, count: events.length });
   return events;
 }
 
@@ -312,24 +191,15 @@ async function loopOnce() {
 
   state.running = true;
   try {
-    const serverJson = await fetchServerInfo();
-    const { username, paths } = collectCandidates(serverJson);
-    state.username = username;
-
+    const files = getFiles();
     let newEvents = 0;
-    for (const remotePath of paths) {
-      try {
-        const result = await readRemoteFile(remotePath, username);
-        const events = processFile(remotePath, result.content);
-        for (const evt of events) {
-          newEvents++;
-          await postWebhook(evt);
-        }
-      } catch (err) {
-        console.log("[EVENTFEED][READ_ERROR]", JSON.stringify({
-          file: remotePath,
-          error: err?.message || String(err)
-        }));
+
+    for (const file of files) {
+      if (!/\.rpt$/i.test(file.path || "")) continue;
+      const events = parseFileEvents(file);
+      for (const evt of events) {
+        newEvents++;
+        await postWebhook(evt);
       }
     }
 
@@ -343,6 +213,7 @@ async function loopOnce() {
 function start() {
   if (state.started) return;
   state.started = true;
+  startServerState();
   loopOnce().catch(() => {});
   state.timer = setInterval(() => {
     loopOnce().catch(() => {});
