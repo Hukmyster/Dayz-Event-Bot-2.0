@@ -9,7 +9,9 @@ const eventfeed = require("./modules/eventfeed");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
-debug.initGlobal();
+if (typeof debug.initGlobal === "function") {
+  debug.initGlobal();
+}
 
 if (!process.env.DISCORD_TOKEN) {
   console.error("[FATAL] DISCORD_TOKEN missing");
@@ -71,8 +73,7 @@ async function handleCommand(interaction) {
         "addmoney - admin add money",
         "removemoney - admin remove money",
         "resetuser - admin reset user"
-      ].join("
-"),
+      ].join("\n"),
       ephemeral: true
     }, cmd);
   }
@@ -99,8 +100,7 @@ async function handleCommand(interaction) {
     debug.step("shoplist", { count: items.length });
     return send({
       reply: items.length
-        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("
-")
+        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
         : "Shop empty"
     });
   }
@@ -149,8 +149,7 @@ async function handleCommand(interaction) {
     const items = await shop.getShopList();
     const orders = shop.getOrders() || [];
     debug.step("shopstatus", { items: items.length, orders: orders.length });
-    return send({ reply: `Items: ${items.length}
-Orders: ${orders.length}` });
+    return send({ reply: `Items: ${items.length}\nOrders: ${orders.length}` });
   }
 
   if (cmd === "shopreload") {
@@ -164,10 +163,7 @@ Orders: ${orders.length}` });
     const bank = Number(account.bank || 0);
 
     return send({
-      reply: `${targetUser.username}
-Wallet: ${economy.formatMoney(wallet)}
-Bank: ${economy.formatMoney(bank)}
-Total: ${economy.formatMoney(wallet + bank)}`
+      reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
     });
   }
 
@@ -299,8 +295,7 @@ Total: ${economy.formatMoney(wallet + bank)}`
 
     return send({
       reply: sorted.length
-        ? sorted.map((u, i) => `${i + 1}. ${u.username} - ${economy.formatMoney(u.total)}`).join("
-")
+        ? sorted.map((u, i) => `${i + 1}. ${u.username} - ${economy.formatMoney(u.total)}`).join("\n")
         : "No economy accounts found yet."
     });
   }
@@ -316,10 +311,7 @@ Total: ${economy.formatMoney(wallet + bank)}`
     const bank = Number(account.bank || 0);
 
     return send({
-      reply: `${targetUser.username}
-Wallet: ${economy.formatMoney(wallet)}
-Bank: ${economy.formatMoney(bank)}
-Total: ${economy.formatMoney(wallet + bank)}`
+      reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
     });
   }
 
