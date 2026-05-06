@@ -27,7 +27,7 @@ const commands = [
       { name: 'item', type: ApplicationCommandOptionType.String, description: 'Item name', required: true, autocomplete: true },
       { name: 'quantity', type: ApplicationCommandOptionType.Integer, description: 'Quantity', required: true },
       { name: 'x', type: ApplicationCommandOptionType.Integer, description: 'X coordinate', required: true },
-      { name: 'y', type: ApplicationCommandOptionType.Integer, description: 'Y coordinate', required: false },
+      { name: 'y', type: ApplicationCommandOptionType.Integer, description: 'Y coordinate', required: true },
       { name: 'z', type: ApplicationCommandOptionType.Integer, description: 'Z coordinate', required: true },
       {
         name: 'method',
