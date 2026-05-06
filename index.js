@@ -7,6 +7,7 @@ const daily = require("./commands/shop/daily");
 const killfeed = require("./modules/killfeed");
 const eventfeed = require("./modules/eventfeed");
 const serverstate = require("./modules/serverstate");
+const playerradars = require("./modules/playerradars");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
@@ -27,7 +28,8 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const feedState = {
   killfeedStarted: false,
   eventfeedStarted: false,
-  serverstateStarted: false
+  serverstateStarted: false,
+  playerradarsStarted: false
 };
 
 function serializeOptions(interaction) {
@@ -79,7 +81,10 @@ async function handleCommand(interaction) {
         "removemoney - admin remove money",
         "resetuser - admin reset user",
         "whereami - show your latest known location",
-        "linkgamertag - link your in-game gamertag"
+        "linkgamertag - link your in-game gamertag",
+        "playerradaradd - add a player radar",
+        "playerradarremove - remove a player radar",
+        "playerradarview - view saved player radars"
       ].join("\n"),
       ephemeral: true
     }, cmd);
@@ -115,6 +120,13 @@ async function handleCommand(interaction) {
 
   if (cmd === "linkgamertag") {
     return linkgamertag.execute(interaction);
+  }
+
+  if (cmd === "playerradaradd" || cmd === "playerradarremove" || cmd === "playerradarview") {
+    return replyOnce(interaction, {
+      content: "Player radar commands are handled by the radar module.",
+      ephemeral: true
+    }, cmd);
   }
 
   if (cmd === "shoplist") {
@@ -413,6 +425,12 @@ client.once(Events.ClientReady, async () => {
     feedState.serverstateStarted = true;
   }
   console.log("[SERVERSTATE] module started");
+
+  if (!feedState.playerradarsStarted) {
+    playerradars.init(client);
+    feedState.playerradarsStarted = true;
+  }
+  console.log("[PLAYERRADARS] module started");
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
