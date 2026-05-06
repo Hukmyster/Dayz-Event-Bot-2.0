@@ -10,6 +10,9 @@ const serverstate = require("./modules/serverstate");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
+const whereami = require("./commands/economy/whereami");
+const linkgamertag = require("./commands/economy/linkgamertag");
+
 if (typeof debug.initGlobal === "function") {
   debug.initGlobal();
 }
@@ -74,7 +77,9 @@ async function handleCommand(interaction) {
         "account - show full account",
         "addmoney - admin add money",
         "removemoney - admin remove money",
-        "resetuser - admin reset user"
+        "resetuser - admin reset user",
+        "whereami - show your latest known location",
+        "linkgamertag - link your in-game gamertag"
       ].join("\n"),
       ephemeral: true
     }, cmd);
@@ -102,6 +107,14 @@ async function handleCommand(interaction) {
       content: JSON.stringify(serverstate.state, null, 2),
       ephemeral: true
     }, cmd);
+  }
+
+  if (cmd === "whereami") {
+    return whereami.execute(interaction);
+  }
+
+  if (cmd === "linkgamertag") {
+    return linkgamertag.execute(interaction);
   }
 
   if (cmd === "shoplist") {
@@ -135,6 +148,7 @@ async function handleCommand(interaction) {
       interaction.options.getString("item"),
       interaction.options.getInteger("quantity"),
       interaction.options.getInteger("x"),
+      interaction.options.getInteger("y"),
       interaction.options.getInteger("z"),
       method,
       available,
