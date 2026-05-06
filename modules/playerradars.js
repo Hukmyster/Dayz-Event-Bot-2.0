@@ -1,4 +1,4 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, MessageFlags } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const { start: startServerState, getFiles } = require('./serverstate');
@@ -191,24 +191,42 @@ function stopScanning() {
   state.running = false;
 }
 
+function replyEphemeral(interaction, content) {
+  return interaction.reply({ content, flags: MessageFlags.Ephemeral });
+}
+
 async function handleAdd(interaction) {
   await loadRadars();
 
-  const name = interaction.options.getString('name', true).trim();
-  const x = interaction.options.getNumber('x', true);
-  const z = interaction.options.getNumber('z', true);
-  const radius = interaction.options.getString('radius', true);
+  const name = interaction.options.getString('name');
+  const x = interaction.options.getNumber('x');
+  const z = interaction.options.getNumber('z');
+  const radius = interaction.options.getString('radius');
 
-  if (radars[name]) {
-    return interaction.reply({ content: `Radar **${name}** already exists.`, ephemeral: true });
+  if (!name || x === null || z === null || !radius) {
+    return replyEphemeral(interaction, 'Missing radar options. Please run /playerradaradd with name, x, z, and radius.');
   }
 
-  const webhook = await interaction.channel.createWebhook({
-    name: `Radar - ${name}`,
-    reason: 'Player radar detection webhook'
-  });
+  const radarName = name.trim();
 
-  radars[name] = {
+  if (radars[radarName]) {
+    return replyEphemeral(interaction, `Radar **${radarName}** already exists.`);
+  }
+
+  let webhook;
+  try {
+    webhook = await interaction.channel.createWebhook({
+      name: `Radar - ${radarName}`,
+      reason: 'Player radar detection webhook'
+    });
+  } catch (err) {
+    if (err?.code === 50013) {
+      return replyEphemeral(interaction, 'Discord blocked webhook creation in this channel. Check channel overrides and Manage Webhooks.');
+    }
+    throw err;
+  }
+
+  radars[radarName] = {
     x,
     z,
     radius: parseInt(radius, 10),
@@ -219,28 +237,27 @@ async function handleAdd(interaction) {
 
   await saveRadars();
 
-  return interaction.reply({
-    content: `✅ Radar **${name}** created for this channel.`,
-    ephemeral: true
-  });
+  return replyEphemeral(interaction, `✅ Radar **${radarName}** created for this channel.`);
 }
 
 async function handleRemove(interaction) {
   await loadRadars();
 
-  const name = interaction.options.getString('name', true).trim();
-
-  if (!radars[name]) {
-    return interaction.reply({ content: `Radar **${name}** was not found.`, ephemeral: true });
+  const name = interaction.options.getString('name');
+  if (!name) {
+    return replyEphemeral(interaction, 'Missing radar name.');
   }
 
-  delete radars[name];
+  const radarName = name.trim();
+
+  if (!radars[radarName]) {
+    return replyEphemeral(interaction, `Radar **${radarName}** was not found.`);
+  }
+
+  delete radars[radarName];
   await saveRadars();
 
-  return interaction.reply({
-    content: `✅ Radar **${name}** removed.`,
-    ephemeral: true
-  });
+  return replyEphemeral(interaction, `✅ Radar **${radarName}** removed.`);
 }
 
 async function handleView(interaction) {
@@ -249,7 +266,7 @@ async function handleView(interaction) {
   const names = Object.keys(radars);
 
   if (!names.length) {
-    return interaction.reply({ content: 'No radars are saved yet.', ephemeral: true });
+    return replyEphemeral(interaction, 'No radars are saved yet.');
   }
 
   const list = names
@@ -266,7 +283,7 @@ async function handleView(interaction) {
 
   return interaction.reply({
     embeds: [embed],
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
