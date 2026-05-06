@@ -1,136 +1,136 @@
-const { REST, Routes, ApplicationCommandOptionType } = require('discord.js');
-require('dotenv').config();
+const { REST, Routes, ApplicationCommandOptionType } = require("discord.js");
+require("dotenv").config();
 
 if (!process.env.DISCORD_TOKEN) {
-  console.error('[FATAL] DISCORD_TOKEN missing');
+  console.error("[FATAL] DISCORD_TOKEN missing");
   process.exit(1);
 }
 
 if (!process.env.GUILD_ID) {
-  console.error('[FATAL] GUILD_ID missing');
+  console.error("[FATAL] GUILD_ID missing");
   process.exit(1);
 }
 
 if (!process.env.CLIENT_ID) {
-  console.error('[FATAL] CLIENT_ID missing');
+  console.error("[FATAL] CLIENT_ID missing");
   process.exit(1);
 }
 
 const commands = [
-  { name: 'shop', description: 'Alias for shophelp' },
-  { name: 'shoplist', description: 'List all shop items' },
+  { name: "shop", description: "Alias for shophelp" },
+  { name: "shoplist", description: "List all shop items" },
 
   {
-    name: 'shopbuyitem',
-    description: 'Buy an item from the shop',
+    name: "shopbuyitem",
+    description: "Buy an item from the shop",
     options: [
-      { name: 'item', type: ApplicationCommandOptionType.String, description: 'Item name', required: true, autocomplete: true },
-      { name: 'quantity', type: ApplicationCommandOptionType.Integer, description: 'Quantity', required: true },
-      { name: 'x', type: ApplicationCommandOptionType.Integer, description: 'X coordinate', required: true },
-      { name: 'y', type: ApplicationCommandOptionType.Integer, description: 'Y coordinate', required: true },
-      { name: 'z', type: ApplicationCommandOptionType.Integer, description: 'Z coordinate', required: true },
+      { name: "item", type: ApplicationCommandOptionType.String, description: "Item name", required: true, autocomplete: true },
+      { name: "quantity", type: ApplicationCommandOptionType.Integer, description: "Quantity", required: true },
+      { name: "x", type: ApplicationCommandOptionType.Integer, description: "X coordinate", required: true },
+      { name: "y", type: ApplicationCommandOptionType.Integer, description: "Y coordinate", required: true },
+      { name: "z", type: ApplicationCommandOptionType.Integer, description: "Z coordinate", required: true },
       {
-        name: 'method',
+        name: "method",
         type: ApplicationCommandOptionType.String,
-        description: 'Purchase method',
+        description: "Purchase method",
         required: false,
         choices: [
-          { name: 'Wallet', value: 'wallet' },
-          { name: 'Bank', value: 'bank' }
+          { name: "Wallet", value: "wallet" },
+          { name: "Bank", value: "bank" }
         ]
       }
     ]
   },
 
-  { name: 'account', description: 'Show your account details' },
-  { name: 'balance', description: 'Show your wallet and bank balance' },
+  { name: "account", description: "Show your account details" },
+  { name: "balance", description: "Show your wallet and bank balance" },
 
   {
-    name: 'deposit',
-    description: 'Move money from your wallet to your bank',
+    name: "deposit",
+    description: "Move money from your wallet to your bank",
     options: [
-      { name: 'amount', type: ApplicationCommandOptionType.Integer, description: 'Amount to deposit', required: true }
+      { name: "amount", type: ApplicationCommandOptionType.Integer, description: "Amount to deposit", required: true }
     ]
   },
   {
-    name: 'withdraw',
-    description: 'Move money from your bank to your wallet',
+    name: "withdraw",
+    description: "Move money from your bank to your wallet",
     options: [
-      { name: 'amount', type: ApplicationCommandOptionType.Integer, description: 'Amount to withdraw', required: true }
+      { name: "amount", type: ApplicationCommandOptionType.Integer, description: "Amount to withdraw", required: true }
     ]
   },
   {
-    name: 'send',
-    description: 'Send money to another member',
+    name: "send",
+    description: "Send money to another member",
     options: [
-      { name: 'member', type: ApplicationCommandOptionType.User, description: 'Member to send money to', required: true },
-      { name: 'amount', type: ApplicationCommandOptionType.Integer, description: 'Amount to send', required: true }
-    ]
-  },
-
-  { name: 'leaderboard', description: 'Show the richest players in the server' },
-  { name: 'daily', description: 'Claim your daily reward' },
-  { name: 'info', description: 'Show bot and economy info' },
-
-  {
-    name: 'addmoney',
-    description: 'Add money to a member’s wallet',
-    options: [
-      { name: 'member', type: ApplicationCommandOptionType.User, description: 'The member to give money to', required: true },
-      { name: 'amount', type: ApplicationCommandOptionType.Integer, description: 'Amount to add', required: true }
-    ]
-  },
-  {
-    name: 'removemoney',
-    description: 'Remove money from a member’s wallet',
-    options: [
-      { name: 'member', type: ApplicationCommandOptionType.User, description: 'The member to remove money from', required: true },
-      { name: 'amount', type: ApplicationCommandOptionType.Integer, description: 'Amount to remove', required: true }
-    ]
-  },
-  {
-    name: 'resetuser',
-    description: 'Reset a member’s wallet and bank to zero',
-    options: [
-      { name: 'member', type: ApplicationCommandOptionType.User, description: 'The member to reset', required: true }
+      { name: "member", type: ApplicationCommandOptionType.User, description: "Member to send money to", required: true },
+      { name: "amount", type: ApplicationCommandOptionType.Integer, description: "Amount to send", required: true }
     ]
   },
 
+  { name: "leaderboard", description: "Show the richest players in the server" },
+  { name: "daily", description: "Claim your daily reward" },
+  { name: "info", description: "Show bot and economy info" },
+
   {
-    name: 'shopadditems',
-    description: 'Add new items to the shop'
-  },
-  {
-    name: 'shopeditprice',
-    description: 'Change the price of an item',
+    name: "addmoney",
+    description: "Add money to a member’s wallet",
     options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true, autocomplete: true },
-      { name: 'price', type: ApplicationCommandOptionType.Integer, description: 'New price', required: true }
+      { name: "member", type: ApplicationCommandOptionType.User, description: "The member to give money to", required: true },
+      { name: "amount", type: ApplicationCommandOptionType.Integer, description: "Amount to add", required: true }
     ]
   },
   {
-    name: 'shopremoveitem',
-    description: 'Remove an item from the shop',
+    name: "removemoney",
+    description: "Remove money from a member’s wallet",
     options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Item display name', required: true }
+      { name: "member", type: ApplicationCommandOptionType.User, description: "The member to remove money from", required: true },
+      { name: "amount", type: ApplicationCommandOptionType.Integer, description: "Amount to remove", required: true }
+    ]
+  },
+  {
+    name: "resetuser",
+    description: "Reset a member’s wallet and bank to zero",
+    options: [
+      { name: "member", type: ApplicationCommandOptionType.User, description: "The member to reset", required: true }
     ]
   },
 
-  { name: 'whereami', description: 'Show your latest known location' },
   {
-    name: 'linkgamertag',
-    description: 'Link your in-game gamer tag to your Discord account',
+    name: "shopadditems",
+    description: "Add new items to the shop"
+  },
+  {
+    name: "shopeditprice",
+    description: "Change the price of an item",
     options: [
-      { name: 'name', type: ApplicationCommandOptionType.String, description: 'Exact in-game account name', required: true }
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Item display name", required: true, autocomplete: true },
+      { name: "price", type: ApplicationCommandOptionType.Integer, description: "New price", required: true }
+    ]
+  },
+  {
+    name: "shopremoveitem",
+    description: "Remove an item from the shop",
+    options: [
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Item display name", required: true }
+    ]
+  },
+
+  { name: "whereami", description: "Show your latest known location" },
+  {
+    name: "linkgamertag",
+    description: "Link your in-game gamer tag to your Discord account",
+    options: [
+      { name: "gamertag", type: ApplicationCommandOptionType.String, description: "Exact in-game account name", required: true }
     ]
   }
 ];
 
 async function main() {
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
   try {
-    console.log('[DISCORD] Registering guild commands...');
+    console.log("[DISCORD] Registering guild commands...");
     const data = await rest.put(
       Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
       { body: commands }
@@ -138,7 +138,7 @@ async function main() {
 
     console.log(`[DISCORD] Commands registered successfully: ${data.length}`);
   } catch (err) {
-    console.error('[COMMAND REGISTER ERROR]', err);
+    console.error("[COMMAND REGISTER ERROR]", err);
     process.exit(1);
   }
 }
