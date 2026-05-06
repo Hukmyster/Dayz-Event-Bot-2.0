@@ -84,7 +84,7 @@ async function getPlayerLastLocation(gamertag) {
   const matches = [];
 
   for (const line of lines) {
-    if (!line.includes(gamertag)) continue;
+    if (!containsExactCaseSensitive(line, gamertag)) continue;
     const parsed = parseLocationLine(line);
     if (parsed) matches.push(parsed);
   }
@@ -93,8 +93,14 @@ async function getPlayerLastLocation(gamertag) {
   return matches[matches.length - 1];
 }
 
+function containsExactCaseSensitive(line, gamertag) {
+  const escaped = gamertag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exact = new RegExp(`(^|\\W)${escaped}(\\W|$)`);
+  return exact.test(String(line));
+}
+
 function parseLocationLine(line) {
-  const m = String(line).match(/pos=<\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*>/i);
+  const m = String(line).match(/pos=<\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*>/);
   if (!m) return null;
 
   return {
