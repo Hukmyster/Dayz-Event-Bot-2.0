@@ -9,6 +9,8 @@ const eventfeed = require("./modules/eventfeed");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
+debug.initGlobal();
+
 if (!process.env.DISCORD_TOKEN) {
   console.error("[FATAL] DISCORD_TOKEN missing");
   process.exit(1);
@@ -69,7 +71,8 @@ async function handleCommand(interaction) {
         "addmoney - admin add money",
         "removemoney - admin remove money",
         "resetuser - admin reset user"
-      ].join("\n"),
+      ].join("
+"),
       ephemeral: true
     }, cmd);
   }
@@ -96,7 +99,8 @@ async function handleCommand(interaction) {
     debug.step("shoplist", { count: items.length });
     return send({
       reply: items.length
-        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
+        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("
+")
         : "Shop empty"
     });
   }
@@ -145,7 +149,8 @@ async function handleCommand(interaction) {
     const items = await shop.getShopList();
     const orders = shop.getOrders() || [];
     debug.step("shopstatus", { items: items.length, orders: orders.length });
-    return send({ reply: `Items: ${items.length}\nOrders: ${orders.length}` });
+    return send({ reply: `Items: ${items.length}
+Orders: ${orders.length}` });
   }
 
   if (cmd === "shopreload") {
@@ -159,7 +164,10 @@ async function handleCommand(interaction) {
     const bank = Number(account.bank || 0);
 
     return send({
-      reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
+      reply: `${targetUser.username}
+Wallet: ${economy.formatMoney(wallet)}
+Bank: ${economy.formatMoney(bank)}
+Total: ${economy.formatMoney(wallet + bank)}`
     });
   }
 
@@ -291,7 +299,8 @@ async function handleCommand(interaction) {
 
     return send({
       reply: sorted.length
-        ? sorted.map((u, i) => `${i + 1}. ${u.username} - ${economy.formatMoney(u.total)}`).join("\n")
+        ? sorted.map((u, i) => `${i + 1}. ${u.username} - ${economy.formatMoney(u.total)}`).join("
+")
         : "No economy accounts found yet."
     });
   }
@@ -307,7 +316,10 @@ async function handleCommand(interaction) {
     const bank = Number(account.bank || 0);
 
     return send({
-      reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
+      reply: `${targetUser.username}
+Wallet: ${economy.formatMoney(wallet)}
+Bank: ${economy.formatMoney(bank)}
+Total: ${economy.formatMoney(wallet + bank)}`
     });
   }
 
@@ -380,42 +392,4 @@ client.once(Events.ClientReady, async () => {
   console.log("[EVENTFEED] module started");
 });
 
-client.on(Events.InteractionCreate, async (interaction) => {
-  try {
-    if (!interaction.guild) return;
-
-    if (interaction.isAutocomplete()) {
-      const focused = interaction.options.getFocused();
-      const query = typeof focused === "string" ? focused : "";
-      debug.step("autocomplete", { query });
-      const results = await shop.autocomplete(query);
-      logger.interaction({ type: "autocomplete", query, results });
-      debug.step("autocomplete", { query, resultsCount: results.length });
-      return interaction.respond(results.slice(0, 25)).catch(err => {
-        logger.error("AUTOCOMPLETE ERROR", err);
-        debug.fail("autocomplete", err, { query });
-      });
-    }
-
-    if (!interaction.isChatInputCommand()) return;
-
-    logger.interaction({ type: "command", cmd: interaction.commandName, user: interaction.user?.tag });
-    return handleCommand(interaction).catch(err => {
-      logger.error("COMMAND ERROR", err);
-      debug.fail(interaction.commandName || "unknown", err, {
-        user: interaction.user?.tag,
-        options: serializeOptions(interaction)
-      });
-      return replyOnce(interaction, { content: "Error executing command", ephemeral: true }, interaction.commandName || "unknown");
-    });
-  } catch (err) {
-    logger.error("INTERACTION ERROR", err);
-    debug.fail(interaction.commandName || "unknown", err, {
-      user: interaction.user?.tag,
-      options: serializeOptions(interaction)
-    });
-    return replyOnce(interaction, { content: "Error executing command", ephemeral: true }, interaction.commandName || "unknown");
-  }
-});
-
-client.login(process.env.DISCORD_TOKEN);
+client.on(Events.InteractionCreate, async (interac
