@@ -25,7 +25,7 @@ module.exports = {
         });
       }
 
-      const matched = await findGamertagInServerstate(gamertag);
+      const matched = await findExactGamertagInServerstate(gamertag);
       if (!matched) {
         return interaction.reply({
           content: "Link failed, make sure you spelled it exactly and are in the server currently.",
@@ -48,7 +48,6 @@ module.exports = {
           .update({ gamertag })
           .eq("user_id", interaction.user.id)
           .eq("guild_id", interaction.guildId);
-
         if (error) throw error;
       } else {
         const { error } = await economy.supabase
@@ -62,7 +61,6 @@ module.exports = {
             last_daily_claim_at: null,
             gamertag
           }]);
-
         if (error) throw error;
       }
 
@@ -80,27 +78,22 @@ module.exports = {
   }
 };
 
-async function findGamertagInServerstate(gamertag) {
+async function findExactGamertagInServerstate(gamertag) {
   const files = typeof serverstate.getFiles === "function" ? serverstate.getFiles() : [];
   const admFiles = files.filter(f => typeof f?.content === "string" && /\.adm$/i.test(f.path || ""));
 
   for (const file of admFiles.sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))) {
     const lines = String(file.content).split(/\r?\n/).filter(Boolean);
-
     for (const line of lines) {
-      if (!line.includes(gamertag)) continue;
-      if (isValidGamertagLine(line, gamertag)) return true;
+      if (containsExactCaseSensitive(line, gamertag)) return true;
     }
   }
 
   return false;
 }
 
-function isValidGamertagLine(line, gamertag) {
-  const text = String(line);
-  if (!text.includes(gamertag)) return false;
-
+function containsExactCaseSensitive(line, gamertag) {
   const escaped = gamertag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const exact = new RegExp(`(^|\\W)${escaped}(\\W|$)`, "i");
-  return exact.test(text);
+  const exact = new RegExp(`(^|\\W)${escaped}(\\W|$)`);
+  return exact.test(String(line));
 }
