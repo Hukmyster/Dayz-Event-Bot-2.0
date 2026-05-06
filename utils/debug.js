@@ -28,8 +28,7 @@ function safeStringify(data) {
 function write(level, label, data) {
   ensureDebugFile();
   const payload = safeStringify(data);
-  const out = `[${stamp()}] [${level}] [${label}] ${payload}
-`;
+  const out = `[${stamp()}] [${level}] [${label}] ${payload}\n`;
   fs.appendFileSync(DEBUG_FILE, out);
 
   const prefix = `[${level}] [${label}]`;
