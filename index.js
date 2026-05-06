@@ -122,11 +122,16 @@ async function handleCommand(interaction) {
     return linkgamertag.execute(interaction);
   }
 
-  if (cmd === "playerradaradd" || cmd === "playerradarremove" || cmd === "playerradarview") {
-    return replyOnce(interaction, {
-      content: "Player radar commands are handled by the radar module.",
-      ephemeral: true
-    }, cmd);
+  if (cmd === "playerradaradd") {
+    return playerradars.handleAdd(interaction);
+  }
+
+  if (cmd === "playerradarremove") {
+    return playerradars.handleRemove(interaction);
+  }
+
+  if (cmd === "playerradarview") {
+    return playerradars.handleView(interaction);
   }
 
   if (cmd === "shoplist") {
