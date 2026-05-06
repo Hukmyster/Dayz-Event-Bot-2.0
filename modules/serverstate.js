@@ -3,8 +3,8 @@ const path = require("path");
 const debug = require("../utils/debug");
 
 const ADMIN_WEBHOOK_URL = process.env.ADMIN_WEBHOOK_URL || "";
-const NITRADO_API_KEY = process.env.NITRADO_API_KEY || process.env.NITRADO_TOKEN || "";
-const NITRADO_SERVICE_ID = process.env.NITRADO_SERVICE_ID || "";
+const NITRADO_API_KEY = process.env.API_TOKEN || process.env.NITRADO_API_KEY || process.env.NITRADO_TOKEN || "";
+const NITRADO_SERVICE_ID = process.env.SERVICE_ID || process.env.NITRADO_SERVICE_ID || "";
 const DAYZ_IP = process.env.DAYZ_IP || "";
 const DAYZ_PORT = process.env.DAYZ_PORT || "";
 const LOG_DIR = process.env.DAYZ_LOG_DIR || path.join(__dirname, "../logs");
@@ -83,7 +83,8 @@ function guessNitradoUrls() {
     `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/settings`,
     `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/files`,
     `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/logs`,
-    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/players`
+    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/players`,
+    `${base}/services/${encodeURIComponent(NITRADO_SERVICE_ID)}/gameservers/query`
   ];
 }
 
@@ -93,7 +94,7 @@ function authHeaders() {
 
 function extractInteresting(obj) {
   if (!obj || typeof obj !== "object") return obj;
-  const keys = ["game", "game_name", "ip", "port", "players", "player_count", "status", "status_text", "map", "name", "hostname", "server", "service", "services", "game_server", "settings", "files"];
+  const keys = ["game", "game_name", "ip", "port", "players", "player_count", "status", "status_text", "map", "name", "hostname", "server", "service", "services", "game_server", "settings", "files", "server_settings", "query", "data"];
   const out = {};
   for (const k of keys) if (k in obj) out[k] = obj[k];
   return Object.keys(out).length ? out : obj;
@@ -132,8 +133,8 @@ function buildDiscordContent() {
   lines.push("**DayZ/Nitrado Discovery Scan**");
   lines.push(`Time: ${cache.lastScanAt}`);
   lines.push(`Local logs dir: ${cache.sources.local?.exists ? "found" : "missing"}`);
-  lines.push(`Nitrado auth: ${NITRADO_API_KEY ? "present" : "missing"}`);
-  lines.push(`Nitrado service id: ${NITRADO_SERVICE_ID ? "present" : "missing"}`);
+  lines.push(`API_TOKEN: ${NITRADO_API_KEY ? "present" : "missing"}`);
+  lines.push(`SERVICE_ID: ${NITRADO_SERVICE_ID ? "present" : "missing"}`);
   lines.push(`Public IP/port: ${DAYZ_IP && DAYZ_PORT ? `${DAYZ_IP}:${DAYZ_PORT}` : "missing"}`);
   lines.push(`Public status hits: ${cache.capabilities.publicStatus ? "yes" : "no"}`);
   lines.push(`Nitrado hits: ${cache.capabilities.nitrado ? "yes" : "no"}`);
