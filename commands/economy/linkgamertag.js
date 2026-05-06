@@ -85,15 +85,9 @@ async function findExactGamertagInServerstate(gamertag) {
   for (const file of admFiles.sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))) {
     const lines = String(file.content).split(/\r?\n/).filter(Boolean);
     for (const line of lines) {
-      if (containsExactCaseSensitive(line, gamertag)) return true;
+      if (line.includes(gamertag)) return true;
     }
   }
 
   return false;
-}
-
-function containsExactCaseSensitive(line, gamertag) {
-  const escaped = gamertag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const exact = new RegExp(`(^|\\W)${escaped}(\\W|$)`);
-  return exact.test(String(line));
 }
