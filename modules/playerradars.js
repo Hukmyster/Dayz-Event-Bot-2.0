@@ -270,20 +270,10 @@ async function handleView(interaction) {
   });
 }
 
-function handleInteraction(interaction) {
-  return;
-}
-
 async function init(client) {
   await loadRadars();
   startServerState();
   startScanning();
-
-  if (!client.__playerradarInteractionBound) {
-    client.__playerradarInteractionBound = true;
-    client.on('interactionCreate', handleInteraction);
-  }
-
   console.log('PlayerRadars module loaded');
 }
 
