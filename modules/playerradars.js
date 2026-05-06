@@ -1,154 +1,258 @@
-const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-const fs = require('fs').promises;
-const path = require('path');
-const { nitradoApi } = require('./nitrado');
-const { parseDayZLog } = require('./logParser');
-require('dotenv').config();
+const { getFiles, start: startServerState } = require("./serverstate");
 
-const RADARS_FILE = path.join(__dirname, 'radars.json');
-const SCAN_INTERVAL = 6 * 60 * 1000;
-const MAP_BASE = 'https://www.izurvive.com/chernarusplussatmap/#location=';
+const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
+const LOOP_MS = Number(process.env.KILLFEED_INTERNAL_MS || 30000);
+const DEBUG_ENABLED = String(process.env.KILLFEED_DEBUG || "false").toLowerCase() === "true";
 
-let radars = {};
+const EXPLOSIVE_KILLERS = new Set([
+  "6-M7 Frag Grenade",
+  "LandMineTrap",
+  "Land Mine",
+  "Grenade",
+  "M67 Grenade"
+]);
 
-function coordLink(x, z, label) {
-  const displayLabel = label || `${Math.round(x)}, ${Math.round(z)}`;
-  return `[${displayLabel}](${MAP_BASE}${x.toFixed(0)};${z.toFixed(0)};8)`;
+const state = {
+  started: false,
+  timer: null,
+  running: false,
+  startedAt: new Date().toISOString(),
+  username: "",
+  fileState: new Map(),
+  sentEventIds: new Set()
+};
+
+function logLoop(tag, data) {
+  if (!DEBUG_ENABLED) return;
+  const ts = new Date().toISOString();
+  const dataStr = data !== undefined ? JSON.stringify(data) : "";
+  console.log(`[killfeed][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
 }
 
-async function loadRadars() {
-  try {
-    const data = await fs.readFile(RADARS_FILE, 'utf8');
-    radars = JSON.parse(data);
-  } catch {
-    radars = {};
+function debugLog(tag, data) {
+  if (!DEBUG_ENABLED) return;
+  console.log(`[KILLFEED][${tag}]`, data);
+}
+
+function errorLog(tag, data) {
+  console.log(`[KILLFEED][${tag}]`, data);
+}
+
+function normalizeLine(line) {
+  return String(line || "").replace(/\r$/, "").trim();
+}
+
+function cleanVictim(name) {
+  const n = String(name || "").trim();
+  return n ? n : "NPC";
+}
+
+function cleanKillerName(name) {
+  const n = String(name || "").trim();
+  return n ? n : "Unknown";
+}
+
+function isExplosiveKiller(killer) {
+  return EXPLOSIVE_KILLERS.has(cleanKillerName(killer));
+}
+
+function extractLocation(line) {
+  const m = line.match(/pos=<([^>]+)>/i);
+  if (!m) return "";
+  const parts = m[1].split(",").map(s => s.trim());
+  if (parts.length < 2) return "";
+  return `${parts[0]}, ${parts[1]}`;
+}
+
+function izurviveLinkFromLocation(location) {
+  const parts = String(location || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (parts.length < 2) return location || "Unknown";
+
+  const x = parts[0];
+  const y = parts[1];
+  const label = `${x}, ${y}`;
+  return `[${label}](https://www.izurvive.com/chernarusplussatmap/#location=${x};${y};8)`;
+}
+
+function parseKillLine(line) {
+  if (!line.includes("killed by")) return null;
+
+  const timeMatch = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)\s*\|\s*/);
+  const victimMatch = line.match(/Player\s+"([^"]*)"\s+\(DEAD\)/i);
+
+  const playerKillMatch = line.match(
+    /killed by\s+Player\s+"([^"]*)"\s+\(id=.*?\)\s+with\s+(.+?)\s+from\s+([0-9.]+)\s+meters/i
+  );
+
+  const explosiveKillMatch = line.match(
+    /killed by\s+(LandMineTrap|Land Mine|6-M7 Frag Grenade|Grenade|M67 Grenade)\s*$/i
+  );
+
+  const location = extractLocation(line);
+
+  if (playerKillMatch) {
+    const killer = cleanKillerName(playerKillMatch[1]);
+    return {
+      time: timeMatch ? timeMatch[1] : "unknown",
+      victim: cleanVictim(victimMatch?.[1] || ""),
+      killer,
+      weapon: playerKillMatch[2].trim(),
+      distance: playerKillMatch[3],
+      location: "",
+      explosive: isExplosiveKiller(killer),
+      raw: line
+    };
+  }
+
+  if (explosiveKillMatch) {
+    const killer = cleanKillerName(explosiveKillMatch[1]);
+    return {
+      time: timeMatch ? timeMatch[1] : "unknown",
+      victim: cleanVictim(victimMatch?.[1] || ""),
+      killer,
+      weapon: "",
+      distance: "",
+      location,
+      explosive: true,
+      raw: line
+    };
+  }
+
+  return null;
+}
+
+function buildEventId(fileName, evt) {
+  return [fileName, evt.time, evt.victim, evt.killer, evt.weapon, evt.distance, evt.location, evt.raw].join("|");
+}
+
+function formatEmbed(evt) {
+  const fields = [
+    { name: "Victim", value: evt.victim || "NPC", inline: true },
+    { name: "Killer", value: evt.killer || "Unknown", inline: true }
+  ];
+
+  if (!evt.explosive) {
+    fields.push({ name: "Weapon", value: evt.weapon || "Unknown", inline: true });
+    fields.push({ name: "Distance", value: `${evt.distance || "0"}m`, inline: true });
+  } else {
+    if (evt.location) fields.push({ name: "Location", value: izurviveLinkFromLocation(evt.location), inline: true });
+  }
+
+  fields.push({ name: "Time", value: evt.time || "unknown", inline: true });
+
+  return {
+    title: "💀 KILL CONFIRMED",
+    color: 0xc0392b,
+    fields
+  };
+}
+
+async function postWebhook(evt) {
+  if (!WEBHOOK_URL) {
+    errorLog("WEBHOOK_SKIP", { reason: "missing WEBHOOK_URL" });
+    return;
+  }
+
+  const res = await fetch(WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ embeds: [formatEmbed(evt)] })
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
   }
 }
 
-async function saveRadars() {
-  await fs.writeFile(RADARS_FILE, JSON.stringify(radars, null, 2));
-  try {
-    await nitradoApi.uploadFile('radars.json', await fs.readFile(RADARS_FILE));
-  } catch (e) {
-    console.error("Failed to upload radars.json to Nitrado:", e);
+async function loopOnce() {
+  logLoop("loop:start", { loopMs: LOOP_MS });
+  if (state.running) {
+    logLoop("loop:end", { skipped: true });
+    return;
   }
-}
 
-async function scanRadars(logContent) {
-  const players = parseDayZLog(logContent);
+  state.running = true;
+  try {
+    const files = getFiles();
+    let newEvents = 0;
 
-  for (const [name, radar] of Object.entries(radars)) {
-    const detections = players
-      .filter(p => Math.sqrt(Math.pow(p.x - radar.x, 2) + Math.pow(p.z - radar.z, 2)) <= radar.radius)
-      .map(p => `${p.name} - ${Math.round(Math.sqrt(Math.pow(p.x - radar.x, 2) + Math.pow(p.z - radar.z, 2)))}m`);
+    for (const file of files) {
+      if (!/\.adm$/i.test(file.path || "")) continue;
+      const lines = String(file.content || "").split(/\r?\n/).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+      const previous = state.fileState.get(file.path) || { lineCount: 0, lastLine: "" };
+      const currentLineCount = lines.length;
+      let startIndex = 0;
 
-    if (detections.length > 0 && radar.webhookUrl) {
-      try {
-        await fetch(radar.webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            embeds: [{
-              title: `⚠️ ${name} Detection`,
-              description: detections.join('\n'),
-              color: 0xffa500,
-              timestamp: new Date()
-            }]
-          })
-        });
-      } catch (e) {
-        console.error(`Failed to post radar alert to webhook for ${name}:`, e);
+      if (currentLineCount >= previous.lineCount && previous.lineCount > 0) {
+        startIndex = previous.lineCount;
       }
-    }
-  }
-}
 
-function startScanning(client) {
-  setInterval(async () => {
-    try {
-      const logContent = await nitradoApi.getLatestLog();
-      await scanRadars(logContent);
-    } catch (e) {
-      console.error("Radar scan error:", e);
-    }
-  }, SCAN_INTERVAL);
-}
+      debugLog("FILE_STATE", { remotePath: file.path, current: file.current || { lineCount: currentLineCount, firstLine: "", lastLine: "" }, previous, startIndex });
 
-async function registerCommands(client) {
-  const commands = [
-    new SlashCommandBuilder()
-      .setName('playerradaradd')
-      .setDescription('Add a player radar in this channel')
-      .addStringOption(o => o.setName('name').setDescription('Radar name').setRequired(true))
-      .addNumberOption(o => o.setName('x').setDescription('X coord').setRequired(true))
-      .addNumberOption(o => o.setName('z').setDescription('Z coord').setRequired(true))
-      .addStringOption(o => o.setName('radius').setDescription('Radius in m').setRequired(true).addChoices(
-        { name: '100m', value: '100' }, { name: '200m', value: '200' },
-        { name: '300m', value: '300' }, { name: '400m', value: '400' }, { name: '500m', value: '500' }
-      ))
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+      const events = [];
+      for (let i = startIndex; i < lines.length; i++) {
+        const line = normalizeLine(lines[i]);
+        if (!line.includes("killed by")) continue;
 
-    new SlashCommandBuilder()
-      .setName('playerradarremove')
-      .setDescription('Remove a radar')
-      .addStringOption(o => o.setName('name').setDescription('Radar name').setRequired(true))
-      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        const evt = parseKillLine(line);
+        if (!evt) continue;
 
-    new SlashCommandBuilder()
-      .setName('playerradarview')
-      .setDescription('View all radars')
-  ].map(cmd => cmd.toJSON());
+        const eventId = buildEventId(file.path.split("/").pop() || file.path, evt);
+        const duplicate = state.sentEventIds.has(eventId);
 
-  await client.application.commands.set(commands);
-}
+        debugLog("MATCH", {
+          file: file.path,
+          line,
+          parsed: evt,
+          duplicate
+        });
 
-async function handleInteraction(interaction) {
-  if (!interaction.isChatInputCommand()) return;
+        if (duplicate) continue;
 
-  await loadRadars();
-  const { commandName } = interaction;
+        state.sentEventIds.add(eventId);
+        events.push(evt);
+      }
 
-  try {
-    if (commandName === 'playerradaradd') {
-      const name = interaction.options.getString('name');
-      if (radars[name]) throw new Error('Radar exists');
-
-      const webhook = await interaction.channel.createWebhook({
-        name: `Radar - ${name}`,
-        reason: 'Radar detection webhook'
+      state.fileState.set(file.path, {
+        lineCount: currentLineCount,
+        lastLine: normalizeLine(lines[lines.length - 1] || "")
       });
 
-      radars[name] = {
-        x: interaction.options.getNumber('x'),
-        z: interaction.options.getNumber('z'),
-        radius: parseInt(interaction.options.getString('radius')),
-        webhookUrl: webhook.url
-      };
+      debugLog("EVENTS_FOUND", { remotePath: file.path, count: events.length });
 
-      await saveRadars();
-      await interaction.reply(`✅ Radar **${name}** created for this channel.`);
-
-    } else if (commandName === 'playerradarremove') {
-      const name = interaction.options.getString('name');
-      if (!radars[name]) throw new Error('Not found');
-      delete radars[name];
-      await saveRadars();
-      await interaction.reply(`✅ Radar **${name}** removed.`);
-
-    } else if (commandName === 'playerradarview') {
-      await interaction.reply(Object.keys(radars).join(', '));
+      for (const evt of events) {
+        newEvents++;
+        await postWebhook(evt);
+      }
     }
-  } catch (e) {
-    await interaction.reply(`Error: ${e.message}`);
+
+    logLoop("new:events", { count: newEvents });
+  } finally {
+    state.running = false;
+    logLoop("loop:end", {});
   }
 }
 
-async function init(client) {
-  await loadRadars();
-  await registerCommands(client);
-  startScanning(client);
-  client.on('interactionCreate', handleInteraction);
-  console.log('PlayerRadars module loaded');
+function start() {
+  if (state.started) return;
+  state.started = true;
+  startServerState();
+  loopOnce().catch(() => {});
+  state.timer = setInterval(() => {
+    loopOnce().catch(() => {});
+  }, LOOP_MS);
 }
 
-module.exports = { init };
+function stop() {
+  if (state.timer) clearInterval(state.timer);
+  state.timer = null;
+  state.running = false;
+  state.started = false;
+}
+
+module.exports = { start, stop, state };
