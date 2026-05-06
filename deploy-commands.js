@@ -123,7 +123,11 @@ const commands = [
     options: [
       { name: "gamertag", type: ApplicationCommandOptionType.String, description: "Exact in-game account name", required: true }
     ]
-  }
+  },
+
+  { name: "playerradaradd", description: "Add a player radar in this channel" },
+  { name: "playerradarremove", description: "Remove a player radar" },
+  { name: "playerradarview", description: "View all player radars" }
 ];
 
 async function main() {
