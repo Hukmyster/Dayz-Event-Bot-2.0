@@ -390,6 +390,36 @@ async function getDailyClaim(guildId, userId) {
   return data || null;
 }
 
+async function upsertGamertagLink({ userId, guildId, username, gamertag, lastSeenAt }) {
+  assertSupabase();
+
+  const payload = {
+    user_id: userId,
+    guild_id: guildId,
+    username: username || "Unknown",
+    gamertag,
+    last_seen_at: new Date(lastSeenAt).toISOString()
+  };
+
+  debug.step("economy.upsertGamertagLink", { payload });
+
+  const { error } = await supabase
+    .from("economy_gamertags")
+    .upsert(payload, { onConflict: "user_id,guild_id" });
+
+  if (error) {
+    debug.supabaseError("economy.upsertGamertagLink", "upsert", error, { userId, guildId, gamertag });
+    throw error;
+  }
+
+  debug.ok("economy.upsertGamertagLink", {
+    userId,
+    guildId,
+    gamertag,
+    lastSeenAt: payload.last_seen_at
+  });
+}
+
 module.exports = {
   supabase,
   formatMoney,
@@ -403,5 +433,6 @@ module.exports = {
   deductFromWallet,
   deductFromBank,
   setDailyClaim,
-  getDailyClaim
+  getDailyClaim,
+  upsertGamertagLink
 };
