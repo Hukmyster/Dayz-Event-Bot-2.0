@@ -16,6 +16,11 @@ if (!process.env.DISCORD_TOKEN) {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+const feedState = {
+  killfeedStarted: false,
+  eventfeedStarted: false
+};
+
 function serializeOptions(interaction) {
   const out = {};
   for (const opt of interaction.options.data || []) out[opt.name] = opt.value;
@@ -363,9 +368,15 @@ client.once(Events.ClientReady, async () => {
   console.log(`Logged in as ${client.user.tag}`);
   debug.start("startup", { bot: client.user.tag });
   console.log("[DISCORD] Bot is ready. Commands are handled from Discord now.");
-  killfeed.start();
+  if (!feedState.killfeedStarted) {
+    killfeed.start();
+    feedState.killfeedStarted = true;
+  }
   console.log("[KILLFEED] module started");
-  eventfeed.start();
+  if (!feedState.eventfeedStarted) {
+    eventfeed.start();
+    feedState.eventfeedStarted = true;
+  }
   console.log("[EVENTFEED] module started");
 });
 
