@@ -1,5 +1,4 @@
-
-  const fs = require("fs");
+const fs = require("fs");
 const path = require("path");
 
 const DEBUG_FILE = path.join(__dirname, "../logs/debug-trace.log");
