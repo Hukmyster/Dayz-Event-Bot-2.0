@@ -25,7 +25,7 @@ module.exports = {
         });
       }
 
-      const matched = await findExactGamertagInServerstate(gamertag);
+      const matched = await findExactQuotedGamertagInServerstate(gamertag);
       if (!matched) {
         return interaction.reply({
           content: "Link failed, make sure you spelled it exactly and are in the server currently.",
@@ -78,16 +78,22 @@ module.exports = {
   }
 };
 
-async function findExactGamertagInServerstate(gamertag) {
+async function findExactQuotedGamertagInServerstate(gamertag) {
   const files = typeof serverstate.getFiles === "function" ? serverstate.getFiles() : [];
   const admFiles = files.filter(f => typeof f?.content === "string" && /\.adm$/i.test(f.path || ""));
 
   for (const file of admFiles.sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))) {
     const lines = String(file.content).split(/\r?\n/).filter(Boolean);
     for (const line of lines) {
-      if (line.includes(gamertag)) return true;
+      const extracted = extractQuotedName(line);
+      if (extracted === gamertag) return true;
     }
   }
 
   return false;
+}
+
+function extractQuotedName(line) {
+  const m = String(line).match(/"([^"]+)"/);
+  return m ? m[1] : "";
 }
