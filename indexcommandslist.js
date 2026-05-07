@@ -1,3 +1,4 @@
+// indexcommandslist.js
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
 const daily = require("./commands/shop/daily");
@@ -56,24 +57,15 @@ async function handleCommand(interaction, send, sendError) {
   }
 
   if (cmd === "killfeed") {
-    return replyOnce(interaction, {
-      content: "Killfeed runs automatically on bot startup.",
-      ephemeral: true
-    });
+    return replyOnce(interaction, { content: "Killfeed runs automatically on bot startup.", ephemeral: true });
   }
 
   if (cmd === "eventfeed") {
-    return replyOnce(interaction, {
-      content: "Eventfeed runs automatically on bot startup.",
-      ephemeral: true
-    });
+    return replyOnce(interaction, { content: "Eventfeed runs automatically on bot startup.", ephemeral: true });
   }
 
   if (cmd === "serverstate") {
-    return replyOnce(interaction, {
-      content: JSON.stringify(serverstate.state, null, 2),
-      ephemeral: true
-    });
+    return replyOnce(interaction, { content: JSON.stringify(serverstate.state, null, 2), ephemeral: true });
   }
 
   if (cmd === "whereami") return whereami.execute(interaction);
@@ -85,77 +77,10 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "radaradmin") return radaradmin.execute(interaction);
   if (cmd === "radarignore") return radarignore.execute(interaction);
 
-  if (cmd === "createtoggle") {
-    const role = interaction.options.getRole("role", true);
-    const panelId = getPanelId(interaction);
+  if (cmd === "createtoggle") return createtoggle.execute(interaction);
+  if (cmd === "removetoggle") return removetoggle.execute(interaction);
 
-    const data = loadToggles();
-    data.panels.push({
-      panelId,
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      messageId: null,
-      roleId: role.id,
-      roleName: role.name,
-      createdBy: interaction.user.id,
-      createdAt: new Date().toISOString()
-    });
-    saveToggles(data);
-
-    const button = new ButtonBuilder()
-      .setCustomId(`toggle:${role.id}`)
-      .setLabel(role.name)
-      .setStyle(ButtonStyle.Primary);
-
-    const row = new ActionRowBuilder().addComponents(button);
-
-    const msg = await interaction.channel.send({
-      content: `Click to toggle **${role.name}**.`,
-      components: [row]
-    });
-
-    const updated = loadToggles();
-    const panel = updated.panels.find(p => p.panelId === panelId);
-    if (panel) {
-      panel.messageId = msg.id;
-      saveToggles(updated);
-    }
-
-    return interaction.reply({
-      content: `✅ Created toggle panel for **${role.name}**.`,
-      ephemeral: true
-    });
-  }
-
-  if (cmd === "removetoggle") {
-    const data = loadToggles();
-    const matches = (data.panels || []).filter(p => p.guildId === interaction.guildId && p.channelId === interaction.channelId);
-
-    if (!matches.length) {
-      return interaction.reply({ content: "No toggles found in this channel.", ephemeral: true });
-    }
-
-    const lines = matches
-      .map((p, i) => `${i + 1}. ${p.roleName} (${p.messageId || "no message id"})`)
-      .join("\n");
-
-    const first = matches[0];
-    if (first && first.messageId) {
-      try {
-        const msg = await interaction.channel.messages.fetch(first.messageId);
-        await msg.delete();
-      } catch {}
-    }
-
-    data.panels = data.panels.filter(p => !(p.guildId === interaction.guildId && p.channelId === interaction.channelId && p.roleId === first.roleId));
-    saveToggles(data);
-
-    return interaction.reply({
-      content: `✅ Removed the first toggle found in this channel.\n\nFound:\n${lines}`,
-      ephemeral: true
-    });
-  }
-
+  // ====================== SHOP ======================
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
     debug.step("shoplist", { count: items.length });
@@ -218,6 +143,7 @@ async function handleCommand(interaction, send, sendError) {
     return send(await shop.reloadData());
   }
 
+  // ====================== ECONOMY ======================
   if (cmd === "balance") {
     const targetUser = interaction.options.getUser("member") || interaction.user;
     const account = await economy.getOrCreateAccount(targetUser.id, interaction.guildId, targetUser.username);
@@ -238,9 +164,7 @@ async function handleCommand(interaction, send, sendError) {
       const wallet = Number(account.wallet || 0);
 
       if (wallet < amount) {
-        return send({
-          reply: `Insufficient funds. You only have ${economy.formatMoney(wallet)} in your wallet.`
-        });
+        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(wallet)} in your wallet.` });
       }
 
       const updated = await economy.transferWalletToBank(
@@ -269,9 +193,7 @@ async function handleCommand(interaction, send, sendError) {
       const bank = Number(account.bank || 0);
 
       if (bank < amount) {
-        return send({
-          reply: `Insufficient funds. You only have ${economy.formatMoney(bank)} in your bank.`
-        });
+        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(bank)} in your bank.` });
       }
 
       const updated = await economy.transferBankToWallet(
@@ -304,4 +226,27 @@ async function handleCommand(interaction, send, sendError) {
 
     const receiver = await economy.getOrCreateAccount(member.id, interaction.guildId, member.username);
 
-    const updatedSender = await economy.updateAccount(interaction.user.id, interaction.guildId, {
+    const updatedSender = await economy.updateAccount(interaction.user.id, interaction.guildId, { 
+      wallet: Number(sender.wallet) - amount 
+    });
+
+    await economy.updateAccount(member.id, interaction.guildId, { 
+      wallet: Number(receiver.wallet || 0) + amount 
+    });
+
+    return send({
+      reply: `✅ Sent ${economy.formatMoney(amount)} to **${member.username}**.\nYour new wallet: ${economy.formatMoney(updatedSender.wallet)}`
+    });
+  }
+
+  if (cmd === "daily") {
+    return daily.execute(interaction);
+  }
+
+  // Fallback
+  return sendError(`Command **${cmd}** is not fully implemented yet.`);
+}
+
+module.exports = {
+  handleCommand
+};
