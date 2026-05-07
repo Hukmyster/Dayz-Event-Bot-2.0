@@ -4,7 +4,7 @@ const fs = require('fs').promises;
 const path = require('path');
 
 const LOCAL_DATA_DIR = path.join(__dirname, '../data');
-const REMOTE_BASE = 'dayzps_missions/dayzOffline.chernarusplus/custom/server';   // No leading slash
+const REMOTE_BASE = 'dayzps_missions/dayzOffline.chernarusplus/custom/server';   // No leading /
 
 console.log("[STORAGE] Target folder:", REMOTE_BASE);
 
@@ -12,66 +12,37 @@ async function ensureLocalDir() {
   await fs.mkdir(LOCAL_DATA_DIR, { recursive: true }).catch(() => {});
 }
 
-async function getFtpClient() {
-  if (!process.env.FTP_HOST || !process.env.FTP_USER || !process.env.FTP_PASS) {
-    console.warn("[STORAGE] FTP not configured");
-    return null;
-  }
-
+async function testFtpConnection() {
+  console.log("[FTP] Testing connection and folder creation...");
   const client = new ftp.Client();
   client.ftp.verbose = true;
 
-  await client.access({
-    host: process.env.FTP_HOST,
-    user: process.env.FTP_USER,
-    password: process.env.FTP_PASS,
-    secure: false,
-  });
-
-  console.log(`[FTP] Connected | Current dir: ${await client.pwd()}`);
-
-  // Go to the custom folder first, then ensure 'server'
-  await client.ensureDir('dayzps_missions/dayzOffline.chernarusplus/custom/server');
-  console.log(`[FTP] ✅ Server folder ready`);
-
-  return client;
-}
-
-// Upload / Download functions (same as before)
-async function uploadFile(filename) {
-  const client = await getFtpClient();
-  if (!client) return;
   try {
-    const localPath = path.join(LOCAL_DATA_DIR, filename);
-    const remotePath = `dayzps_missions/dayzOffline.chernarusplus/custom/server/${filename}`;
-    await client.uploadFrom(localPath, remotePath);
-    console.log(`[FTP] ✅ Uploaded ${filename}`);
+    await client.access({
+      host: process.env.FTP_HOST,
+      user: process.env.FTP_USER,
+      password: process.env.FTP_PASS,
+      secure: false,
+    });
+
+    console.log(`[FTP] Connected! Current dir: ${await client.pwd()}`);
+
+    await client.ensureDir(REMOTE_BASE);
+    console.log(`[FTP] ✅ Folder ensured: ${REMOTE_BASE}`);
+
+    const list = await client.list(REMOTE_BASE);
+    console.log(`[FTP] Folder contents: ${list.length} items`);
+
+    console.log("[FTP] ✅ Test successful!");
   } catch (err) {
-    console.error(`[FTP] Upload failed:`, err.message);
+    console.error("[FTP] ❌ Test failed:", err.message);
   } finally {
     client.close().catch(() => {});
   }
 }
 
-async function downloadFile(filename) {
-  const client = await getFtpClient();
-  if (!client) return false;
-  try {
-    const localPath = path.join(LOCAL_DATA_DIR, filename);
-    const remotePath = `dayzps_missions/dayzOffline.chernarusplus/custom/server/${filename}`;
-    await client.downloadTo(localPath, remotePath);
-    console.log(`[FTP] ✅ Downloaded ${filename}`);
-    return true;
-  } catch (err) {
-    if (err.code === 550) return false;
-    console.error(`[FTP] Download failed:`, err.message);
-    return false;
-  } finally {
-    client.close().catch(() => {});
-  }
-}
-
-// ... keep your existing loadJson and saveJson functions exactly as they are
+// Run test immediately when storage is loaded
+testFtpConnection().catch(console.error);
 
 const FILES = {
   radars: 'radars.json',
@@ -85,17 +56,20 @@ async function loadJson(key) {
   const localPath = path.join(LOCAL_DATA_DIR, filename);
 
   try {
-    const downloaded = await downloadFile(filename);
-    if (!downloaded) {
-      const defaultData = (key === 'shop' || key === 'radars') ? [] : {};
-      await fs.writeFile(localPath, JSON.stringify(defaultData, null, 2));
-      console.log(`[STORAGE] Created default: ${filename}`);
-    }
+    const client = new ftp.Client();
+    await client.access({ host: process.env.FTP_HOST, user: process.env.FTP_USER, password: process.env.FTP_PASS });
+    const remotePath = `${REMOTE_BASE}/${filename}`;
+    await client.downloadTo(localPath, remotePath).catch(() => {});
+    client.close();
+
     const raw = await fs.readFile(localPath, 'utf8');
     return JSON.parse(raw);
   } catch (err) {
-    console.error(`[STORAGE] Load error:`, err.message);
-    return (key === 'shop' || key === 'radars') ? [] : {};
+    console.log(`[STORAGE] Creating new ${filename}`);
+    const defaultData = (key === 'shop' || key === 'radars') ? [] : {};
+    await fs.writeFile(localPath, JSON.stringify(defaultData, null, 2));
+    // upload later when needed
+    return defaultData;
   }
 }
 
@@ -104,17 +78,12 @@ async function saveJson(key, data) {
   const filename = FILES[key] || `${key}.json`;
   const localPath = path.join(LOCAL_DATA_DIR, filename);
 
-  try {
-    await fs.writeFile(localPath, JSON.stringify(data, null, 2));
-    await uploadFile(filename);
-  } catch (err) {
-    console.error(`[STORAGE] Save error:`, err.message);
-  }
+  await fs.writeFile(localPath, JSON.stringify(data, null, 2));
+  // Upload logic can be expanded later
+  console.log(`[STORAGE] Saved locally: ${filename}`);
 }
 
 module.exports = {
   loadJson,
   saveJson,
-  uploadFile,
-  downloadFile,
 };
