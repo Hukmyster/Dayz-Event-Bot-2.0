@@ -4,7 +4,7 @@ const fs = require('fs').promises;
 const path = require('path');
 
 const LOCAL_DATA_DIR = path.join(__dirname, '../data');
-const REMOTE_BASE = 'dayzps_missions/dayzOffline.chernarusplus/custom/server';
+const REMOTE_BASE = '/dayzps_missions/dayzOffline.chernarusplus/custom/server';
 
 const FILES = {
   radars: 'radars.json',
