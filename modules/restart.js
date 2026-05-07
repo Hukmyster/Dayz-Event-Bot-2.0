@@ -5,9 +5,6 @@ const { Client: FTPClient } = require("basic-ftp");
 const debug = require("./utils/debug");
 const { buildJsonFile } = require("./modules/shopSnippetBuilder");
 
-const RESTART_TIMER_MINUTES = Number(process.env.RESTART_TIMER || 180);
-const RESTART_INTERVAL_MS = RESTART_TIMER_MINUTES * 60 * 1000;
-
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -21,8 +18,97 @@ const OUTPUT_FILE = path.join(CUSTOM_DIR, "shoppurchases.json");
 const JSON_TABLE = "purchase_json_snippets";
 const REMOTE_FILE = "dayzps_missions/dayzOffline.chernarusplus/custom/shoppurchases.json";
 
+const TIMEZONE = "America/Los_Angeles";
+const TARGET_HOURS = [0, 3, 6, 9, 12, 15, 18, 21];
+const EARLY_MINUTES = 2;
+const SCHEDULE_MINUTE = 58;
+
+let schedulerTimer = null;
+let runLock = false;
+let nextAutoRunAt = null;
+
 function ensureOutputDir() {
   if (!fs.existsSync(CUSTOM_DIR)) fs.mkdirSync(CUSTOM_DIR, { recursive: true });
+}
+
+function pad(n) {
+  return String(n).padStart(2, "0");
+}
+
+function getPartsInTZ(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }).formatToParts(date);
+
+  const map = {};
+  for (const p of parts) {
+    if (p.type !== "literal") map[p.type] = p.value;
+  }
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    hour: Number(map.hour),
+    minute: Number(map.minute),
+    second: Number(map.second)
+  };
+}
+
+function getTimezoneOffsetMs(date, timeZone) {
+  const parts = getPartsInTZ(date, timeZone);
+  const utcFromParts = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second
+  );
+  return utcFromParts - date.getTime();
+}
+
+function zonedDateToUtc(year, month, day, hour, minute, second, timeZone) {
+  const approx = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const offset = getTimezoneOffsetMs(approx, timeZone);
+  return new Date(Date.UTC(year, month - 1, day, hour, minute, second) - offset);
+}
+
+function getNextRunAt(now = new Date()) {
+  const parts = getPartsInTZ(now, TIMEZONE);
+  const localMinutes = parts.minute;
+  const localSeconds = parts.second;
+  const currentHour = parts.hour;
+
+  let targetHour = TARGET_HOURS.find(h => h > currentHour || (h === currentHour && (localMinutes < SCHEDULE_MINUTE || (localMinutes === SCHEDULE_MINUTE && localSeconds === 0)))) ?? TARGET_HOURS[0];
+  let dayOffset = 0;
+
+  if (targetHour === TARGET_HOURS[0] && currentHour >= TARGET_HOURS[TARGET_HOURS.length - 1]) {
+    dayOffset = 1;
+  } else if (targetHour < currentHour) {
+    dayOffset = 1;
+  }
+
+  if (targetHour === currentHour && (localMinutes > SCHEDULE_MINUTE || (localMinutes === SCHEDULE_MINUTE && localSeconds > 0))) {
+    const idx = TARGET_HOURS.indexOf(currentHour);
+    if (idx === TARGET_HOURS.length - 1) {
+      targetHour = TARGET_HOURS[0];
+      dayOffset = 1;
+    } else {
+      targetHour = TARGET_HOURS[idx + 1];
+    }
+  }
+
+  const base = getPartsInTZ(now, TIMEZONE);
+  const date = new Date(Date.UTC(base.year, base.month - 1, base.day + dayOffset, targetHour, SCHEDULE_MINUTE, 0));
+  const offset = getTimezoneOffsetMs(date, TIMEZONE);
+  return new Date(date.getTime() - offset);
 }
 
 async function fetchSnippets() {
@@ -50,8 +136,7 @@ function parseSnippet(row) {
 
 function buildFinalJson(snippets) {
   const entries = snippets.map(parseSnippet).filter(Boolean);
-  if (!entries.length) return buildJsonFile([]);
-  return buildJsonFile(entries);
+  return buildJsonFile(entries.length ? entries : []);
 }
 
 async function writeFiles(jsonObject) {
@@ -82,7 +167,7 @@ async function uploadToServer() {
 }
 
 async function restartServer() {
-  debug.step("restart.restartServer", { phase: "stub" });
+  return;
 }
 
 async function clearProcessedSnippets(ids) {
@@ -95,38 +180,67 @@ async function clearProcessedSnippets(ids) {
   if (error) throw error;
 }
 
-async function runRestartProcedure() {
-  debug.step("restart.runRestartProcedure", { phase: "start" });
-
-  const snippets = await fetchSnippets();
-  const finalJson = buildFinalJson(snippets);
-
-  await writeFiles(finalJson);
-  await uploadToServer();
-
-  if (snippets.length) {
-    await clearProcessedSnippets(snippets.map(s => s.id));
+async function runRestartProcedure(source = "scheduled") {
+  if (runLock) {
+    debug.step("restart.runRestartProcedure", { phase: "skipped", source });
+    return;
   }
 
-  await restartServer();
+  runLock = true;
+  try {
+    debug.step("restart.runRestartProcedure", { phase: "start", source });
 
-  debug.ok("restart.runRestartProcedure", {
-    snippets: snippets.length,
-    file: OUTPUT_FILE,
-    remote: REMOTE_FILE
+    const snippets = await fetchSnippets();
+    const finalJson = buildFinalJson(snippets);
+
+    await writeFiles(finalJson);
+    await uploadToServer();
+
+    if (snippets.length) {
+      await clearProcessedSnippets(snippets.map(s => s.id));
+    }
+
+    await restartServer();
+
+    debug.ok("restart.runRestartProcedure", {
+      source,
+      snippets: snippets.length,
+      file: OUTPUT_FILE,
+      remote: REMOTE_FILE
+    });
+  } finally {
+    runLock = false;
+  }
+}
+
+function scheduleNextRun() {
+  if (schedulerTimer) clearTimeout(schedulerTimer);
+
+  nextAutoRunAt = getNextRunAt(new Date());
+  const runAt = new Date(nextAutoRunAt.getTime() - EARLY_MINUTES * 60 * 1000);
+  const delay = Math.max(1000, runAt.getTime() - Date.now());
+
+  debug.ok("restart.scheduleNextRun", {
+    timezone: TIMEZONE,
+    nextAutoRunAt: nextAutoRunAt.toISOString(),
+    runAt: runAt.toISOString(),
+    delayMs: delay
   });
+
+  schedulerTimer = setTimeout(async () => {
+    try {
+      await runRestartProcedure("scheduled");
+    } catch (error) {
+      debug.fail("restart.loop", error);
+    } finally {
+      scheduleNextRun();
+    }
+  }, delay);
 }
 
 function start() {
-  debug.ok("restart.start", { intervalMs: RESTART_INTERVAL_MS, minutes: RESTART_TIMER_MINUTES });
-
-  setInterval(async () => {
-    try {
-      await runRestartProcedure();
-    } catch (error) {
-      debug.fail("restart.loop", error);
-    }
-  }, RESTART_INTERVAL_MS);
+  debug.ok("restart.start", { timezone: TIMEZONE, earlyMinutes: EARLY_MINUTES });
+  scheduleNextRun();
 }
 
 module.exports = { start, runRestartProcedure };
