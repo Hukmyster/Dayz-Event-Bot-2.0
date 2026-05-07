@@ -194,6 +194,11 @@ const commands = [
       { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true },
       { name: "player", type: ApplicationCommandOptionType.String, description: "Player name", required: false }
     ]
+  },
+
+  {
+    name: "serverrestart",
+    description: "Run the JSON build, upload, and restart process now"
   }
 ];
 
