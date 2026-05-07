@@ -77,8 +77,76 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "radaradmin") return radaradmin.execute(interaction);
   if (cmd === "radarignore") return radarignore.execute(interaction);
 
-  if (cmd === "createtoggle") return createtoggle.execute(interaction);
-  if (cmd === "removetoggle") return removetoggle.execute(interaction);
+  if (cmd === "createtoggle") {
+    const role = interaction.options.getRole("role", true);
+    const panelId = getPanelId(interaction);
+
+    const data = loadToggles();
+    data.panels.push({
+      panelId,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      messageId: null,
+      roleId: role.id,
+      roleName: role.name,
+      createdBy: interaction.user.id,
+      createdAt: new Date().toISOString()
+    });
+    saveToggles(data);
+
+    const button = new ButtonBuilder()
+      .setCustomId(`toggle:${role.id}`)
+      .setLabel(role.name)
+      .setStyle(ButtonStyle.Primary);
+
+    const row = new ActionRowBuilder().addComponents(button);
+
+    const msg = await interaction.channel.send({
+      content: `Click to toggle **${role.name}**.`,
+      components: [row]
+    });
+
+    const updated = loadToggles();
+    const panel = updated.panels.find(p => p.panelId === panelId);
+    if (panel) {
+      panel.messageId = msg.id;
+      saveToggles(updated);
+    }
+
+    return interaction.reply({
+      content: `✅ Created toggle panel for **${role.name}**.`,
+      ephemeral: true
+    });
+  }
+
+  if (cmd === "removetoggle") {
+    const data = loadToggles();
+    const matches = (data.panels || []).filter(p => p.guildId === interaction.guildId && p.channelId === interaction.channelId);
+
+    if (!matches.length) {
+      return interaction.reply({ content: "No toggles found in this channel.", ephemeral: true });
+    }
+
+    const lines = matches
+      .map((p, i) => `${i + 1}. ${p.roleName} (${p.messageId || "no message id"})`)
+      .join("\n");
+
+    const first = matches[0];
+    if (first && first.messageId) {
+      try {
+        const msg = await interaction.channel.messages.fetch(first.messageId);
+        await msg.delete();
+      } catch {}
+    }
+
+    data.panels = data.panels.filter(p => !(p.guildId === interaction.guildId && p.channelId === interaction.channelId && p.roleId === first.roleId));
+    saveToggles(data);
+
+    return interaction.reply({
+      content: `✅ Removed the first toggle found in this channel.\n\nFound:\n${lines}`,
+      ephemeral: true
+    });
+  }
 
   // ====================== SHOP ======================
   if (cmd === "shoplist") {
