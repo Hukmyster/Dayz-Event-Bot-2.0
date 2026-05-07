@@ -23,7 +23,7 @@ function coordLink(x, z, label) {
 }
 
 function normalizeLine(line) {
-  return String(line || '').replace(/\r$/, '').trim();
+  return String(line || '').replace(/\\r$/, '').trim();
 }
 
 function cleanName(name) {
@@ -32,7 +32,7 @@ function cleanName(name) {
 }
 
 function parsePlayerPos(line) {
-  const m = String(line).match(/Player\s+"([^"]+)".*?pos=<\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*>/i);
+  const m = String(line).match(/Player\\s+"([^"]+)".*?pos=<\\s*([0-9.]+)\\s*,\\s*([0-9.]+)\\s*,\\s*([0-9.]+)\\s*>/i);
   if (!m) return null;
 
   return {
@@ -61,6 +61,20 @@ async function saveRadars() {
   await fs.writeFile(RADARS_FILE, JSON.stringify(radars, null, 2));
 }
 
+function normalizeRadar(radar) {
+  if (!radar || typeof radar !== 'object') return null;
+  radar.admins = Array.isArray(radar.admins) ? radar.admins : [];
+  radar.ignore = Array.isArray(radar.ignore) ? radar.ignore : [];
+  return radar;
+}
+
+function ensureRadar(name) {
+  const radar = normalizeRadar(radars[name]);
+  if (!radar) return null;
+  radars[name] = radar;
+  return radar;
+}
+
 function buildRadarEventId(radarName, player, radar) {
   return [
     radarName,
@@ -79,8 +93,8 @@ function radarEmbed(radarName, radar, hits) {
     .setColor(0xffa500)
     .setTimestamp(new Date())
     .setDescription(
-      `Radar center: ${coordLink(radar.x, radar.z, `${radarName} center`)}\n` +
-      `Radius: ${radar.radius}m\n` +
+      `Radar center: ${coordLink(radar.x, radar.z, `${radarName} center`)}\\n` +
+      `Radius: ${radar.radius}m\\n` +
       `Hits: ${hits.length}`
     );
 
@@ -105,7 +119,7 @@ function radarEmbed(radarName, radar, hits) {
 async function getLatestAdmFile() {
   const files = getFiles() || [];
   return files
-    .filter(f => /\.adm$/i.test(f?.path || '') && typeof f?.content === 'string')
+    .filter(f => /\\.adm$/i.test(f?.path || '') && typeof f?.content === 'string')
     .sort((a, b) => Number(b?.current?.lineCount || 0) - Number(a?.current?.lineCount || 0))[0] || null;
 }
 
@@ -117,7 +131,7 @@ async function scanRadars() {
     const latestAdm = await getLatestAdmFile();
     if (!latestAdm?.content) return;
 
-    const lines = String(latestAdm.content).split(/\r?\n/).filter(Boolean);
+    const lines = String(latestAdm.content).split(/\\r?\\n/).filter(Boolean);
     const previous = state.fileState.get(latestAdm.path) || { lineCount: 0, lastLine: '' };
     const currentLineCount = lines.length;
     const startIndex = currentLineCount >= previous.lineCount && previous.lineCount > 0 ? previous.lineCount : 0;
@@ -134,7 +148,8 @@ async function scanRadars() {
       lastLine: normalizeLine(lines[lines.length - 1] || '')
     });
 
-    for (const [name, radar] of Object.entries(radars)) {
+    for (const [name, rawRadar] of Object.entries(radars)) {
+      const radar = normalizeRadar(rawRadar);
       if (!radar || typeof radar.x !== 'number' || typeof radar.z !== 'number' || typeof radar.radius !== 'number') continue;
       if (!radar.webhookUrl) continue;
 
@@ -142,6 +157,8 @@ async function scanRadars() {
       const hits = [];
 
       for (const player of players) {
+        if (radar.ignore.includes(player.name)) continue;
+
         const dist = distance2d(player, radarPos);
         if (dist <= radar.radius) {
           const eventId = buildRadarEventId(name, player, radar);
@@ -201,10 +218,10 @@ async function handleAdd(interaction) {
   const name = interaction.options.getString('name');
   const x = interaction.options.getNumber('x');
   const z = interaction.options.getNumber('z');
-  const radius = interaction.options.getString('radius');
+  const radius = interaction.options.getInteger('radius');
 
-  if (!name || x === null || z === null || !radius) {
-    return replyEphemeral(interaction, 'Missing radar options. Please run /playerradaradd with name, x, z, and radius.');
+  if (!name || x === null || z === null || radius === null) {
+    return replyEphemeral(interaction, 'Missing radar options.');
   }
 
   const radarName = name.trim();
@@ -226,14 +243,16 @@ async function handleAdd(interaction) {
     throw err;
   }
 
-  radars[radarName] = {
+  radars[radarName] = normalizeRadar({
     x,
     z,
-    radius: parseInt(radius, 10),
+    radius,
     webhookUrl: webhook.url,
     channelId: interaction.channelId,
-    webhookId: webhook.id
-  };
+    webhookId: webhook.id,
+    admins: [],
+    ignore: []
+  });
 
   await saveRadars();
 
@@ -271,10 +290,10 @@ async function handleView(interaction) {
 
   const list = names
     .map(n => {
-      const r = radars[n];
+      const r = ensureRadar(n);
       return `• **${n}** — ${r.radius}m at ${coordLink(r.x, r.z, `${r.x}, ${r.z}`)}`;
     })
-    .join('\n');
+    .join('\\n');
 
   const embed = new EmbedBuilder()
     .setTitle('Player Radars')
@@ -285,6 +304,100 @@ async function handleView(interaction) {
     embeds: [embed],
     flags: MessageFlags.Ephemeral
   });
+}
+
+async function handleAdminList() {
+  return { reply: 'Use /radaradmin add or /radaradmin remove.' };
+}
+
+async function addRadarAdmin(name, userId) {
+  await loadRadars();
+  const radar = ensureRadar(name);
+  if (!radar) return { reply: `Radar **${name}** was not found.` };
+
+  if (!radar.admins.includes(userId)) radar.admins.push(userId);
+  await saveRadars();
+  return { reply: `✅ Added radar admin to **${name}**.` };
+}
+
+async function removeRadarAdmin(name, userId) {
+  await loadRadars();
+  const radar = ensureRadar(name);
+  if (!radar) return { reply: `Radar **${name}** was not found.` };
+
+  radar.admins = radar.admins.filter(id => id !== userId);
+  await saveRadars();
+  return { reply: `✅ Removed radar admin from **${name}**.` };
+}
+
+async function addRadarIgnore(name, playerName) {
+  await loadRadars();
+  const radar = ensureRadar(name);
+  if (!radar) return { reply: `Radar **${name}** was not found.` };
+
+  const key = String(playerName || '').trim();
+  if (!key) return { reply: 'Missing player name.' };
+
+  if (!radar.ignore.some(x => String(x).toLowerCase() === key.toLowerCase())) {
+    radar.ignore.push(key);
+  }
+  await saveRadars();
+  return { reply: `✅ Added **${key}** to ignore list for **${name}**.` };
+}
+
+async function removeRadarIgnore(name, playerName) {
+  await loadRadars();
+  const radar = ensureRadar(name);
+  if (!radar) return { reply: `Radar **${name}** was not found.` };
+
+  const key = String(playerName || '').trim().toLowerCase();
+  radar.ignore = radar.ignore.filter(x => String(x).toLowerCase() !== key);
+  await saveRadars();
+  return { reply: `✅ Removed **${playerName}** from ignore list for **${name}**.` };
+}
+
+async function listRadars() {
+  await loadRadars();
+  return Object.entries(radars).map(([name, radar]) => {
+    const r = normalizeRadar(radar);
+    return {
+      name,
+      x: r.x,
+      z: r.z,
+      radius: r.radius,
+      channelId: r.channelId,
+      admins: r.admins,
+      ignore: r.ignore
+    };
+  });
+}
+
+async function createRadar({ name, x, z, radius, channelId, createdBy }) {
+  await loadRadars();
+  const radarName = String(name || '').trim();
+  if (!radarName) return { reply: 'Missing radar name.' };
+  if (radars[radarName]) return { reply: `Radar **${radarName}** already exists.` };
+
+  radars[radarName] = normalizeRadar({
+    x,
+    z,
+    radius,
+    channelId,
+    createdBy,
+    admins: [],
+    ignore: []
+  });
+  await saveRadars();
+  return { reply: `✅ Radar **${radarName}** created.` };
+}
+
+async function removeRadar(name) {
+  await loadRadars();
+  const radarName = String(name || '').trim();
+  if (!radars[radarName]) return { reply: `Radar **${radarName}** was not found.` };
+  delete radars[radarName];
+  await saveRadars();
+  return { reply: `✅ Radar **${radarName}** removed.` };
 }
 
 async function init(client) {
@@ -300,5 +413,12 @@ module.exports = {
   state,
   handleAdd,
   handleRemove,
-  handleView
+  handleView,
+  addRadarAdmin,
+  removeRadarAdmin,
+  addRadarIgnore,
+  removeRadarIgnore,
+  listRadars,
+  createRadar,
+  removeRadar
 };
