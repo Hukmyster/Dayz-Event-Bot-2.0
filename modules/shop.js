@@ -1,7 +1,7 @@
 const debug = require("../utils/debug");
 const { buildSingleEntry } = require("./shopSnippetBuilder");
 const economy = require("./economy");
-const { loadJson, saveJson } = require("../services/storage");
+const { loadTable, saveTable } = require("../services/storage");
 
 const SHOP_KEY = "shop";
 const PURCHASE_KEY = "purchase_json_snippets";
@@ -15,13 +15,29 @@ function normalizeNumber(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-function mapShopRow(row) {
+function mapShopRow(row = {}) {
   return {
-    id: row.id,
-    name: row.displayname,
-    displayname: row.displayname,
-    type: row.type,
-    price: Number(row.price)
+    id: row.id || row.item_id || "",
+    name: row.displayname ?? row.name ?? "",
+    displayname: row.displayname ?? row.name ?? "",
+    type: row.type ?? "",
+    price: Number(row.price || 0)
+  };
+}
+
+function mapPurchaseRow(row = {}) {
+  return {
+    purchase_id: row.purchase_id || "",
+    user_id: row.user_id || "",
+    guild_id: row.guild_id || "",
+    username: row.username || "",
+    item_name: row.item_name || "",
+    item_type: row.item_type || "",
+    qty: Number(row.qty || 1),
+    method: row.method || "wallet",
+    total: Number(row.total || 0),
+    json_snippet: row.json_snippet || "",
+    created_at: row.created_at || ""
   };
 }
 
@@ -45,10 +61,8 @@ function supportsAttachments(itemName) {
 
 async function loadShop() {
   debug.debug("shop.loadShop", { table: "shop" });
-
-  const data = await loadJson(SHOP_KEY);
-  const items = Array.isArray(data) ? data.map(mapShopRow) : [];
-
+  const rows = await loadTable(SHOP_KEY, ["displayname", "type", "price", "id"]);
+  const items = Array.isArray(rows) ? rows.map(mapShopRow).filter(i => i.name) : [];
   debug.ok("shop.loadShop", { rows: items.length });
   return items;
 }
@@ -70,6 +84,16 @@ async function findShopItemByName(name) {
   return items.find(i => i.name.toLowerCase().includes(clean)) || null;
 }
 
+async function saveShop(items) {
+  const rows = items.map((i, idx) => ({
+    id: i.id || String(idx + 1),
+    displayname: i.displayname ?? i.name,
+    type: i.type,
+    price: Number(i.price || 0)
+  }));
+  await saveTable(SHOP_KEY, rows, ["id", "displayname", "type", "price"]);
+}
+
 async function addItem(name, type, price) {
   name = normalizeText(name);
   type = normalizeText(type);
@@ -86,15 +110,16 @@ async function addItem(name, type, price) {
   }
 
   const next = [
-    ...existing.map(i => ({
-      displayname: i.displayname ?? i.name,
-      type: i.type,
-      price: Number(i.price || 0)
-    })),
-    { displayname: name, type, price }
+    ...existing,
+    {
+      id: `${Date.now()}`,
+      displayname: name,
+      type,
+      price
+    }
   ];
 
-  await saveJson(SHOP_KEY, next);
+  await saveShop(next);
   debug.ok("shop.addItem", { inserted: { displayname: name, type, price } });
   return { reply: `Added ${name}` };
 }
@@ -119,12 +144,7 @@ async function editPrice(name, price) {
     price
   };
 
-  await saveJson(SHOP_KEY, items.map(i => ({
-    displayname: i.displayname ?? i.name,
-    type: i.type,
-    price: Number(i.price || 0)
-  })));
-
+  await saveShop(items);
   debug.ok("shop.editPrice", { updated: items[idx] || null });
   return { reply: `Updated ${items[idx].name} price to ${price}` };
 }
@@ -150,12 +170,7 @@ async function editName(name, newname) {
     displayname: newname
   };
 
-  await saveJson(SHOP_KEY, items.map(i => ({
-    displayname: i.displayname ?? i.name,
-    type: i.type,
-    price: Number(i.price || 0)
-  })));
-
+  await saveShop(items);
   debug.ok("shop.editName", { updated: items[idx] || null });
   return { reply: `Renamed item to ${newname}` };
 }
@@ -172,11 +187,7 @@ async function deleteItem(name) {
   if (!item) return { reply: "Item not found" };
 
   const next = items.filter(i => i.name.toLowerCase() !== name.toLowerCase());
-  await saveJson(SHOP_KEY, next.map(i => ({
-    displayname: i.displayname ?? i.name,
-    type: i.type,
-    price: Number(i.price || 0)
-  })));
+  await saveShop(next);
 
   debug.ok("shop.deleteItem", { deletedId: item.id, deletedName: item.name });
   return { reply: `Deleted ${item.name} (1 removed)` };
@@ -195,6 +206,41 @@ async function autocomplete(query) {
     .map(i => ({ name: i.name, value: i.name }));
 }
 
+async function savePurchaseRows(rows) {
+  const current = await loadTable(PURCHASE_KEY, [
+    "purchase_id",
+    "user_id",
+    "guild_id",
+    "username",
+    "item_name",
+    "item_type",
+    "qty",
+    "method",
+    "total",
+    "json_snippet",
+    "created_at"
+  ]);
+
+  const next = [
+    ...(Array.isArray(current) ? current.map(mapPurchaseRow) : []),
+    ...rows
+  ];
+
+  await saveTable(PURCHASE_KEY, next, [
+    "purchase_id",
+    "user_id",
+    "guild_id",
+    "username",
+    "item_name",
+    "item_type",
+    "qty",
+    "method",
+    "total",
+    "json_snippet",
+    "created_at"
+  ]);
+}
+
 async function buyItem(itemName, quantity, x, z, method, available, userId, guildId, username) {
   const item = await findShopItemByName(itemName);
   if (!item) return { reply: "Item not found" };
@@ -208,12 +254,7 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
   if (funds < total) return { reply: `Not enough funds. Need ${total} dollars.` };
 
   if (userId && guildId) {
-    debug.step("shop.buyItem.charge", {
-      userId,
-      guildId,
-      method,
-      total
-    });
+    debug.step("shop.buyItem.charge", { userId, guildId, method, total });
 
     if (String(method || "wallet").toLowerCase() === "bank") {
       await economy.deductFromBank(userId, guildId, total, username || userId, {
@@ -251,14 +292,20 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
 
     rows.push({
       purchase_id: purchaseId,
-      json_snippet: JSON.stringify(entry, null, 2)
+      user_id: String(userId || ""),
+      guild_id: String(guildId || ""),
+      username: String(username || userId || ""),
+      item_name: item.name,
+      item_type: item.type,
+      qty: 1,
+      method: String(method || "wallet").toLowerCase(),
+      total: Number(item.price || 0),
+      json_snippet: JSON.stringify(entry, null, 2),
+      created_at: new Date().toISOString()
     });
   }
 
-  const current = await loadJson(PURCHASE_KEY);
-  const nextPurchases = Array.isArray(current) ? current : [];
-  nextPurchases.push(...rows);
-  await saveJson(PURCHASE_KEY, nextPurchases);
+  await savePurchaseRows(rows);
 
   return { reply: `Bought ${qty}x ${item.name} for ${total} dollars using ${method}.` };
 }
