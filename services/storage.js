@@ -3,20 +3,23 @@ const ftp = require('basic-ftp');
 const fs = require('fs').promises;
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '../data');   // Local folder (unchanged)
+const LOCAL_DATA_DIR = path.join(__dirname, '../data');
 
-// Remote DayZ folder structure you requested
+// Remote folder on your Nitrado server
 const REMOTE_BASE = 'dayzps_missions/dayzOffline.chernarusplus/custom/server';
 
 const FILES = {
   radars: 'radars.json',
   economy: 'economy.json',
   shop: 'shop.json',
-  // Add more files here later if needed
 };
 
 async function ensureLocalDir() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    await fs.mkdir(LOCAL_DATA_DIR, { recursive: true });
+  } catch (err) {
+    console.warn("[STORAGE] Could not create local data dir (Railway ephemeral?)", err.message);
+  }
 }
 
 async function getFtpClient() {
@@ -30,25 +33,27 @@ async function getFtpClient() {
     secure: false,
   });
 
-  // Create the full folder structure automatically
   await client.ensureDir(REMOTE_BASE);
-  console.log(`[FTP] ✅ Ensured remote folder: ${REMOTE_BASE}`);
+  console.log(`[FTP] ✅ Connected & ensured folder: ${REMOTE_BASE}`);
 
   return client;
 }
 
 async function uploadFile(filename) {
-  if (!process.env.FTP_HOST) return;
+  if (!process.env.FTP_HOST) {
+    console.warn(`[FTP] No FTP_HOST set - skipping upload of ${filename}`);
+    return;
+  }
 
   const client = await getFtpClient();
   try {
-    const localPath = path.join(DATA_DIR, filename);
+    const localPath = path.join(LOCAL_DATA_DIR, filename);
     const remotePath = `${REMOTE_BASE}/${filename}`;
 
     await client.uploadFrom(localPath, remotePath);
-    console.log(`[FTP] ✅ Uploaded ${filename} → ${remotePath}`);
+    console.log(`[FTP] ✅ Uploaded ${filename}`);
   } catch (err) {
-    console.error(`[FTP] ❌ Upload failed for ${filename}`, err.message);
+    console.error(`[FTP] ❌ Upload failed ${filename}`, err.message);
   } finally {
     client.close();
   }
@@ -59,7 +64,7 @@ async function downloadFile(filename) {
 
   const client = await getFtpClient();
   try {
-    const localPath = path.join(DATA_DIR, filename);
+    const localPath = path.join(LOCAL_DATA_DIR, filename);
     const remotePath = `${REMOTE_BASE}/${filename}`;
 
     await client.downloadTo(localPath, remotePath);
@@ -67,9 +72,9 @@ async function downloadFile(filename) {
     return true;
   } catch (err) {
     if (err.code === 550 || err.message?.includes('No such file')) {
-      return false; // File doesn't exist yet
+      return false;
     }
-    console.error(`[FTP] Download error for ${filename}`, err.message);
+    console.error(`[FTP] Download error ${filename}`, err.message);
     return false;
   } finally {
     client.close();
@@ -79,22 +84,21 @@ async function downloadFile(filename) {
 async function loadJson(key) {
   await ensureLocalDir();
   const filename = FILES[key] || `${key}.json`;
-  const localPath = path.join(DATA_DIR, filename);
+  const localPath = path.join(LOCAL_DATA_DIR, filename);
 
   try {
     const downloaded = await downloadFile(filename);
 
     if (!downloaded) {
-      // Create default file
       const defaultData = (key === 'shop' || key === 'radars') ? [] : {};
       await fs.writeFile(localPath, JSON.stringify(defaultData, null, 2));
-      console.log(`[STORAGE] Created new file: ${filename}`);
+      console.log(`[STORAGE] Created new default file: ${filename}`);
     }
 
     const raw = await fs.readFile(localPath, 'utf8');
     return JSON.parse(raw);
   } catch (err) {
-    console.error(`[STORAGE] Failed to load ${key}`, err);
+    console.error(`[STORAGE] Load failed for ${key}`, err.message);
     return (key === 'shop' || key === 'radars') ? [] : {};
   }
 }
@@ -102,13 +106,13 @@ async function loadJson(key) {
 async function saveJson(key, data) {
   await ensureLocalDir();
   const filename = FILES[key] || `${key}.json`;
-  const localPath = path.join(DATA_DIR, filename);
+  const localPath = path.join(LOCAL_DATA_DIR, filename);
 
   try {
     await fs.writeFile(localPath, JSON.stringify(data, null, 2));
-    await uploadFile(filename);
+    await uploadFile(filename);        // Always try to sync to Nitrado
   } catch (err) {
-    console.error(`[STORAGE] Failed to save ${key}`, err);
+    console.error(`[STORAGE] Save failed for ${key}`, err.message);
   }
 }
 
