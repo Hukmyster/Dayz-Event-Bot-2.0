@@ -64,7 +64,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
   } catch (err) {
     logger.error("INTERACTION ERROR", err);
     debug.fail(interaction.commandName || "unknown", err, {
-      user: interaction.user?.tag
+      user: interaction.user?.tag,
+      options: []
     });
     return interaction.reply({ content: "Error executing interaction.", ephemeral: true }).catch(() => {});
   }
