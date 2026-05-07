@@ -126,7 +126,7 @@ const commands = [
   },
 
   {
-    name: "playerradaradd",
+    name: "radaradd",
     description: "Add a player radar in this channel",
     options: [
       { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true },
@@ -134,29 +134,66 @@ const commands = [
       { name: "z", type: ApplicationCommandOptionType.Number, description: "Z coordinate", required: true },
       {
         name: "radius",
-        type: ApplicationCommandOptionType.String,
+        type: ApplicationCommandOptionType.Integer,
         description: "Radar radius",
         required: true,
         choices: [
-          { name: "100m", value: "100" },
-          { name: "200m", value: "200" },
-          { name: "300m", value: "300" },
-          { name: "400m", value: "400" },
-          { name: "500m", value: "500" }
+          { name: "100m", value: 100 },
+          { name: "200m", value: 200 },
+          { name: "300m", value: 300 },
+          { name: "400m", value: 400 },
+          { name: "500m", value: 500 }
         ]
       }
     ]
   },
   {
-    name: "playerradarremove",
+    name: "radarremove",
     description: "Remove a player radar",
     options: [
       { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true }
     ]
   },
   {
-    name: "playerradarview",
+    name: "radarview",
     description: "View all player radars"
+  },
+  {
+    name: "radaradmin",
+    description: "Add or remove radar admins",
+    options: [
+      {
+        name: "action",
+        type: ApplicationCommandOptionType.String,
+        description: "Add or remove admin",
+        required: true,
+        choices: [
+          { name: "add", value: "add" },
+          { name: "remove", value: "remove" }
+        ]
+      },
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true },
+      { name: "user", type: ApplicationCommandOptionType.User, description: "User to add or remove", required: true }
+    ]
+  },
+  {
+    name: "radarignore",
+    description: "Add or remove ignored players",
+    options: [
+      {
+        name: "action",
+        type: ApplicationCommandOptionType.String,
+        description: "Add or remove ignored player",
+        required: true,
+        choices: [
+          { name: "add", value: "add" },
+          { name: "remove", value: "remove" },
+          { name: "list", value: "list" }
+        ]
+      },
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true },
+      { name: "player", type: ApplicationCommandOptionType.String, description: "Player name", required: false }
+    ]
   }
 ];
 
