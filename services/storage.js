@@ -3,13 +3,16 @@ const ftp = require('basic-ftp');
 const fs = require('fs').promises;
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '../data');
+const DATA_DIR = path.join(__dirname, '../data');   // Local folder (unchanged)
+
+// Remote DayZ folder structure you requested
+const REMOTE_BASE = 'dayzps_missions/dayzOffline.chernarusplus/custom/server';
 
 const FILES = {
   radars: 'radars.json',
   economy: 'economy.json',
   shop: 'shop.json',
-  // Add more files here as needed
+  // Add more files here later if needed
 };
 
 async function ensureLocalDir() {
@@ -23,22 +26,27 @@ async function getFtpClient() {
   await client.access({
     host: process.env.FTP_HOST,
     user: process.env.FTP_USER,
-    password: process.env.FTP_PASS,        // ← Your existing var
+    password: process.env.FTP_PASS,
     secure: false,
   });
+
+  // Create the full folder structure automatically
+  await client.ensureDir(REMOTE_BASE);
+  console.log(`[FTP] ✅ Ensured remote folder: ${REMOTE_BASE}`);
 
   return client;
 }
 
 async function uploadFile(filename) {
   if (!process.env.FTP_HOST) return;
-  
+
   const client = await getFtpClient();
   try {
     const localPath = path.join(DATA_DIR, filename);
-    const remotePath = filename; // Put files in root of FTP, or change this if you want a subfolder
+    const remotePath = `${REMOTE_BASE}/${filename}`;
+
     await client.uploadFrom(localPath, remotePath);
-    console.log(`[FTP] ✅ Uploaded ${filename}`);
+    console.log(`[FTP] ✅ Uploaded ${filename} → ${remotePath}`);
   } catch (err) {
     console.error(`[FTP] ❌ Upload failed for ${filename}`, err.message);
   } finally {
@@ -48,16 +56,18 @@ async function uploadFile(filename) {
 
 async function downloadFile(filename) {
   if (!process.env.FTP_HOST) return false;
-  
+
   const client = await getFtpClient();
   try {
     const localPath = path.join(DATA_DIR, filename);
-    await client.downloadTo(localPath, filename);
+    const remotePath = `${REMOTE_BASE}/${filename}`;
+
+    await client.downloadTo(localPath, remotePath);
     console.log(`[FTP] ✅ Downloaded ${filename}`);
     return true;
   } catch (err) {
     if (err.code === 550 || err.message?.includes('No such file')) {
-      return false; // File doesn't exist yet — normal on first run
+      return false; // File doesn't exist yet
     }
     console.error(`[FTP] Download error for ${filename}`, err.message);
     return false;
@@ -73,11 +83,12 @@ async function loadJson(key) {
 
   try {
     const downloaded = await downloadFile(filename);
-    
-    if (!downloaded || !(await fs.stat(localPath).catch(() => false))) {
+
+    if (!downloaded) {
       // Create default file
       const defaultData = (key === 'shop' || key === 'radars') ? [] : {};
       await fs.writeFile(localPath, JSON.stringify(defaultData, null, 2));
+      console.log(`[STORAGE] Created new file: ${filename}`);
     }
 
     const raw = await fs.readFile(localPath, 'utf8');
