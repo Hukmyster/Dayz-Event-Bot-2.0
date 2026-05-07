@@ -14,6 +14,12 @@ const debug = require("./utils/debug");
 const whereami = require("./commands/economy/whereami");
 const linkgamertag = require("./commands/economy/linkgamertag");
 
+const radaradd = require("./commands/radar/radaradd");
+const radarremove = require("./commands/radar/radarremove");
+const radarview = require("./commands/radar/radarview");
+const radaradmin = require("./commands/radar/radaradmin");
+const radarignore = require("./commands/radar/radarignore");
+
 if (typeof debug.initGlobal === "function") {
   debug.initGlobal();
 }
@@ -82,9 +88,11 @@ async function handleCommand(interaction) {
         "resetuser - admin reset user",
         "whereami - show your latest known location",
         "linkgamertag - link your in-game gamertag",
-        "playerradaradd - add a player radar",
-        "playerradarremove - remove a player radar",
-        "playerradarview - view saved player radars"
+        "radaradd - add a player radar",
+        "radarremove - remove a player radar",
+        "radarview - view saved player radars",
+        "radaradmin - add or remove radar admins",
+        "radarignore - add or remove ignored players"
       ].join("\n"),
       ephemeral: true
     }, cmd);
@@ -122,16 +130,24 @@ async function handleCommand(interaction) {
     return linkgamertag.execute(interaction);
   }
 
-  if (cmd === "playerradaradd") {
-    return playerradars.handleAdd(interaction);
+  if (cmd === "radaradd") {
+    return radaradd.execute(interaction);
   }
 
-  if (cmd === "playerradarremove") {
-    return playerradars.handleRemove(interaction);
+  if (cmd === "radarremove") {
+    return radarremove.execute(interaction);
   }
 
-  if (cmd === "playerradarview") {
-    return playerradars.handleView(interaction);
+  if (cmd === "radarview") {
+    return radarview.execute(interaction);
+  }
+
+  if (cmd === "radaradmin") {
+    return radaradmin.execute(interaction);
+  }
+
+  if (cmd === "radarignore") {
+    return radarignore.execute(interaction);
   }
 
   if (cmd === "shoplist") {
