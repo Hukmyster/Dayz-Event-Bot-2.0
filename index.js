@@ -1,4 +1,6 @@
-const { Client, GatewayIntentBits, Events, MessageFlags } = require("discord.js");
+const fs = require("fs");
+const path = require("path");
+const { Client, GatewayIntentBits, Events, MessageFlags, PermissionFlagsBits, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
 require("dotenv").config();
 
 const shop = require("./modules/shop");
@@ -20,6 +22,9 @@ const radarview = require("./commands/radar/radarview");
 const radaradmin = require("./commands/radar/radaradmin");
 const radarignore = require("./commands/radar/radarignore");
 
+const createtoggle = require("./commands/admin/createtoggle");
+const removetoggle = require("./commands/admin/removetoggle");
+
 if (typeof debug.initGlobal === "function") {
   debug.initGlobal();
 }
@@ -37,6 +42,35 @@ const feedState = {
   serverstateStarted: false,
   playerradarsStarted: false
 };
+
+const TOGGLE_FILE = path.join(__dirname, "data", "toggles.json");
+
+function ensureToggleFile() {
+  const dir = path.dirname(TOGGLE_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(TOGGLE_FILE)) fs.writeFileSync(TOGGLE_FILE, JSON.stringify({ panels: [] }, null, 2));
+}
+
+function loadToggles() {
+  ensureToggleFile();
+  try {
+    const raw = fs.readFileSync(TOGGLE_FILE, "utf8");
+    const parsed = JSON.parse(raw || "{}");
+    if (!parsed.panels) parsed.panels = [];
+    return parsed;
+  } catch {
+    return { panels: [] };
+  }
+}
+
+function saveToggles(data) {
+  ensureToggleFile();
+  fs.writeFileSync(TOGGLE_FILE, JSON.stringify(data, null, 2));
+}
+
+function getPanelId(interaction) {
+  return `${interaction.guildId}:${interaction.channelId}:${Date.now()}`;
+}
 
 function serializeOptions(interaction) {
   const out = {};
@@ -59,6 +93,28 @@ async function replyOnce(interaction, payload, label = "reply") {
   return (interaction.replied || interaction.deferred)
     ? interaction.followUp(data)
     : interaction.reply(data);
+}
+
+async function handleToggleButton(interaction) {
+  const customId = interaction.customId || "";
+  if (!customId.startsWith("toggle:")) return false;
+
+  const roleId = customId.split(":")[1];
+  const role = interaction.guild.roles.cache.get(roleId);
+  if (!role) {
+    return interaction.reply({ content: "That role no longer exists.", ephemeral: true });
+  }
+
+  const member = interaction.member;
+  const hasRole = member.roles.cache.has(roleId);
+
+  if (hasRole) {
+    await member.roles.remove(roleId);
+    return interaction.reply({ content: `Removed ${role.name}.`, ephemeral: true });
+  } else {
+    await member.roles.add(roleId);
+    return interaction.reply({ content: `Added ${role.name}.`, ephemeral: true });
+  }
 }
 
 async function handleCommand(interaction) {
@@ -92,7 +148,9 @@ async function handleCommand(interaction) {
         "radarremove - remove a player radar",
         "radarview - view saved player radars",
         "radaradmin - add or remove radar admins",
-        "radarignore - add or remove ignored players"
+        "radarignore - add or remove ignored players",
+        "createtoggle - create a role toggle button",
+        "removetoggle - remove a role toggle button"
       ].join("\n"),
       ephemeral: true
     }, cmd);
@@ -148,6 +206,77 @@ async function handleCommand(interaction) {
 
   if (cmd === "radarignore") {
     return radarignore.execute(interaction);
+  }
+
+  if (cmd === "createtoggle") {
+    const role = interaction.options.getRole("role", true);
+    const panelId = getPanelId(interaction);
+
+    const data = loadToggles();
+    data.panels.push({
+      panelId,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      messageId: null,
+      roleId: role.id,
+      roleName: role.name,
+      createdBy: interaction.user.id,
+      createdAt: new Date().toISOString()
+    });
+    saveToggles(data);
+
+    const button = new ButtonBuilder()
+      .setCustomId(`toggle:${role.id}`)
+      .setLabel(role.name)
+      .setStyle(ButtonStyle.Primary);
+
+    const row = new ActionRowBuilder().addComponents(button);
+
+    const msg = await interaction.channel.send({
+      content: `Click to toggle **${role.name}**.`,
+      components: [row]
+    });
+
+    const updated = loadToggles();
+    const panel = updated.panels.find(p => p.panelId === panelId);
+    if (panel) {
+      panel.messageId = msg.id;
+      saveToggles(updated);
+    }
+
+    return interaction.reply({
+      content: `✅ Created toggle panel for **${role.name}**.`,
+      ephemeral: true
+    });
+  }
+
+  if (cmd === "removetoggle") {
+    const data = loadToggles();
+    const matches = (data.panels || []).filter(p => p.guildId === interaction.guildId && p.channelId === interaction.channelId);
+
+    if (!matches.length) {
+      return interaction.reply({ content: "No toggles found in this channel.", ephemeral: true });
+    }
+
+    const lines = matches
+      .map((p, i) => `${i + 1}. ${p.roleName} (${p.messageId || "no message id"})`)
+      .join("\n");
+
+    const first = matches[0];
+    if (first && first.messageId) {
+      try {
+        const msg = await interaction.channel.messages.fetch(first.messageId);
+        await msg.delete();
+      } catch {}
+    }
+
+    data.panels = data.panels.filter(p => !(p.guildId === interaction.guildId && p.channelId === interaction.channelId && p.roleId === first.roleId));
+    saveToggles(data);
+
+    return interaction.reply({
+      content: `✅ Removed the first toggle found in this channel.\n\nFound:\n${lines}`,
+      ephemeral: true
+    });
   }
 
   if (cmd === "shoplist") {
@@ -469,6 +598,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
         logger.error("AUTOCOMPLETE ERROR", err);
         debug.fail("autocomplete", err, { query });
       });
+    }
+
+    if (interaction.isButton()) {
+      const handled = await handleToggleButton(interaction);
+      if (handled !== false) return handled;
     }
 
     if (!interaction.isChatInputCommand()) return;
