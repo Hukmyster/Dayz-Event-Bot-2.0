@@ -1,16 +1,10 @@
-const { createClient } = require("@supabase/supabase-js");
-const ws = require("ws");
 const debug = require("../utils/debug");
 const { buildSingleEntry } = require("./shopSnippetBuilder");
 const economy = require("./economy");
+const { loadJson, saveJson } = require("../services/storage");
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey, { realtime: { transport: ws } }) : null;
-
-function assertSupabase() {
-  if (!supabase) throw new Error("Supabase client not configured");
-}
+const SHOP_KEY = "shop";
+const PURCHASE_KEY = "purchase_json_snippets";
 
 function normalizeText(v) {
   return String(v ?? "").trim();
@@ -50,21 +44,11 @@ function supportsAttachments(itemName) {
 }
 
 async function loadShop() {
-  assertSupabase();
-
   debug.debug("shop.loadShop", { table: "shop" });
 
-  const { data, error } = await supabase
-    .from("shop")
-    .select("id,displayname,type,price")
-    .order("displayname", { ascending: true });
-
-  if (error) {
-    debug.supabaseError("shop.loadShop", "select", error, { table: "shop" });
-    throw error;
-  }
-
+  const data = await loadJson(SHOP_KEY);
   const items = Array.isArray(data) ? data.map(mapShopRow) : [];
+
   debug.ok("shop.loadShop", { rows: items.length });
   return items;
 }
@@ -87,8 +71,6 @@ async function findShopItemByName(name) {
 }
 
 async function addItem(name, type, price) {
-  assertSupabase();
-
   name = normalizeText(name);
   type = normalizeText(type);
   price = normalizeNumber(price);
@@ -103,25 +85,21 @@ async function addItem(name, type, price) {
     return { reply: `Item already exists: ${name}` };
   }
 
-  const { data, error } = await supabase
-    .from("shop")
-    .insert([{ displayname: name, type, price }])
-    .select("id,displayname,type,price");
+  const next = [
+    ...existing.map(i => ({
+      displayname: i.displayname ?? i.name,
+      type: i.type,
+      price: Number(i.price || 0)
+    })),
+    { displayname: name, type, price }
+  ];
 
-  if (error) {
-    debug.supabaseError("shop.addItem", "insert", error, {
-      values: { displayname: name, type, price }
-    });
-    return { reply: `Database error: ${error.message}` };
-  }
-
-  debug.ok("shop.addItem", { inserted: data?.[0] || null });
+  await saveJson(SHOP_KEY, next);
+  debug.ok("shop.addItem", { inserted: { displayname: name, type, price } });
   return { reply: `Added ${name}` };
 }
 
 async function editPrice(name, price) {
-  assertSupabase();
-
   name = normalizeText(name);
   price = normalizeNumber(price);
 
@@ -130,27 +108,28 @@ async function editPrice(name, price) {
   if (!name) return { reply: "Item name is required" };
   if (price === null || price < 0) return { reply: "Price must be a valid number" };
 
-  const item = await findShopItemByName(name);
-  if (!item) return { reply: "Item not found" };
+  const items = await loadShop();
+  const idx = items.findIndex(i => i.name.toLowerCase() === name.toLowerCase());
+  if (idx === -1) return { reply: "Item not found" };
 
-  const { data, error } = await supabase
-    .from("shop")
-    .update({ price })
-    .eq("id", item.id)
-    .select("id,displayname,type,price");
+  items[idx] = {
+    ...items[idx],
+    displayname: items[idx].displayname ?? items[idx].name,
+    type: items[idx].type,
+    price
+  };
 
-  if (error) {
-    debug.supabaseError("shop.editPrice", "update", error, { id: item.id, values: { price } });
-    return { reply: `Database error: ${error.message}` };
-  }
+  await saveJson(SHOP_KEY, items.map(i => ({
+    displayname: i.displayname ?? i.name,
+    type: i.type,
+    price: Number(i.price || 0)
+  })));
 
-  debug.ok("shop.editPrice", { updated: data?.[0] || null });
-  return { reply: `Updated ${item.name} price to ${price}` };
+  debug.ok("shop.editPrice", { updated: items[idx] || null });
+  return { reply: `Updated ${items[idx].name} price to ${price}` };
 }
 
 async function editName(name, newname) {
-  assertSupabase();
-
   name = normalizeText(name);
   newname = normalizeText(newname);
 
@@ -158,47 +137,46 @@ async function editName(name, newname) {
 
   if (!name || !newname) return { reply: "Current name and new name are required" };
 
-  const item = await findShopItemByName(name);
-  if (!item) return { reply: "Item not found" };
+  const items = await loadShop();
+  const idx = items.findIndex(i => i.name.toLowerCase() === name.toLowerCase());
+  if (idx === -1) return { reply: "Item not found" };
 
-  const existing = await getShopList();
-  if (existing.some(i => i.name.toLowerCase() === newname.toLowerCase())) {
+  if (items.some(i => i.name.toLowerCase() === newname.toLowerCase())) {
     return { reply: `An item already exists with the name ${newname}` };
   }
 
-  const { data, error } = await supabase
-    .from("shop")
-    .update({ displayname: newname })
-    .eq("id", item.id)
-    .select("id,displayname,type,price");
+  items[idx] = {
+    ...items[idx],
+    displayname: newname
+  };
 
-  if (error) {
-    debug.supabaseError("shop.editName", "update", error, { id: item.id, values: { displayname: newname } });
-    return { reply: `Database error: ${error.message}` };
-  }
+  await saveJson(SHOP_KEY, items.map(i => ({
+    displayname: i.displayname ?? i.name,
+    type: i.type,
+    price: Number(i.price || 0)
+  })));
 
-  debug.ok("shop.editName", { updated: data?.[0] || null });
+  debug.ok("shop.editName", { updated: items[idx] || null });
   return { reply: `Renamed item to ${newname}` };
 }
 
 async function deleteItem(name) {
-  assertSupabase();
-
   name = normalizeText(name);
 
   debug.debug("shop.deleteItem", { name });
 
   if (!name) return { reply: "Item name is required" };
 
-  const item = await findShopItemByName(name);
+  const items = await loadShop();
+  const item = items.find(i => i.name.toLowerCase() === name.toLowerCase());
   if (!item) return { reply: "Item not found" };
 
-  const { error } = await supabase.from("shop").delete().eq("id", item.id);
-
-  if (error) {
-    debug.supabaseError("shop.deleteItem", "delete", error, { id: item.id });
-    return { reply: `Database error: ${error.message}` };
-  }
+  const next = items.filter(i => i.name.toLowerCase() !== name.toLowerCase());
+  await saveJson(SHOP_KEY, next.map(i => ({
+    displayname: i.displayname ?? i.name,
+    type: i.type,
+    price: Number(i.price || 0)
+  })));
 
   debug.ok("shop.deleteItem", { deletedId: item.id, deletedName: item.name });
   return { reply: `Deleted ${item.name} (1 removed)` };
@@ -218,8 +196,6 @@ async function autocomplete(query) {
 }
 
 async function buyItem(itemName, quantity, x, z, method, available, userId, guildId, username) {
-  assertSupabase();
-
   const item = await findShopItemByName(itemName);
   if (!item) return { reply: "Item not found" };
 
@@ -279,23 +255,15 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
     });
   }
 
-  const { error } = await supabase
-    .from("purchase_snippets")
-    .insert(rows);
-
-  if (error) {
-    debug.supabaseError("shop.buyItem", "insert", error, {
-      purchase_id: purchaseId,
-      rows: rows.length
-    });
-    return { reply: `Database error: ${error.message}` };
-  }
+  const current = await loadJson(PURCHASE_KEY);
+  const nextPurchases = Array.isArray(current) ? current : [];
+  nextPurchases.push(...rows);
+  await saveJson(PURCHASE_KEY, nextPurchases);
 
   return { reply: `Bought ${qty}x ${item.name} for ${total} dollars using ${method}.` };
 }
 
 module.exports = {
-  supabase,
   getShopList,
   findShopItemByName,
   addItem,
