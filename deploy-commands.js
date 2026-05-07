@@ -18,6 +18,7 @@ if (!process.env.CLIENT_ID) {
 
 const commands = [
   { name: "shop", description: "Alias for shophelp" },
+  { name: "shophelp", description: "Show shop and command help" },
   { name: "shoplist", description: "List all shop items" },
 
   {
@@ -97,8 +98,13 @@ const commands = [
   },
 
   {
-    name: "shopadditems",
-    description: "Add new items to the shop"
+    name: "shopadditem",
+    description: "Add a new item to the shop",
+    options: [
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Item display name", required: true },
+      { name: "type", type: ApplicationCommandOptionType.String, description: "Item type", required: true },
+      { name: "price", type: ApplicationCommandOptionType.Integer, description: "Item price", required: true }
+    ]
   },
   {
     name: "shopeditprice",
@@ -115,6 +121,8 @@ const commands = [
       { name: "name", type: ApplicationCommandOptionType.String, description: "Item display name", required: true }
     ]
   },
+  { name: "shopstatus", description: "Show shop status" },
+  { name: "shopreload", description: "Reload shop data" },
 
   { name: "whereami", description: "Show your latest known location" },
   {
@@ -154,10 +162,7 @@ const commands = [
       { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true }
     ]
   },
-  {
-    name: "radarview",
-    description: "View all player radars"
-  },
+  { name: "radarview", description: "View all player radars" },
   {
     name: "radaradmin",
     description: "Add or remove radar admins",
@@ -196,10 +201,13 @@ const commands = [
     ]
   },
 
-  {
-    name: "serverrestart",
-    description: "Run the JSON build, upload, and restart process now"
-  }
+  { name: "createtoggle", description: "Create a role toggle button" },
+  { name: "removetoggle", description: "Remove a role toggle button" },
+
+  { name: "serverrestart", description: "Run the JSON build, upload, and restart process now" },
+  { name: "serverstate", description: "Show server state data" },
+  { name: "killfeed", description: "Show killfeed status" },
+  { name: "eventfeed", description: "Show eventfeed status" }
 ];
 
 async function main() {
