@@ -6,7 +6,7 @@ const path = require('path');
 const LOCAL_DATA_DIR = path.join(__dirname, '../data');
 
 // Try both versions - we'll test which one works
-const REMOTE_BASE = 'dayzps_missions/dayzOffline.chernarusplus/custom/server';   // ← No leading slash (recommended first)
+const REMOTE_BASE = '/dayzps_missions/dayzOffline.chernarusplus/custom/server';   // ← No leading slash (recommended first)
 
 const FILES = {
   radars: 'radars.json',
