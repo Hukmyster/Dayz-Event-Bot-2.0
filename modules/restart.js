@@ -1,13 +1,9 @@
 const fs = require("fs");
 const path = require("path");
-const { createClient } = require("@supabase/supabase-js");
 const { Client: FTPClient } = require("basic-ftp");
 const debug = require("./utils/debug");
 const { buildJsonFile } = require("./modules/shopSnippetBuilder");
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const { loadJson, saveJson } = require("./services/storage");
 
 const FTP_HOST = process.env.FTP_HOST;
 const FTP_USER = process.env.FTP_USER;
@@ -15,7 +11,7 @@ const FTP_PASS = process.env.FTP_PASS;
 
 const CUSTOM_DIR = path.join(__dirname, "custom");
 const OUTPUT_FILE = path.join(CUSTOM_DIR, "shoppurchases.json");
-const JSON_TABLE = "purchase_json_snippets";
+const SNIPPET_KEY = "purchase_json_snippets";
 const REMOTE_FILE = "dayzps_missions/dayzOffline.chernarusplus/custom/shoppurchases.json";
 
 const TIMEZONE = "America/Los_Angeles";
@@ -112,13 +108,8 @@ function getNextRunAt(now = new Date()) {
 }
 
 async function fetchSnippets() {
-  const { data, error } = await supabase
-    .from(JSON_TABLE)
-    .select("id, object_json, created_at")
-    .order("created_at", { ascending: true });
-
-  if (error) throw error;
-  return data || [];
+  const data = await loadJson(SNIPPET_KEY);
+  return Array.isArray(data) ? data : [];
 }
 
 function parseSnippet(row) {
@@ -172,12 +163,9 @@ async function restartServer() {
 
 async function clearProcessedSnippets(ids) {
   if (!ids.length) return;
-  const { error } = await supabase
-    .from(JSON_TABLE)
-    .delete()
-    .in("id", ids);
-
-  if (error) throw error;
+  const current = await fetchSnippets();
+  const remaining = current.filter((_, idx) => !ids.includes(String(idx)));
+  await saveJson(SNIPPET_KEY, remaining);
 }
 
 async function runRestartProcedure(source = "scheduled") {
@@ -197,7 +185,7 @@ async function runRestartProcedure(source = "scheduled") {
     await uploadToServer();
 
     if (snippets.length) {
-      await clearProcessedSnippets(snippets.map(s => s.id));
+      await clearProcessedSnippets(snippets.map((_, i) => String(i)));
     }
 
     await restartServer();
