@@ -14,7 +14,7 @@ module.exports = {
     });
 
     try {
-      await runRestartProcedure();
+      await runRestartProcedure("manual");
       await interaction.followUp({
         content: "✅ Server restart process completed.",
         flags: MessageFlags.Ephemeral
