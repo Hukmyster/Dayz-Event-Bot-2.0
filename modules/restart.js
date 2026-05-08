@@ -12,7 +12,7 @@ const FTP_PASS = process.env.FTP_PASS;
 const CUSTOM_DIR = path.join(__dirname, "custom");
 const OUTPUT_FILE = path.join(CUSTOM_DIR, "shoppurchases.json");
 const SNIPPET_KEY = "purchase_json_snippets";
-const REMOTE_FILE = "dayzps_missions/dayzOffline.chernarusplus/custom/shoppurchases.json";
+const REMOTE_FILE = "/dayzps_missions/dayzOffline.chernarusplus/custom/shoppurchases.json";
 
 const TIMEZONE = "America/Los_Angeles";
 const TARGET_HOURS = [0, 3, 6, 9, 12, 15, 18, 21];
