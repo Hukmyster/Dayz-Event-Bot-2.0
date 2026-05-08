@@ -23,8 +23,10 @@ module.exports = {
       }
 
       const member = interaction.options.getUser('member', true);
-
       const account = await economy.getOrCreateAccount(member.id, interaction.guildId, member.username);
+      const wallet = Number(account.wallet || 0);
+      const bank = Number(account.bank || 0);
+      const total = wallet + bank;
 
       const updated = await economy.updateAccount(member.id, interaction.guildId, {
         wallet: 0,
@@ -35,13 +37,13 @@ module.exports = {
         guildId: interaction.guildId,
         userId: member.id,
         username: member.username,
-        type: 'reset',
-        amount: 0,
+        type: 'reset_all',
+        amount: total,
         balanceAfter: 0,
         notes: `Account reset by ${interaction.user.username}`,
         metadata: {
-          old_wallet: account.wallet,
-          old_bank: account.bank,
+          old_wallet: wallet,
+          old_bank: bank,
           admin: true
         }
       });
@@ -51,7 +53,8 @@ module.exports = {
         .setDescription(`Reset **${member.username}** to zero.`)
         .addFields(
           { name: 'Wallet', value: economy.formatMoney(updated.wallet), inline: true },
-          { name: 'Bank', value: economy.formatMoney(updated.bank), inline: true }
+          { name: 'Bank', value: economy.formatMoney(updated.bank), inline: true },
+          { name: 'Removed', value: economy.formatMoney(total), inline: true }
         )
         .setColor(0xf39c12)
         .setTimestamp();
