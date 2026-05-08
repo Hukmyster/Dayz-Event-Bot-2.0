@@ -33,36 +33,13 @@ module.exports = {
         });
       }
 
-      const { data: existing, error: selectError } = await economy.supabase
-        .from("economy_accounts")
-        .select("id")
-        .eq("user_id", interaction.user.id)
-        .eq("guild_id", interaction.guildId)
-        .maybeSingle();
-
-      if (selectError) throw selectError;
-
-      if (existing) {
-        const { error } = await economy.supabase
-          .from("economy_accounts")
-          .update({ gamertag })
-          .eq("user_id", interaction.user.id)
-          .eq("guild_id", interaction.guildId);
-        if (error) throw error;
-      } else {
-        const { error } = await economy.supabase
-          .from("economy_accounts")
-          .insert([{
-            user_id: interaction.user.id,
-            guild_id: interaction.guildId,
-            username: interaction.user.username,
-            wallet: 0,
-            bank: 0,
-            last_daily_claim_at: null,
-            gamertag
-          }]);
-        if (error) throw error;
-      }
+      await economy.upsertGamertagLink({
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
+        username: interaction.user.username,
+        gamertag: gamertag,
+        lastSeenAt: new Date()
+      });
 
       return interaction.reply({
         content: `Gamertag linked: ${gamertag}`,
@@ -89,7 +66,6 @@ async function findExactQuotedGamertagInServerstate(gamertag) {
       if (extracted === gamertag) return true;
     }
   }
-
   return false;
 }
 
