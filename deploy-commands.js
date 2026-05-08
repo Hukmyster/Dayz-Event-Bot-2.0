@@ -17,8 +17,9 @@ if (!process.env.CLIENT_ID) {
 }
 
 const commands = [
-  { name: "shop", description: "Alias for shophelp" },
-  { name: "shophelp", description: "Show shop and command help" },
+  // ⚡ Removed /shop since it was just an alias for /shophelp
+  // { name: "shop", description: "Alias for shophelp" },
+  { name: "shophelp", description: "Show shop and economy help commands" },
   { name: "shoplist", description: "List all shop items" },
 
   {
@@ -37,13 +38,12 @@ const commands = [
         required: false,
         choices: [
           { name: "Wallet", value: "wallet" },
-          { name: "Bank", value: "bank" }
+          { name: "Bank", value: "bank"
         ]
       }
     ]
   },
 
-  { name: "account", description: "Show your account details" },
   { name: "balance", description: "Show your wallet and bank balance" },
 
   {
@@ -71,7 +71,7 @@ const commands = [
 
   { name: "leaderboard", description: "Show the richest players in the server" },
   { name: "daily", description: "Claim your daily reward" },
-  { name: "info", description: "Show bot and economy info" },
+  { name: "info", description: "Show bot and economy info (combined commands and status)" },
 
   {
     name: "addmoney",
@@ -121,8 +121,6 @@ const commands = [
       { name: "name", type: ApplicationCommandOptionType.String, description: "Item display name", required: true }
     ]
   },
-  { name: "shopstatus", description: "Show shop status" },
-  { name: "shopreload", description: "Reload shop data" },
 
   { name: "whereami", description: "Show your latest known location" },
   {
@@ -204,10 +202,7 @@ const commands = [
   { name: "createtoggle", description: "Create a role toggle button" },
   { name: "removetoggle", description: "Remove a role toggle button" },
 
-  { name: "serverrestart", description: "Run the JSON build, upload, and restart process now" },
-  { name: "serverstate", description: "Show server state data" },
-  { name: "killfeed", description: "Show killfeed status" },
-  { name: "eventfeed", description: "Show eventfeed status" }
+  { name: "serverrestart", description: "Run the JSON build, upload, and restart process now" }
 ];
 
 async function main() {
