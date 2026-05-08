@@ -16,9 +16,9 @@ if (!process.env.CLIENT_ID) {
   process.exit(1);
 }
 
+// ✅ This is your current command list with:
+//    - /shop, /account, /shopstatus, /shopreload, /eventfeed, /killfeed, /serverstate removed
 const commands = [
-  // ⚡ Removed /shop since it was just an alias for /shophelp
-  // { name: "shop", description: "Alias for shophelp" },
   { name: "shophelp", description: "Show shop and economy help commands" },
   { name: "shoplist", description: "List all shop items" },
 
@@ -38,7 +38,7 @@ const commands = [
         required: false,
         choices: [
           { name: "Wallet", value: "wallet" },
-          { name: "Bank", value: "bank"
+          { name: "Bank", value: "bank" }
         ]
       }
     ]
