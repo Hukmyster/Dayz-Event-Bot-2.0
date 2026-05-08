@@ -14,7 +14,7 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      if (!economy.hasAccess(interaction.member)) {
+      if (!economy.hasAccess?.(interaction.member)) {
         return interaction.reply({
           content: 'You do not have the required role to use economy commands.',
           ephemeral: true
