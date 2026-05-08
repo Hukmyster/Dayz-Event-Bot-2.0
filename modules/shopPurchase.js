@@ -2,7 +2,7 @@ const economy = require("./economy");
 const shop = require("./shop");
 const debug = require("../utils/debug");
 const { buildSingleEntry } = require("./shopSnippetBuilder");
-const { appendPurchase } = require("./shopPurchases");
+const { appendPurchase } = require("./shop");
 
 function normalizeText(v) {
   return String(v ?? "").trim();
