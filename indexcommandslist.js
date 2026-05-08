@@ -1,5 +1,6 @@
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
+const shopPurchase = require("./modules/shopPurchase");       // <-- explicitly required here
 const daily = require("./commands/shop/daily");
 const whereami = require("./commands/economy/whereami");
 const linkgamertag = require("./commands/economy/linkgamertag");
@@ -145,6 +146,93 @@ async function handleCommand(interaction, send, sendError) {
     });
   }
 
+  // -------------------- BUY / ADMIN / RESET / RESTART --------------------
+
+  if (cmd === "addmoney" || cmd === "removemoney" || cmd === "resetuser") {
+    const target = interaction.options.getUser("member", true);
+    const amount = interaction.options.getInteger("amount", true);
+    const adminUser = interaction.user.username;
+
+    if (amount <= 0) {
+      return send({ reply: "Amount must be greater than 0." });
+    }
+
+    const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
+    const wallet = Number(account.wallet || 0);
+    const bank = Number(account.bank || 0);
+
+    const method = "wallet";
+    const type = cmd === "addmoney" ? "admin_add" : "admin_remove";
+    const delta = type === "admin_add" ? amount : -amount;
+
+    if (wallet + delta < 0) {
+      return send({ reply: "Insufficient funds. Wallet cannot go negative." });
+    }
+
+    const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: wallet + delta });
+    await economy.logTransaction({
+      guildId: interaction.guildId,
+      userId: target.id,
+      username: target.username,
+      type: type,
+      amount: delta,
+      balanceAfter: updated.wallet,
+      notes: `Admin ${cmd} by ${adminUser}`,
+      metadata: { adminId: interaction.user.id }
+    });
+
+    return send({
+      reply: `✅ ${cmd === "addmoney" ? "Added" : "Removed"} ${economy.formatMoney(Math.abs(delta))} to/from **${target.username}**.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+    });
+  }
+
+  if (cmd === "resetuser") {
+    const target = interaction.options.getUser("member", true);
+    const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
+    const wallet = Number(account.wallet || 0);
+    const bank = Number(account.bank || 0);
+
+    const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: 0, bank: 0 });
+    await economy.logTransaction({
+      guildId: interaction.guildId,
+      userId: target.id,
+      username: target.username,
+      type: "reset",
+      amount: 0,
+      balanceAfter: 0,
+      notes: `Admin resetuser by ${interaction.user.username}`,
+      metadata: { old_wallet: wallet, old_bank: bank, admin: true }
+    });
+
+    return send({
+      reply: `✅ Reset **${target.username}** to zero.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+    });
+  }
+
+  if (cmd === "serverrestart") {
+    await interaction.reply({
+      content: "Starting server restart process now...",
+      ephemeral: true
+    });
+
+    try {
+      const restart = require("../../restart");
+      await restart.runRestartProcedure("manual");
+      return interaction.followUp({
+        content: "✅ Server restart process completed.",
+        ephemeral: true
+      });
+    } catch (err) {
+      debug.fail("serverrestart", err, { user: interaction.user.tag });
+      return interaction.followUp({
+        content: `❌ Restart process failed: ${err.message || "Unknown error"}`,
+        ephemeral: true
+      });
+    }
+  }
+
+  // -------------------- SHOP --------------------
+
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
     debug.step("shoplist", { count: items.length });
@@ -166,8 +254,9 @@ async function handleCommand(interaction, send, sendError) {
     const y = interaction.options.getInteger("y") ?? 0;
     const z = interaction.options.getInteger("z", true);
     const method = interaction.options.getString("method") || "wallet";
+    const attachments = [];
 
-    const result = await shop.buyItem({
+    const result = await shopPurchase.buyItem({
       itemName,
       quantity,
       x,
@@ -177,7 +266,7 @@ async function handleCommand(interaction, send, sendError) {
       playerId: interaction.user.id,
       guildId: interaction.guildId,
       username: interaction.user.username,
-      attachments: []
+      attachments
     });
     return send(result);
   }
@@ -204,12 +293,16 @@ async function handleCommand(interaction, send, sendError) {
     return send(await shop.reloadData());
   }
 
+  // -------------------- ECONOMY --------------------
+
   if (cmd === "balance") {
     const targetUser = interaction.options.getUser("member") || interaction.user;
     const account = await economy.getOrCreateAccount(targetUser.id, interaction.guildId, targetUser.username);
     const wallet = Number(account.wallet || 0);
     const bank = Number(account.bank || 0);
-    return send({ reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}` });
+    return send({
+      reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
+    });
   }
 
   if (cmd === "deposit") {
