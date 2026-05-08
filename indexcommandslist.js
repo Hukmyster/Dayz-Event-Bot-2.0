@@ -146,45 +146,67 @@ async function handleCommand(interaction, send, sendError) {
     });
   }
 
-  // -------------------- BUY / ADMIN / RESET / RESTART --------------------
+// -------------------- BUY / ADMIN / RESET / RESTART --------------------
 
-  if (cmd === "addmoney" || cmd === "removemoney" || cmd === "resetuser") {
-    const target = interaction.options.getUser("member", true);
-    const amount = interaction.options.getInteger("amount", true);
-    const adminUser = interaction.user.username;
+if (cmd === "addmoney" || cmd === "removemoney") {
+  const target = interaction.options.getUser("member", true);
+  const amount = interaction.options.getInteger("amount", true);
+  const adminUser = interaction.user.username;
 
-    if (amount <= 0) {
-      return send({ reply: "Amount must be greater than 0." });
-    }
-
-    const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
-    const wallet = Number(account.wallet || 0);
-    const bank = Number(account.bank || 0);
-
-    const method = "wallet";
-    const type = cmd === "addmoney" ? "admin_add" : "admin_remove";
-    const delta = type === "admin_add" ? amount : -amount;
-
-    if (wallet + delta < 0) {
-      return send({ reply: "Insufficient funds. Wallet cannot go negative." });
-    }
-
-    const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: wallet + delta });
-    await economy.logTransaction({
-      guildId: interaction.guildId,
-      userId: target.id,
-      username: target.username,
-      type: type,
-      amount: delta,
-      balanceAfter: updated.wallet,
-      notes: `Admin ${cmd} by ${adminUser}`,
-      metadata: { adminId: interaction.user.id }
-    });
-
-    return send({
-      reply: `✅ ${cmd === "addmoney" ? "Added" : "Removed"} ${economy.formatMoney(Math.abs(delta))} to/from **${target.username}**.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
-    });
+  if (amount <= 0) {
+    return send({ reply: "Amount must be greater than 0." });
   }
+
+  const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
+  const wallet = Number(account.wallet || 0);
+
+  const type = cmd === "addmoney" ? "admin_add" : "admin_remove";
+  const delta = type === "admin_add" ? amount : -amount;
+
+  if (wallet + delta < 0) {
+    return send({ reply: "Insufficient funds. Wallet cannot go negative." });
+  }
+
+  const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: wallet + delta });
+  await economy.logTransaction({
+    guildId: interaction.guildId,
+    userId: target.id,
+    username: target.username,
+    type: type,
+    amount: delta,
+    balanceAfter: updated.wallet,
+    notes: `Admin ${cmd} by ${adminUser}`,
+    metadata: { adminId: interaction.user.id }
+  });
+
+  return send({
+    reply: `✅ ${cmd === "addmoney" ? "Added" : "Removed"} ${economy.formatMoney(Math.abs(delta))} to/from **${target.username}**.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+  });
+}
+
+if (cmd === "resetuser") {
+  const target = interaction.options.getUser("member", true);
+  const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
+  const wallet = Number(account.wallet || 0);
+  const bank = Number(account.bank || 0);
+  const total = wallet + bank;
+
+  const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: 0, bank: 0 });
+  await economy.logTransaction({
+    guildId: interaction.guildId,
+    userId: target.id,
+    username: target.username,
+    type: "reset_all",
+    amount: total,
+    balanceAfter: 0,
+    notes: `Admin resetuser by ${interaction.user.username}`,
+    metadata: { old_wallet: wallet, old_bank: bank, admin: true }
+  });
+
+  return send({
+    reply: `✅ Reset **${target.username}** to zero.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+  });
+}
 
   if (cmd === "resetuser") {
     const target = interaction.options.getUser("member", true);
