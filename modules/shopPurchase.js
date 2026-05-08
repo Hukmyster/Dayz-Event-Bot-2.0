@@ -2,6 +2,7 @@ const economy = require("./economy");
 const shop = require("./shop");
 const debug = require("../utils/debug");
 const { buildSingleEntry } = require("./shopSnippetBuilder");
+const { appendPurchase } = require("./shopPurchases");
 
 function normalizeText(v) {
   return String(v ?? "").trim();
@@ -179,6 +180,20 @@ async function buyItem({
     status: "queued",
     rows
   };
+
+  await appendPurchase({
+    purchase_id: order.id,
+    user_id: String(playerId || ""),
+    guild_id: String(guildId || ""),
+    username: String(username || playerId || ""),
+    item_name: order.item,
+    item_type: order.type,
+    qty: order.qty,
+    method: order.method,
+    total: order.totalCost,
+    json_snippet: JSON.stringify(rows, null, 2),
+    created_at: new Date().toISOString()
+  });
 
   debug.ok("shopPurchase.buyItem", {
     orderId: order.id,
