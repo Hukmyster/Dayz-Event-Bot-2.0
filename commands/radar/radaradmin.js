@@ -3,7 +3,14 @@ const path = require("path");
 
 const radarDir = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/radars";
 
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const {
+  SlashCommandBuilder,
+  PermissionFlagsBits,
+  MessageFlags,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} = require("discord.js");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
@@ -74,17 +81,17 @@ async function removeRadarAdmin(radarName, userId) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("radaradmin")
-    .setDescription("Add or remove radar admins.")
+    .setDescription("Add or remove radar admins and transfer ownership.")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(sub =>
       sub
         .setName("add")
-        .setDescription("Add a radar admin.")
+        .setDescription("Add or transfer radar admin.")
         .addStringOption(opt =>
           opt.setName("name").setDescription("Radar name").setRequired(true)
         )
         .addUserOption(opt =>
-          opt.setName("user").setDescription("User to add").setRequired(true)
+          opt.setName("user").setDescription("User to promote as admin").setRequired(true)
         )
     )
     .addSubcommand(sub =>
@@ -104,24 +111,104 @@ module.exports = {
     const name = interaction.options.getString("name", true).trim();
     const user = interaction.options.getUser("user", true);
 
-    try {
-      if (sub === "add") {
-        const res = await addRadarAdmin(name, user.id);
-        if (!res.ok) throw new Error(res.error || res.reply);
+    if (sub === "add") {
+      const { ok, data: radar, error } = await readRadar(name);
+      if (!ok) return replyEphemeral(interaction, error);
 
-        return replyEphemeral(interaction, res.reply || `Added ${user.tag} as a radar admin.`);
+      const currentAdminId = radar.adminId;
+      const newAdminId = user.id;
+
+      // If there is already an admin and they are not the one running the command
+      if (currentAdminId && currentAdminId !== interaction.user.id) {
+        return replyEphemeral(
+          interaction,
+          `Radar "${name}" already has an admin (<@${currentAdminId}>). Only that admin can transfer ownership.`
+        );
       }
 
-      if (sub === "remove") {
-        const res = await removeRadarAdmin(name, user.id);
-        if (!res.ok && !res.reply.includes("not currently")) throw new Error(res.error || res.reply);
+      // If there is already an admin AND it IS the one running the command → ask for confirmation
+      if (currentAdminId && currentAdminId === interaction.user.id) {
+        const confirmRow = new ActionRowBuilder()
+          .addComponents(
+            new ButtonBuilder()
+              .setCustomId(`radaradmin_confirm_${name}`)
+              .setLabel("Confirm ownership handover")
+              .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+              .setCustomId(`radaradmin_cancel`)
+              .setLabel("Cancel")
+              .setStyle(ButtonStyle.Danger)
+          );
 
-        return replyEphemeral(interaction, res.reply || `Removed ${user.tag} from radar admins.`);
+        const question = `Do you want to transfer admin of radar **${name}** to ${user.tag}?`;
+        const msg = await interaction.reply({
+          content: question,
+          components: [confirmRow],
+          ephemeral: true,
+          fetchReply: true
+        });
+
+        const filter = (i) => {
+          if (i.customId === `radaradmin_cancel`) {
+            return i.user.id === interaction.user.id;
+          }
+          return i.customId === `radaradmin_confirm_${name}` && i.user.id === interaction.user.id;
+        };
+
+        try {
+          const button = await msg.awaitMessageComponent({
+            filter,
+            time: 30_000
+          });
+
+          if (button.customId === `radaradmin_cancel`) {
+            await button.update({ content: "Ownership transfer cancelled.", components: [] });
+            return;
+          }
+
+          // User clicked OK → change admin
+          radar.adminId = newAdminId;
+
+          const saveRes = await writeRadar(radar);
+          if (!saveRes.ok) {
+            return button.update({ content: saveRes.error || "Failed to save radar config.", components: [] });
+          }
+
+          await button.update({
+            content: `✅ Radar "${name}" admin is now <@${newAdminId}>.`,
+            components: []
+          });
+        } catch (err) {
+          if (err.message === "Collector received no items before ending with reason: time") {
+            await interaction.editReply({
+              content: "Ownership transfer timed out. No changes made.",
+              components: []
+            });
+          } else {
+            await interaction.editReply({
+              content: err.message || "An error occurred.",
+              components: []
+            });
+          }
+        }
+
+        return;
       }
 
-      return replyEphemeral(interaction, "Invalid subcommand.");
-    } catch (err) {
-      return replyEphemeral(interaction, err.message || "Failed to update radar admins.");
+      // No admin yet → just set it
+      const res = await addRadarAdmin(name, user.id);
+      if (!res.ok) throw new Error(res.error || res.reply);
+
+      return replyEphemeral(interaction, res.reply || `Added ${user.tag} as a radar admin.`);
     }
+
+    if (sub === "remove") {
+      const res = await removeRadarAdmin(name, user.id);
+      if (!res.ok && !res.reply.includes("not currently")) throw new Error(res.error || res.reply);
+
+      return replyEphemeral(interaction, res.reply || `Removed ${user.tag} from radar admins.`);
+    }
+
+    return replyEphemeral(interaction, "Invalid subcommand.");
   }
 };
