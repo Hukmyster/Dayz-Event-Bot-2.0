@@ -8,7 +8,7 @@ const REMOTE_BASE = '/dayzps_missions/dayzOffline.chernarusplus/custom/server';
 console.log("[STORAGE] Using path:", REMOTE_BASE);
 
 const FILES = {
-  radars: { name: 'radars.json', format: 'json' },
+  radars: { name: 'radars/{name}.json', format: 'json' },
   economy: { name: 'economy.csv', format: 'csv' }
 };
 
