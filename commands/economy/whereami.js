@@ -61,15 +61,8 @@ module.exports = {
 };
 
 async function getLinkedGamertag(userId, guildId) {
-  const { data, error } = await economy.supabase
-    .from("economy_accounts")
-    .select("gamertag")
-    .eq("user_id", userId)
-    .eq("guild_id", guildId)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data?.gamertag?.trim() || "";
+  const account = await economy.getOrCreateAccount(userId, guildId, "Unknown");
+  return account.gamertag?.trim() || "";
 }
 
 async function getPlayerLastLocation(gamertag) {
