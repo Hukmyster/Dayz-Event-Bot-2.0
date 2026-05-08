@@ -1,4 +1,3 @@
-// indexcommandslist.js
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
 const daily = require("./commands/shop/daily");
@@ -9,9 +8,6 @@ const radarremove = require("./commands/radar/radarremove");
 const radarview = require("./commands/radar/radarview");
 const radaradmin = require("./commands/radar/radaradmin");
 const radarignore = require("./commands/radar/radarignore");
-const createtoggle = require("./commands/admin/createtoggle");
-const removetoggle = require("./commands/admin/removetoggle");
-const serverstate = require("./modules/serverstate");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
@@ -65,6 +61,7 @@ async function handleCommand(interaction, send, sendError) {
   }
 
   if (cmd === "serverstate") {
+    const serverstate = require("./modules/serverstate");
     return replyOnce(interaction, { content: JSON.stringify(serverstate.state, null, 2), ephemeral: true });
   }
 
@@ -148,15 +145,10 @@ async function handleCommand(interaction, send, sendError) {
     });
   }
 
-  // ====================== SHOP ======================
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
     debug.step("shoplist", { count: items.length });
-    return send({
-      reply: items.length
-        ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n")
-        : "Shop empty"
-    });
+    return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
   }
 
   if (cmd === "shopadditem") {
@@ -168,25 +160,26 @@ async function handleCommand(interaction, send, sendError) {
   }
 
   if (cmd === "shopbuyitem") {
-    const account = await economy.getOrCreateAccount(
-      interaction.user.id,
-      interaction.guildId,
-      interaction.user.username
-    );
+    const itemName = interaction.options.getString("item", true);
+    const quantity = interaction.options.getInteger("quantity", true);
+    const x = interaction.options.getInteger("x", true);
+    const y = interaction.options.getInteger("y") ?? 0;
+    const z = interaction.options.getInteger("z", true);
     const method = interaction.options.getString("method") || "wallet";
-    const available = method === "bank" ? Number(account.bank || 0) : Number(account.wallet || 0);
 
-    return send(await shop.buyItem(
-      interaction.options.getString("item"),
-      interaction.options.getInteger("quantity"),
-      interaction.options.getInteger("x"),
-      interaction.options.getInteger("y"),
-      interaction.options.getInteger("z"),
+    const result = await shop.buyItem({
+      itemName,
+      quantity,
+      x,
+      y,
+      z,
       method,
-      available,
-      interaction.user.id,
-      interaction.guildId
-    ));
+      playerId: interaction.user.id,
+      guildId: interaction.guildId,
+      username: interaction.user.username,
+      attachments: []
+    });
+    return send(result);
   }
 
   if (cmd === "shopremoveitem") {
@@ -211,41 +204,25 @@ async function handleCommand(interaction, send, sendError) {
     return send(await shop.reloadData());
   }
 
-  // ====================== ECONOMY ======================
   if (cmd === "balance") {
     const targetUser = interaction.options.getUser("member") || interaction.user;
     const account = await economy.getOrCreateAccount(targetUser.id, interaction.guildId, targetUser.username);
     const wallet = Number(account.wallet || 0);
     const bank = Number(account.bank || 0);
-
-    return send({
-      reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
-    });
+    return send({ reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}` });
   }
 
   if (cmd === "deposit") {
     const amount = interaction.options.getInteger("amount", true);
     if (amount <= 0) return send({ reply: "Deposit amount must be a positive number." });
-
     try {
       const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
       const wallet = Number(account.wallet || 0);
-
       if (wallet < amount) {
         return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(wallet)} in your wallet.` });
       }
-
-      const updated = await economy.transferWalletToBank(
-        interaction.user.id,
-        interaction.guildId,
-        amount,
-        interaction.user.username,
-        { notes: "User deposit" }
-      );
-
-      return send({
-        reply: `Deposited ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
-      });
+      const updated = await economy.transferWalletToBank(interaction.user.id, interaction.guildId, amount, interaction.user.username, { notes: "User deposit" });
+      return send({ reply: `Deposited ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}` });
     } catch (err) {
       debug.fail("deposit", err, { user: interaction.user?.tag });
       return sendError("Deposit failed.");
@@ -255,26 +232,14 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "withdraw") {
     const amount = interaction.options.getInteger("amount", true);
     if (amount <= 0) return send({ reply: "Withdraw amount must be a positive number." });
-
     try {
       const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
       const bank = Number(account.bank || 0);
-
       if (bank < amount) {
         return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(bank)} in your bank.` });
       }
-
-      const updated = await economy.transferBankToWallet(
-        interaction.user.id,
-        interaction.guildId,
-        amount,
-        interaction.user.username,
-        { notes: "User withdraw" }
-      );
-
-      return send({
-        reply: `Withdrew ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
-      });
+      const updated = await economy.transferBankToWallet(interaction.user.id, interaction.guildId, amount, interaction.user.username, { notes: "User withdraw" });
+      return send({ reply: `Withdrew ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}` });
     } catch (err) {
       debug.fail("withdraw", err, { user: interaction.user?.tag });
       return sendError("Withdraw failed.");
@@ -284,34 +249,20 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "send") {
     const member = interaction.options.getUser("member", true);
     const amount = interaction.options.getInteger("amount", true);
-
     if (amount <= 0) return send({ reply: "Amount must be a positive number." });
-
-    const sender = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
-    if (Number(sender.wallet || 0) < amount) {
-      return send({ reply: `You only have ${economy.formatMoney(sender.wallet)} in your wallet.` });
+    try {
+      const result = await economy.transferWallet(interaction.user.id, member.id, interaction.guildId, amount, interaction.user.username, member.username);
+      return send({ reply: `✅ Sent ${economy.formatMoney(amount)} to **${member.username}**.\nYour new wallet: ${economy.formatMoney(result.sender.wallet)}` });
+    } catch (err) {
+      debug.fail("send", err, { user: interaction.user?.tag });
+      return sendError(err.message || "Send failed.");
     }
-
-    const receiver = await economy.getOrCreateAccount(member.id, interaction.guildId, member.username);
-
-    const updatedSender = await economy.updateAccount(interaction.user.id, interaction.guildId, { 
-      wallet: Number(sender.wallet) - amount 
-    });
-
-    await economy.updateAccount(member.id, interaction.guildId, { 
-      wallet: Number(receiver.wallet || 0) + amount 
-    });
-
-    return send({
-      reply: `✅ Sent ${economy.formatMoney(amount)} to **${member.username}**.\nYour new wallet: ${economy.formatMoney(updatedSender.wallet)}`
-    });
   }
 
   if (cmd === "daily") {
     return daily.execute(interaction);
   }
 
-  // Fallback
   return sendError(`Command **${cmd}** is not fully implemented yet.`);
 }
 
