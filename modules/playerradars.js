@@ -1,6 +1,6 @@
 const { EmbedBuilder, MessageFlags } = require("discord.js");
 const { start: startServerState, getFiles } = require("./serverstate");
-const storage = require("./storage");
+const storage = require("../services/storage");
 
 const SCAN_INTERVAL = 6 * 60 * 1000;
 const MAP_BASE = "https://www.izurvive.com/chernarusplussatmap/#location=";
