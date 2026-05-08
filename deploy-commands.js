@@ -125,9 +125,9 @@ const commands = [
   { name: "whereami", description: "Show your latest known location" },
   {
     name: "linkgamertag",
-    description: "Link your in-game gamer tag to your Discord account",
+    description: "Link your in‑game gamer tag to your Discord account",
     options: [
-      { name: "gamertag", type: ApplicationCommandOptionType.String, description: "Exact in-game account name", required: true }
+      { name: "gamertag", type: ApplicationCommandOptionType.String, description: "Exact in‑game account name", required: true }
     ]
   },
 
@@ -175,4 +175,54 @@ const commands = [
           { name: "remove", value: "remove" }
         ]
       },
-      { name: "name",
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true },
+      { name: "user", type: ApplicationCommandOptionType.User, description: "User to add or remove", required: true }
+    ]
+  },
+  {
+    name: "radarignore",
+    description: "Add or remove ignored players",
+    options: [
+      {
+        name: "action",
+        type: ApplicationCommandOptionType.String,
+        description: "Add or remove ignored player",
+        required: true,
+        choices: [
+          { name: "add", value: "add" },
+          { name: "remove", value: "remove" },
+          { name: "list", value: "list" }
+        ]
+      },
+      { name: "name", type: ApplicationCommandOptionType.String, description: "Radar name", required: true },
+      { name: "player", type: ApplicationCommandOptionType.String, description: "Player name", required: false }
+    ]
+  },
+
+  { name: "createtoggle", description: "Create a role toggle button" },
+  { name: "removetoggle", description: "Remove a role toggle button" },
+
+  { name: "serverrestart", description: "Run the JSON build, upload, and restart process now" },
+
+  // <<< ✅ ADD ROULETTE SETUP COMMAND HERE >>> ///
+  { name: "addroulette", description: "Create a Roulette game panel in this channel" }
+];
+
+async function main() {
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+
+  try {
+    console.log("[DISCORD] Registering guild commands...");
+    const data = await rest.put(
+      Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
+      { body: commands }
+    );
+
+    console.log(`[DISCORD] Commands registered successfully: ${data.length}`);
+  } catch (err) {
+    console.error("[COMMAND REGISTER ERROR]", err);
+    process.exit(1);
+  }
+}
+
+main();
