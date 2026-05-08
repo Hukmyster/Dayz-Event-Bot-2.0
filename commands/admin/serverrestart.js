@@ -1,28 +1,40 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
-const { runRestartProcedure } = require("../../restart");
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { runRestartProcedure } = require('../../restart');
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName("serverrestart")
-    .setDescription("Run the JSON build, upload, and restart process now.")
+    .setName('serverrestart')
+    .setDescription('Run the JSON build, upload, and restart process now.')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   async execute(interaction) {
-    await interaction.reply({
-      content: "Starting server restart process now...",
-      flags: MessageFlags.Ephemeral
-    });
-
     try {
-      await runRestartProcedure("manual");
-      await interaction.followUp({
-        content: "✅ Server restart process completed.",
-        flags: MessageFlags.Ephemeral
+      await interaction.reply({
+        content: 'Starting server restart process now...',
+        ephemeral: true
+      });
+
+      await runRestartProcedure('manual');
+
+      return interaction.followUp({
+        content: '✅ Server restart process completed.',
+        ephemeral: true
       });
     } catch (err) {
-      await interaction.followUp({
-        content: `❌ Restart process failed: ${err.message || "Unknown error"}`,
-        flags: MessageFlags.Ephemeral
+      console.error('serverrestart command error:', err);
+
+      const message = `❌ Restart process failed: ${err.message || 'Unknown error'}`;
+
+      if (interaction.replied || interaction.deferred) {
+        return interaction.followUp({
+          content: message,
+          ephemeral: true
+        });
+      }
+
+      return interaction.reply({
+        content: message,
+        ephemeral: true
       });
     }
   }
