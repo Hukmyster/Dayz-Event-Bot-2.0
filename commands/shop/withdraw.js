@@ -14,6 +14,7 @@ module.exports = {
   async execute(interaction) {
     try {
       const amount = interaction.options.getInteger('amount');
+
       const result = await economy.transferBankToWallet(
         interaction.user.id,
         interaction.guild.id,
@@ -30,10 +31,13 @@ module.exports = {
         )
         .setColor(0x2ecc71);
 
-      await interaction.reply({ embeds: [embed] });
+      return interaction.reply({ embeds: [embed] });
     } catch (error) {
       console.error('withdraw error:', error);
-      await interaction.reply({ content: error.message || 'Withdrawal failed.', ephemeral: true });
+      return interaction.reply({
+        content: error.message || 'Withdrawal failed.',
+        ephemeral: true
+      });
     }
   }
 };
