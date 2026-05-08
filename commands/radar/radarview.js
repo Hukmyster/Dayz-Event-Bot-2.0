@@ -12,14 +12,19 @@ module.exports = {
       const radars = await listRadars();
 
       if (!radars.length) {
-        return interaction.reply({ content: "No radars are saved yet.", flags: MessageFlags.Ephemeral });
+        return interaction.reply({
+          content: "No radars are saved yet.",
+          flags: MessageFlags.Ephemeral
+        });
       }
 
       const embed = new EmbedBuilder()
         .setTitle("Player Radars")
         .setColor(0x3498db)
         .setDescription(
-          radars.map(r => `• **${r.name}** — ${r.radius}m at <#${r.channelId || "unknown"}>`).join("\n")
+          radars
+            .map(r => `• **${r.name}** — ${r.radius}m at ${r.channelId ? `<#${r.channelId}>` : "unknown channel"}`)
+            .join("\n")
         );
 
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
