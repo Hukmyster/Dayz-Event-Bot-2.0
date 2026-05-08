@@ -1,40 +1,44 @@
-const fs = require("fs");
-const path = require("path");
-
-const radarDir = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/radars";
-
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const storage = require("../../modules/storage");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
-async function readRadar(radarName) {
-  const filePath = path.join(radarDir, `${radarName}.json`);
-
-  try {
-    const text = await fs.promises.readFile(filePath, "utf8");
-    const data = JSON.parse(text);
-
-    if (!data.name || !data.x || !data.z || !data.radius) {
-      return { ok: false, error: "Invalid radar data." };
+async function loadRadars() {
+  const data = await storage.loadJson("radars");
+  if (Array.isArray(data)) {
+    const obj = {};
+    for (const radar of data) {
+      if (radar?.name) obj[radar.name] = radar;
     }
-
-    return { ok: true, data };
-  } catch (err) {
-    return { ok: false, error: `Could not load radar "${radarName}".` };
+    return obj;
   }
+  return data && typeof data === "object" ? data : {};
 }
 
-async function writeRadar(data) {
-  const filePath = path.join(radarDir, `${data.name}.json`);
+async function saveRadars(radars) {
+  await storage.saveJson("radars", radars);
+}
 
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: "Failed to save radar config." };
-  }
+function normalizeRadar(radar) {
+  if (!radar || typeof radar !== "object") return null;
+  radar.ignore = Array.isArray(radar.ignore) ? radar.ignore : [];
+  radar.ignored = Array.isArray(radar.ignored) ? radar.ignored : [];
+  return radar;
+}
+
+async function readRadar(radarName) {
+  const radars = await loadRadars();
+  const radar = normalizeRadar(radars[String(radarName || "").trim()]);
+  if (!radar) return { ok: false, error: `Could not load radar "${radarName}".` };
+  return { ok: true, data: radar, radars };
+}
+
+async function writeRadar(radars, data) {
+  radars[data.name] = normalizeRadar(data);
+  await saveRadars(radars);
+  return { ok: true };
 }
 
 async function addRadarIgnore(radarName, playerName) {
@@ -42,19 +46,23 @@ async function addRadarIgnore(radarName, playerName) {
   if (!res.ok) return res;
 
   const radar = res.data;
-  if (!radar.ignored) radar.ignored = [];
+  const key = String(playerName || "").trim();
+  if (!key) return { reply: "Missing player name.", success: false };
 
-  const alreadyIgnored = radar.ignored.includes(playerName);
-  if (alreadyIgnored) {
-    return { reply: `Player "${playerName}" is already ignored.`, success: false };
+  const exists = radar.ignore.some(x => String(x).toLowerCase() === key.toLowerCase()) ||
+    radar.ignored.some(x => String(x).toLowerCase() === key.toLowerCase());
+
+  if (exists) {
+    return { reply: `Player "${key}" is already ignored.`, success: false };
   }
 
-  radar.ignored.push(playerName);
+  radar.ignore.push(key);
+  radar.ignored.push(key);
 
-  const saveRes = await writeRadar(radar);
+  const saveRes = await writeRadar(res.radars, radar);
   if (!saveRes.ok) return saveRes;
 
-  return { reply: `✅ Added "${playerName}" to radar ignore.` };
+  return { reply: `✅ Added "${key}" to radar ignore.`, success: true };
 }
 
 async function removeRadarIgnore(radarName, playerName) {
@@ -62,52 +70,39 @@ async function removeRadarIgnore(radarName, playerName) {
   if (!res.ok) return res;
 
   const radar = res.data;
-  if (!radar.ignored) radar.ignored = [];
+  const key = String(playerName || "").trim();
+  if (!key) return { reply: "Missing player name.", success: false };
 
-  const idx = radar.ignored.indexOf(playerName);
-  if (idx === -1) {
-    return { reply: `Player "${playerName}" is not currently ignored.`, success: false };
+  const before = radar.ignore.length + radar.ignored.length;
+  radar.ignore = radar.ignore.filter(x => String(x).toLowerCase() !== key.toLowerCase());
+  radar.ignored = radar.ignored.filter(x => String(x).toLowerCase() !== key.toLowerCase());
+
+  const after = radar.ignore.length + radar.ignored.length;
+  if (before === after) {
+    return { reply: `Player "${key}" is not currently ignored.`, success: false };
   }
 
-  radar.ignored.splice(idx, 1);
-
-  const saveRes = await writeRadar(radar);
+  const saveRes = await writeRadar(res.radars, radar);
   if (!saveRes.ok) return saveRes;
 
-  return { reply: `✅ Removed "${playerName}" from radar ignore.` };
+  return { reply: `✅ Removed "${key}" from radar ignore.`, success: true };
 }
 
 async function listRadars() {
-  try {
-    const dirExistsStat = fs.statSync(radarDir);
-    if (!dirExistsStat.isDirectory()) {
-      return [];
-    }
-  } catch (errDir) {
-    return [];
-  }
-
-  const files = await fs.promises.readdir(radarDir);
-
-  const radars = [];
-
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-
-    const filePath = path.join(radarDir, file);
-    try {
-      const text = await fs.promises.readFile(filePath, "utf8");
-      const data = JSON.parse(text);
-
-      if (data.name && data.x != null && data.z != null && data.radius) {
-        radars.push(data);
-      }
-    } catch (err) {
-      console.error("Failed to read radar file:", filePath, err);
-    }
-  }
-
-  return radars;
+  const radars = await loadRadars();
+  return Object.entries(radars).map(([name, radar]) => {
+    const r = normalizeRadar(radar);
+    return {
+      name,
+      x: r.x,
+      z: r.z,
+      radius: r.radius,
+      channelId: r.channelId,
+      admins: r.admins,
+      ignore: r.ignore,
+      ignored: r.ignored
+    };
+  });
 }
 
 module.exports = {
@@ -143,36 +138,31 @@ module.exports = {
     try {
       if (sub === "list") {
         const radars = await listRadars();
-        const radar = radars[0];   // you can decide: first radar, or one per channel
+        const radar = radars[0];
 
         if (!radar) {
           return replyEphemeral(interaction, "No radar config found.");
         }
 
-        const list = Array.isArray(radar.ignored) && radar.ignored.length
-          ? radar.ignored.join(", ")
+        const list = Array.isArray(radar.ignore) && radar.ignore.length
+          ? radar.ignore.join(", ")
           : "None";
 
         return replyEphemeral(interaction, `Ignored players: ${list}`);
       }
 
       const name = interaction.options.getString("name", true).trim();
-
-      // here I’m using "default" as a dummy radar name for legacy compat;
-      // you can remove it once you fully migrate to per‑radar names
-      const radarName = "default";   // you can change this to match your naming
+      const radarName = "default";
 
       if (sub === "add") {
         const res = await addRadarIgnore(radarName, name);
-        if (!res.ok && !res.reply.includes("already ignored")) throw new Error(res.error || res.reply);
-
+        if (!res.success && !res.reply.includes("already ignored")) throw new Error(res.error || res.reply);
         return replyEphemeral(interaction, res.reply || `Added ${name} to radar ignore.`);
       }
 
       if (sub === "remove") {
         const res = await removeRadarIgnore(radarName, name);
-        if (!res.ok && !res.reply.includes("not currently")) throw new Error(res.error || res.reply);
-
+        if (!res.success && !res.reply.includes("not currently")) throw new Error(res.error || res.reply);
         return replyEphemeral(interaction, res.reply || `Removed ${name} from radar ignore.`);
       }
 
