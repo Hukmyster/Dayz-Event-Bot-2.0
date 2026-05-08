@@ -2,7 +2,8 @@ const economy = require("./economy");
 const shop = require("./shop");
 const debug = require("../utils/debug");
 const { buildSingleEntry } = require("./shopSnippetBuilder");
-const { appendPurchase } = require("./shop");
+
+const { appendPurchase } = shop;
 
 function normalizeText(v) {
   return String(v ?? "").trim();
@@ -41,10 +42,10 @@ function buildShopObjectRows({ itemName, quantity, x, z, y = 0, attachments = []
   for (const attachment of attachments) {
     rows.push(buildSingleEntry({
       name: normalizeText(attachment.name),
-      x: normalizeNumber(attachment.x, x),
-      y: normalizeNumber(attachment.y, y),
-      z: normalizeNumber(attachment.z, z),
-      customString: normalizeText(attachment.customString, customString)
+      x: normalizeNumber(attachment.x) ?? x,
+      y: normalizeNumber(attachment.y) ?? y,
+      z: normalizeNumber(attachment.z) ?? z,
+      customString: normalizeText(attachment.customString) || customString
     }));
   }
 
