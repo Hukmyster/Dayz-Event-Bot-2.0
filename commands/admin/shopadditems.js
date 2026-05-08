@@ -1,10 +1,11 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const shop = require('../../modules/shop');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('shopadditem')
     .setDescription('Add a new item to the shop')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option =>
       option
         .setName('name')
@@ -22,6 +23,7 @@ module.exports = {
         .setName('price')
         .setDescription('Item price')
         .setRequired(true)
+        .setMinValue(1)
     ),
 
   async execute(interaction) {
