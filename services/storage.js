@@ -60,13 +60,12 @@ async function loadJson(key) {
   await ensureLocalDir();
   const file = FILES[key] || { name: `${key}.json`, format: 'json' };
   const localPath = path.join(LOCAL_DATA_DIR, file.name);
+  let client;
 
   try {
-    const client = await getFtpClient();
+    client = await getFtpClient();
     const remotePath = `${REMOTE_BASE}/${file.name}`;
     await client.downloadTo(localPath, remotePath).catch(() => {});
-    client.close().catch(() => {});
-
     const raw = await fs.readFile(localPath, 'utf8');
     console.log(`[STORAGE] ✅ Loaded ${file.name}`);
     return JSON.parse(raw);
@@ -75,6 +74,8 @@ async function loadJson(key) {
     const defaultData = (key === 'shop' || key === 'radars') ? [] : {};
     await fs.writeFile(localPath, JSON.stringify(defaultData, null, 2));
     return defaultData;
+  } finally {
+    if (client) client.close();
   }
 }
 
@@ -82,17 +83,18 @@ async function saveJson(key, data) {
   await ensureLocalDir();
   const file = FILES[key] || { name: `${key}.json`, format: 'json' };
   const localPath = path.join(LOCAL_DATA_DIR, file.name);
+  let client;
 
   try {
     await fs.writeFile(localPath, JSON.stringify(data, null, 2));
-
-    const client = await getFtpClient();
+    client = await getFtpClient();
     const remotePath = `${REMOTE_BASE}/${file.name}`;
     await client.uploadFrom(localPath, remotePath);
     console.log(`[FTP] ✅ Uploaded ${file.name}`);
-    client.close().catch(() => {});
   } catch (err) {
     console.error(`[STORAGE] Save failed for ${file.name}:`, err.message);
+  } finally {
+    if (client) client.close();
   }
 }
 
@@ -100,13 +102,12 @@ async function loadTable(key, headers = []) {
   await ensureLocalDir();
   const file = FILES[key] || { name: `${key}.csv`, format: 'csv' };
   const localPath = path.join(LOCAL_DATA_DIR, file.name);
+  let client;
 
   try {
-    const client = await getFtpClient();
+    client = await getFtpClient();
     const remotePath = `${REMOTE_BASE}/${file.name}`;
     await client.downloadTo(localPath, remotePath).catch(() => {});
-    client.close().catch(() => {});
-
     const raw = await fs.readFile(localPath, 'utf8').catch(() => '');
     if (!raw.trim()) return [];
     return parseCsv(raw);
@@ -116,6 +117,8 @@ async function loadTable(key, headers = []) {
       await fs.writeFile(localPath, empty);
     }
     return [];
+  } finally {
+    if (client) client.close();
   }
 }
 
@@ -123,19 +126,21 @@ async function saveTable(key, rows = [], headers = []) {
   await ensureLocalDir();
   const file = FILES[key] || { name: `${key}.csv`, format: 'csv' };
   const localPath = path.join(LOCAL_DATA_DIR, file.name);
+  let client;
 
   try {
     const finalHeaders = headers.length ? headers : (rows[0] ? Object.keys(rows[0]) : []);
     const csv = toCsv(rows, finalHeaders);
     await fs.writeFile(localPath, csv);
 
-    const client = await getFtpClient();
+    client = await getFtpClient();
     const remotePath = `${REMOTE_BASE}/${file.name}`;
     await client.uploadFrom(localPath, remotePath);
     console.log(`[FTP] ✅ Uploaded ${file.name}`);
-    client.close().catch(() => {});
   } catch (err) {
     console.error(`[STORAGE] Table save failed for ${file.name}:`, err.message);
+  } finally {
+    if (client) client.close();
   }
 }
 
