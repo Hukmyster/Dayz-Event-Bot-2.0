@@ -1,46 +1,66 @@
-const fs = require("fs");
-const path = require("path");
-
-const radarDir = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/radars";
-
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const storage = require("../../modules/storage");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
+function normalizeRadar(name, data, channelId, createdBy, x, z, radius) {
+  return {
+    name,
+    x: Number(x),
+    z: Number(z),
+    radius: Number(radius),
+    channelId: channelId || data?.channelId || null,
+    adminId: data?.adminId || createdBy || null,
+    admins: Array.isArray(data?.admins) ? data.admins : [],
+    ignore: Array.isArray(data?.ignore) ? data.ignore : [],
+    ignored: Array.isArray(data?.ignored) ? data.ignored : [],
+    webhookUrl: data?.webhookUrl || null,
+    webhookId: data?.webhookId || null
+  };
+}
+
+async function loadRadars() {
+  const data = await storage.loadJson("radars");
+  if (Array.isArray(data)) {
+    const obj = {};
+    for (const radar of data) {
+      if (radar?.name) obj[radar.name] = radar;
+    }
+    return obj;
+  }
+  return data && typeof data === "object" ? data : {};
+}
+
+async function saveRadars(radars) {
+  await storage.saveJson("radars", radars);
+}
+
 async function createRadar(opts) {
   const { name, x, z, radius, channelId, createdBy } = opts;
+  const radarName = String(name || "").trim();
+  const radarX = Number(x);
+  const radarZ = Number(z);
+  const radarRadius = Number(radius);
 
-  const filePath = path.join(radarDir, `${name}.json`);
-
-  if (!name || !channelId || isNaN(x) || isNaN(z) || !radius) {
+  if (!radarName || !channelId || Number.isNaN(radarX) || Number.isNaN(radarZ) || Number.isNaN(radarRadius)) {
     return { reply: "Invalid radar data.", success: false };
   }
 
-  try {
-    fs.mkdirSync(radarDir, { recursive: true });
+  const radars = await loadRadars();
 
-    const data = {
-      name,
-      x,
-      z,
-      radius,
-      channelId,
-      adminId: createdBy,        // single admin owner
-      ignored: []
-    };
-
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
-
-    return {
-      success: true,
-      reply: `✅ Radar **${name}** created at ${x},${z} with radius ${radius}m.`
-    };
-  } catch (err) {
-    console.error("radaradd error:", err);
-    return { reply: "Failed to save radar config.", success: false };
+  if (radars[radarName]) {
+    return { reply: `Radar **${radarName}** already exists.`, success: false };
   }
+
+  radars[radarName] = normalizeRadar(radarName, null, channelId, createdBy, radarX, radarZ, radarRadius);
+  await saveRadars(radars);
+
+  return {
+    success: true,
+    reply: `✅ Radar **${radarName}** created at ${radarX},${radarZ} with radius ${radarRadius}m.`
+  };
 }
 
 module.exports = {
@@ -75,7 +95,6 @@ module.exports = {
       });
 
       if (!res.success) throw new Error(res.reply);
-
       return replyEphemeral(interaction, res.reply || `✅ Radar **${name}** created.`);
     } catch (err) {
       return replyEphemeral(interaction, err.message || "Failed to create radar.");
