@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const economy = require('../../modules/economy');
 const shop = require('../../modules/shop');
 
@@ -6,6 +6,7 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('shopeditprice')
     .setDescription('Change the price of an item')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option =>
       option
         .setName('name')
@@ -18,6 +19,7 @@ module.exports = {
         .setName('price')
         .setDescription('New price')
         .setRequired(true)
+        .setMinValue(0)
     ),
 
   async autocomplete(interaction) {
@@ -37,6 +39,13 @@ module.exports = {
       if (!economy.hasAccess(interaction.member)) {
         return interaction.reply({
           content: 'You do not have the required role to use economy commands.',
+          ephemeral: true
+        });
+      }
+
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+        return interaction.reply({
+          content: 'You do not have permission to use this command.',
           ephemeral: true
         });
       }
