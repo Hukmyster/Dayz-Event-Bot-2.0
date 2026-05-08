@@ -1,6 +1,4 @@
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
-const fs = require("fs").promises;
-const path = require("path");
 const { createRadar } = require("../../modules/playerradars");
 
 function replyEphemeral(interaction, content) {
