@@ -1,10 +1,11 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const economy = require('../../modules/economy');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('removemoney')
     .setDescription('Remove money from a member’s wallet')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addUserOption(option =>
       option
         .setName('member')
@@ -16,11 +17,12 @@ module.exports = {
         .setName('amount')
         .setDescription('Amount to remove')
         .setRequired(true)
+        .setMinValue(1)
     ),
 
   async execute(interaction) {
     try {
-      if (!interaction.member.permissions?.has('Administrator')) {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({
           content: 'You do not have permission to use this command.',
           ephemeral: true
@@ -29,13 +31,6 @@ module.exports = {
 
       const member = interaction.options.getUser('member', true);
       const amount = interaction.options.getInteger('amount', true);
-
-      if (amount <= 0) {
-        return interaction.reply({
-          content: 'Amount must be greater than 0.',
-          ephemeral: true
-        });
-      }
 
       const target = await economy.getOrCreateAccount(member.id, interaction.guildId, member.username);
       if (Number(target.wallet || 0) < amount) {
