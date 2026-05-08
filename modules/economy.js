@@ -1,10 +1,38 @@
-const { loadTable, saveTable } = require('../services/storage');
+// modules/economy.js - Updated for services/storage.js (Nitrado FTP)
 const debug = require("../utils/debug");
+const storage = require("../services/storage");
 
-const ECONOMY_FILE = 'economy';
+let economyData = {}; // { "guildId:userId": { wallet, bank, last_daily_claim_at, ... } }
+let transactions = []; // Optional simple history
 
-let economyCache = [];
-let isLoaded = false;
+const ECONOMY_KEY = 'economy';
+
+async function loadEconomy() {
+  try {
+    const data = await storage.loadJson(ECONOMY_KEY);
+    economyData = data.accounts || {};
+    transactions = data.transactions || [];
+    debug.ok("economy.loadEconomy", { accounts: Object.keys(economyData).length });
+  } catch (err) {
+    debug.fail("economy.loadEconomy", err);
+    economyData = {};
+    transactions = [];
+  }
+}
+
+async function saveEconomy() {
+  try {
+    await storage.saveJson(ECONOMY_KEY, {
+      accounts: economyData,
+      transactions: transactions.slice(-500) // Keep last 500 transactions to prevent bloat
+    });
+  } catch (err) {
+    debug.fail("economy.saveEconomy", err);
+  }
+}
+
+// Run once on module load
+loadEconomy().catch(console.error);
 
 function normalizeNumber(v) {
   const n = Number(v);
@@ -16,143 +44,93 @@ function formatMoney(value) {
   return `${Math.max(0, Math.floor(n))} dollars`;
 }
 
-function rowToAccount(row = {}) {
-  return {
-    user_id: String(row.user_id ?? ''),
-    guild_id: String(row.guild_id ?? ''),
-    username: String(row.username ?? 'Unknown'),
-    wallet: Number(row.wallet || 0),
-    bank: Number(row.bank || 0),
-    last_daily_claim_at: row.last_daily_claim_at || null,
-    gamertag: row.gamertag || null,
-    last_seen_at: row.last_seen_at || null
-  };
-}
-
-function accountToRow(account = {}) {
-  return {
-    user_id: String(account.user_id ?? ''),
-    guild_id: String(account.guild_id ?? ''),
-    username: String(account.username ?? 'Unknown'),
-    wallet: Number(account.wallet || 0),
-    bank: Number(account.bank || 0),
-    last_daily_claim_at: account.last_daily_claim_at || '',
-    gamertag: account.gamertag || '',
-    last_seen_at: account.last_seen_at || ''
-  };
-}
-
-async function ensureLoaded() {
-  if (!isLoaded) {
-    debug.step("economy.ensureLoaded", "Loading economy table from storage...");
-    economyCache = (await loadTable(ECONOMY_FILE, [
-      'user_id',
-      'guild_id',
-      'username',
-      'wallet',
-      'bank',
-      'last_daily_claim_at',
-      'gamertag',
-      'last_seen_at'
-    ])).map(rowToAccount);
-    isLoaded = true;
-    debug.ok("economy.ensureLoaded", `Loaded ${economyCache.length} accounts`);
-  }
-  return economyCache;
-}
-
-async function saveEconomy() {
-  await saveTable(ECONOMY_FILE, economyCache.map(accountToRow), [
-    'user_id',
-    'guild_id',
-    'username',
-    'wallet',
-    'bank',
-    'last_daily_claim_at',
-    'gamertag',
-    'last_seen_at'
-  ]);
+function getAccountKey(userId, guildId) {
+  return `${guildId}:${userId}`;
 }
 
 async function getOrCreateAccount(userId, guildId, username) {
   debug.step("economy.getOrCreateAccount", { userId, guildId, username });
-  await ensureLoaded();
 
-  let account = economyCache.find(a => a.guild_id === String(guildId) && a.user_id === String(userId));
+  const key = getAccountKey(userId, guildId);
+  let account = economyData[key];
 
-  if (!account) {
-    account = {
-      user_id: String(userId),
-      guild_id: String(guildId),
-      username: username || "Unknown",
-      wallet: 0,
-      bank: 0,
-      last_daily_claim_at: null,
-      gamertag: null,
-      last_seen_at: null
-    };
-    economyCache.push(account);
-    await saveEconomy();
-    debug.ok("economy.getOrCreateAccount", { status: "created", userId });
-  } else {
-    if (username && account.username !== username) {
-      account.username = username;
-      await saveEconomy();
-    }
-    debug.ok("economy.getOrCreateAccount", { status: "found", userId });
+  if (account) {
+    debug.ok("economy.getOrCreateAccount", { status: "found", userId, guildId });
+    return account;
   }
+
+  account = {
+    user_id: userId,
+    guild_id: guildId,
+    username: username || "Unknown",
+    wallet: 0,
+    bank: 0,
+    last_daily_claim_at: null
+  };
+
+  economyData[key] = account;
+  await saveEconomy();
+
+  debug.ok("economy.getOrCreateAccount", { status: "created", userId, guildId });
   return account;
 }
 
 async function updateAccount(userId, guildId, updates) {
-  await ensureLoaded();
-  const account = economyCache.find(a => a.guild_id === String(guildId) && a.user_id === String(userId));
-
-  if (!account) throw new Error("Account not found");
+  const key = getAccountKey(userId, guildId);
+  const account = economyData[key] || await getOrCreateAccount(userId, guildId, "Unknown");
 
   Object.assign(account, updates);
   await saveEconomy();
 
-  debug.ok("economy.updateAccount", {
-    userId,
-    guildId,
-    wallet: account.wallet,
-    bank: account.bank
-  });
+  debug.ok("economy.updateAccount", { userId, guildId, wallet: account.wallet, bank: account.bank });
   return account;
 }
 
 async function logTransaction(entry) {
-  debug.step("economy.logTransaction", {
-    type: entry.type,
-    amount: entry.amount,
-    userId: entry.userId
-  });
+  const tx = {
+    timestamp: new Date().toISOString(),
+    guild_id: entry.guildId,
+    user_id: entry.userId,
+    username: entry.username || "Unknown",
+    type: entry.type || "unknown",
+    amount: Number(entry.amount || 0),
+    balance_after: Number(entry.balanceAfter || 0),
+    target_user_id: entry.targetUserId || null,
+    target_username: entry.targetUsername || null,
+    notes: entry.notes || null,
+    metadata: entry.metadata || {}
+  };
+
+  transactions.push(tx);
+  await saveEconomy();
+
+  debug.ok("economy.logTransaction", { userId: entry.userId, type: tx.type, amount: tx.amount });
 }
 
+// === Public API (same as before) ===
 async function adminAdjustWallet(userId, guildId, amount, username, extra = {}) {
   amount = normalizeNumber(amount);
   if (amount === null) throw new Error("Amount must be a valid number");
 
   const account = await getOrCreateAccount(userId, guildId, username);
-  const currentWallet = Number(account.wallet || 0);
-  const nextWallet = currentWallet + amount;
+  const current = Number(account.wallet || 0);
+  const next = current + amount;
 
-  if (nextWallet < 0) throw new Error("Insufficient wallet funds");
+  if (next < 0) throw new Error("Insufficient wallet funds");
 
-  const updated = await updateAccount(userId, guildId, { wallet: nextWallet });
+  const updated = await updateAccount(userId, guildId, { wallet: next });
 
   await logTransaction({
     guildId, userId, username,
     type: amount >= 0 ? "admin_add" : "admin_remove",
-    amount,
-    balanceAfter: updated.wallet,
-    notes: extra.notes,
-    metadata: extra.metadata || {}
+    amount, balanceAfter: updated.wallet,
+    notes: extra.notes, metadata: extra.metadata
   });
 
   return updated;
 }
+
+// (deposit, withdraw, addBank, deductFromWallet, deductFromBank, transfer functions remain almost identical — just using new storage)
 
 async function transferWalletToBank(userId, guildId, amount, username, extra = {}) {
   amount = normalizeNumber(amount);
@@ -169,15 +147,7 @@ async function transferWalletToBank(userId, guildId, amount, username, extra = {
     bank: bank + amount
   });
 
-  await logTransaction({
-    guildId, userId, username,
-    type: "deposit",
-    amount: -amount,
-    balanceAfter: updated.wallet,
-    notes: extra.notes,
-    metadata: extra.metadata || {}
-  });
-
+  await logTransaction({ guildId, userId, username, type: "deposit", amount: -amount, balanceAfter: updated.wallet, ...extra });
   return updated;
 }
 
@@ -196,15 +166,7 @@ async function transferBankToWallet(userId, guildId, amount, username, extra = {
     bank: bank - amount
   });
 
-  await logTransaction({
-    guildId, userId, username,
-    type: "withdraw",
-    amount,
-    balanceAfter: updated.wallet,
-    notes: extra.notes,
-    metadata: extra.metadata || {}
-  });
-
+  await logTransaction({ guildId, userId, username, type: "withdraw", amount, balanceAfter: updated.wallet, ...extra });
   return updated;
 }
 
@@ -215,19 +177,9 @@ async function addBank(userId, guildId, amount, username, extra = {}) {
   const account = await getOrCreateAccount(userId, guildId, username);
   const bank = Number(account.bank || 0);
 
-  const updated = await updateAccount(userId, guildId, {
-    bank: bank + amount
-  });
+  const updated = await updateAccount(userId, guildId, { bank: bank + amount });
 
-  await logTransaction({
-    guildId, userId, username,
-    type: "bank_add",
-    amount,
-    balanceAfter: updated.bank,
-    notes: extra.notes,
-    metadata: extra.metadata || {}
-  });
-
+  await logTransaction({ guildId, userId, username, type: "bank_add", amount, balanceAfter: updated.bank, ...extra });
   return updated;
 }
 
@@ -242,16 +194,7 @@ async function deductFromWallet(userId, guildId, amount, username, extra = {}) {
 
   const updated = await updateAccount(userId, guildId, { wallet: wallet - amount });
 
-  await logTransaction({
-    guildId, userId, username,
-    type: "shop_purchase",
-    amount: -amount,
-    balanceAfter: updated.wallet,
-    notes: extra.notes,
-    metadata: extra.metadata || {}
-  });
-
-  debug.ok("economy.deductFromWallet", { amount, walletAfter: updated.wallet });
+  await logTransaction({ guildId, userId, username, type: "shop_purchase", amount: -amount, balanceAfter: updated.wallet, ...extra });
   return updated;
 }
 
@@ -266,44 +209,29 @@ async function deductFromBank(userId, guildId, amount, username, extra = {}) {
 
   const updated = await updateAccount(userId, guildId, { bank: bank - amount });
 
-  await logTransaction({
-    guildId, userId, username,
-    type: "shop_purchase",
-    amount: -amount,
-    balanceAfter: updated.bank,
-    notes: extra.notes,
-    metadata: extra.metadata || {}
-  });
-
-  debug.ok("economy.deductFromBank", { amount, bankAfter: updated.bank });
+  await logTransaction({ guildId, userId, username, type: "shop_purchase", amount: -amount, balanceAfter: updated.bank, ...extra });
   return updated;
 }
 
 async function setDailyClaim(guildId, userId, isoString) {
-  await ensureLoaded();
-  const account = economyCache.find(a => a.guild_id === String(guildId) && a.user_id === String(userId));
-  if (account) {
-    account.last_daily_claim_at = isoString;
-    await saveEconomy();
-  }
+  await updateAccount(userId, guildId, { last_daily_claim_at: isoString });
 }
 
 async function getDailyClaim(guildId, userId) {
-  await ensureLoaded();
-  const account = economyCache.find(a => a.guild_id === String(guildId) && a.user_id === String(userId));
-  return account ? { last_daily_claim_at: account.last_daily_claim_at } : null;
+  const key = getAccountKey(userId, guildId);
+  const account = economyData[key] || {};
+  return { last_daily_claim_at: account.last_daily_claim_at } || null;
 }
 
 async function upsertGamertagLink({ userId, guildId, username, gamertag, lastSeenAt }) {
-  await ensureLoaded();
+  // For simplicity — store in same economy file or you can add a separate gamertags.json later
+  const key = getAccountKey(userId, guildId);
   const account = await getOrCreateAccount(userId, guildId, username);
-
   account.gamertag = gamertag;
   account.last_seen_at = new Date(lastSeenAt).toISOString();
-  if (username) account.username = username;
   await saveEconomy();
 
-  debug.ok("economy.upsertGamertagLink", { gamertag });
+  debug.ok("economy.upsertGamertagLink", { userId, guildId, gamertag });
 }
 
 module.exports = {
@@ -319,5 +247,6 @@ module.exports = {
   deductFromBank,
   setDailyClaim,
   getDailyClaim,
-  upsertGamertagLink
+  upsertGamertagLink,
+  loadEconomy // useful for manual reloads
 };
