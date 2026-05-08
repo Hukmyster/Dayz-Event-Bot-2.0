@@ -59,6 +59,10 @@ async function getOrCreateAccount(userId, guildId, username) {
   let account = economyData[key];
 
   if (account) {
+    if (username && account.username !== username) {
+      account.username = username;
+      await saveEconomy();
+    }
     debug.ok("economy.getOrCreateAccount", { status: "found", userId, guildId });
     return account;
   }
@@ -141,6 +145,56 @@ async function adminAdjustWallet(userId, guildId, amount, username, extra = {}) 
   });
 
   return updated;
+}
+
+async function transferWallet(userId, recipientId, guildId, amount, senderName, recipientName) {
+  await ensureLoaded();
+
+  amount = normalizeNumber(amount);
+  if (amount === null || amount <= 0) throw new Error("Amount must be positive");
+  if (userId === recipientId) throw new Error("You can't send money to yourself.");
+
+  const senderKey = getAccountKey(userId, guildId);
+  const recipientKey = getAccountKey(recipientId, guildId);
+
+  const senderAccount = economyData[senderKey] || await getOrCreateAccount(userId, guildId, senderName);
+  const recipientAccount = economyData[recipientKey] || await getOrCreateAccount(recipientId, guildId, recipientName);
+
+  const senderWallet = Number(senderAccount.wallet || 0);
+  if (senderWallet < amount) throw new Error("Insufficient wallet funds");
+
+  senderAccount.wallet = senderWallet - amount;
+  recipientAccount.wallet = Number(recipientAccount.wallet || 0) + amount;
+
+  await logTransaction({
+    guildId,
+    userId,
+    username: senderName,
+    targetUserId: recipientId,
+    targetUsername: recipientName,
+    type: "transfer_out",
+    amount: -amount,
+    balanceAfter: senderAccount.wallet,
+    notes: `Sent to ${recipientName}`
+  });
+
+  await logTransaction({
+    guildId,
+    userId: recipientId,
+    username: recipientName,
+    targetUserId: userId,
+    targetUsername: senderName,
+    type: "transfer_in",
+    amount,
+    balanceAfter: recipientAccount.wallet,
+    notes: `Received from ${senderName}`
+  });
+
+  await saveEconomy();
+
+  debug.ok("economy.transferWallet", { userId, recipientId, guildId, amount });
+
+  return { sender: senderAccount, recipient: recipientAccount };
 }
 
 async function transferWalletToBank(userId, guildId, amount, username, extra = {}) {
@@ -315,6 +369,7 @@ module.exports = {
   updateAccount,
   logTransaction,
   adminAdjustWallet,
+  transferWallet,
   transferWalletToBank,
   transferBankToWallet,
   addBank,
