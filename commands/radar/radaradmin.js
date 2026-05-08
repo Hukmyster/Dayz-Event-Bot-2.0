@@ -1,8 +1,3 @@
-const fs = require("fs");
-const path = require("path");
-
-const radarDir = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/radars";
-
 const {
   SlashCommandBuilder,
   PermissionFlagsBits,
@@ -11,37 +6,47 @@ const {
   ButtonBuilder,
   ButtonStyle
 } = require("discord.js");
+const storage = require("../../modules/storage");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
-async function readRadar(radarName) {
-  const filePath = path.join(radarDir, `${radarName}.json`);
-
-  try {
-    const text = await fs.promises.readFile(filePath, "utf8");
-    const data = JSON.parse(text);
-
-    if (!data.name || !data.x || !data.z || !data.radius) {
-      return { ok: false, error: "Invalid radar data." };
+async function loadRadars() {
+  const data = await storage.loadJson("radars");
+  if (Array.isArray(data)) {
+    const obj = {};
+    for (const radar of data) {
+      if (radar?.name) obj[radar.name] = radar;
     }
-
-    return { ok: true, data };
-  } catch (err) {
-    return { ok: false, error: `Could not load radar "${radarName}".` };
+    return obj;
   }
+  return data && typeof data === "object" ? data : {};
 }
 
-async function writeRadar(data) {
-  const filePath = path.join(radarDir, `${data.name}.json`);
+async function saveRadars(radars) {
+  await storage.saveJson("radars", radars);
+}
 
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: "Failed to save radar config." };
-  }
+function normalizeRadar(radar) {
+  if (!radar || typeof radar !== "object") return null;
+  radar.admins = Array.isArray(radar.admins) ? radar.admins : [];
+  radar.ignore = Array.isArray(radar.ignore) ? radar.ignore : [];
+  radar.ignored = Array.isArray(radar.ignored) ? radar.ignored : [];
+  return radar;
+}
+
+async function readRadar(radarName) {
+  const radars = await loadRadars();
+  const radar = normalizeRadar(radars[String(radarName || "").trim()]);
+  if (!radar) return { ok: false, error: `Could not load radar "${radarName}".` };
+  return { ok: true, data: radar, radars };
+}
+
+async function writeRadar(radars, data) {
+  radars[data.name] = normalizeRadar(data);
+  await saveRadars(radars);
+  return { ok: true };
 }
 
 async function addRadarAdmin(radarName, userId) {
@@ -49,14 +54,13 @@ async function addRadarAdmin(radarName, userId) {
   if (!res.ok) return res;
 
   const radar = res.data;
-  radar.adminId = userId;  // single admin, tied to this file
+  radar.adminId = userId;
+  if (!radar.admins.includes(userId)) radar.admins.push(userId);
 
-  const saveRes = await writeRadar(radar);
+  const saveRes = await writeRadar(res.radars, radar);
   if (!saveRes.ok) return saveRes;
 
-  return {
-    reply: `✅ ${radar.name} admin is now <@${userId}>.`
-  };
+  return { reply: `✅ ${radar.name} admin is now <@${userId}>.`, success: true };
 }
 
 async function removeRadarAdmin(radarName, userId) {
@@ -67,15 +71,16 @@ async function removeRadarAdmin(radarName, userId) {
   const wasAdmin = radar.adminId === userId;
 
   radar.adminId = null;
+  radar.admins = radar.admins.filter(id => id !== userId);
 
-  const saveRes = await writeRadar(radar);
+  const saveRes = await writeRadar(res.radars, radar);
   if (!saveRes.ok) return saveRes;
 
   if (!wasAdmin) {
-    return { reply: `❌ User is not currently an admin for this radar.` };
+    return { reply: `❌ User is not currently an admin for this radar.`, success: false };
   }
 
-  return { reply: `✅ Radar "${radar.name}" admin removed.` };
+  return { reply: `✅ Radar "${radar.name}" admin removed.`, success: true };
 }
 
 module.exports = {
@@ -112,13 +117,12 @@ module.exports = {
     const user = interaction.options.getUser("user", true);
 
     if (sub === "add") {
-      const { ok, data: radar, error } = await readRadar(name);
+      const { ok, data: radar, error, radars } = await readRadar(name);
       if (!ok) return replyEphemeral(interaction, error);
 
       const currentAdminId = radar.adminId;
       const newAdminId = user.id;
 
-      // If there is already an admin and they are not the one running the command
       if (currentAdminId && currentAdminId !== interaction.user.id) {
         return replyEphemeral(
           interaction,
@@ -126,19 +130,17 @@ module.exports = {
         );
       }
 
-      // If there is already an admin AND it IS the one running the command → ask for confirmation
       if (currentAdminId && currentAdminId === interaction.user.id) {
-        const confirmRow = new ActionRowBuilder()
-          .addComponents(
-            new ButtonBuilder()
-              .setCustomId(`radaradmin_confirm_${name}`)
-              .setLabel("Confirm ownership handover")
-              .setStyle(ButtonStyle.Success),
-            new ButtonBuilder()
-              .setCustomId(`radaradmin_cancel`)
-              .setLabel("Cancel")
-              .setStyle(ButtonStyle.Danger)
-          );
+        const confirmRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`radaradmin_confirm_${name}`)
+            .setLabel("Confirm ownership handover")
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId("radaradmin_cancel")
+            .setLabel("Cancel")
+            .setStyle(ButtonStyle.Danger)
+        );
 
         const question = `Do you want to transfer admin of radar **${name}** to ${user.tag}?`;
         const msg = await interaction.reply({
@@ -149,27 +151,22 @@ module.exports = {
         });
 
         const filter = (i) => {
-          if (i.customId === `radaradmin_cancel`) {
-            return i.user.id === interaction.user.id;
-          }
+          if (i.customId === "radaradmin_cancel") return i.user.id === interaction.user.id;
           return i.customId === `radaradmin_confirm_${name}` && i.user.id === interaction.user.id;
         };
 
         try {
-          const button = await msg.awaitMessageComponent({
-            filter,
-            time: 30_000
-          });
+          const button = await msg.awaitMessageComponent({ filter, time: 30_000 });
 
-          if (button.customId === `radaradmin_cancel`) {
+          if (button.customId === "radaradmin_cancel") {
             await button.update({ content: "Ownership transfer cancelled.", components: [] });
             return;
           }
 
-          // User clicked OK → change admin
           radar.adminId = newAdminId;
+          if (!radar.admins.includes(newAdminId)) radar.admins.push(newAdminId);
 
-          const saveRes = await writeRadar(radar);
+          const saveRes = await writeRadar(radars, radar);
           if (!saveRes.ok) {
             return button.update({ content: saveRes.error || "Failed to save radar config.", components: [] });
           }
@@ -195,16 +192,15 @@ module.exports = {
         return;
       }
 
-      // No admin yet → just set it
       const res = await addRadarAdmin(name, user.id);
-      if (!res.ok) throw new Error(res.error || res.reply);
+      if (!res.success && !res.reply.includes("now")) throw new Error(res.error || res.reply);
 
       return replyEphemeral(interaction, res.reply || `Added ${user.tag} as a radar admin.`);
     }
 
     if (sub === "remove") {
       const res = await removeRadarAdmin(name, user.id);
-      if (!res.ok && !res.reply.includes("not currently")) throw new Error(res.error || res.reply);
+      if (!res.success && !res.reply.includes("not currently")) throw new Error(res.error || res.reply);
 
       return replyEphemeral(interaction, res.reply || `Removed ${user.tag} from radar admins.`);
     }
