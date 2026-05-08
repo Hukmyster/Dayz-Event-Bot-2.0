@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
-const storage = require("../../modules/storage");
+const storage = require("../../services/storage");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
