@@ -34,33 +34,13 @@ module.exports = {
         });
       }
 
-      const senderAccount = await economy.getOrCreateAccount(
+      await economy.transferWallet(
         interaction.user.id,
-        interaction.guild.id,
-        interaction.user.username
-      );
-
-      if (Number(senderAccount.wallet || 0) < amount) {
-        return interaction.reply({
-          content: 'You do not have enough money in your wallet.',
-          ephemeral: true
-        });
-      }
-
-      await economy.deductFromWallet(
-        interaction.user.id,
-        interaction.guild.id,
-        amount,
-        interaction.user.username,
-        { notes: `Sent to ${target.username}` }
-      );
-
-      await economy.adminAdjustWallet(
         target.id,
         interaction.guild.id,
         amount,
-        target.username,
-        { notes: `Received from ${interaction.user.username}` }
+        interaction.user.username,
+        target.username
       );
 
       const embed = new EmbedBuilder()
