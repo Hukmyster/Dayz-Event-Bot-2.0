@@ -1,45 +1,20 @@
-const fs = require("fs");
-const path = require("path");
-
-const radarDir = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/radars";
-
 const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, MessageFlags } = require("discord.js");
+const storage = require("../../modules/storage");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
-async function listRadars() {
-  try {
-    const dirExistsStat = fs.statSync(radarDir);
-    if (!dirExistsStat.isDirectory()) {
-      return [];
+async function loadRadars() {
+  const data = await storage.loadJson("radars");
+  if (Array.isArray(data)) {
+    const obj = {};
+    for (const radar of data) {
+      if (radar?.name) obj[radar.name] = radar;
     }
-  } catch (errDir) {
-    return [];
+    return obj;
   }
-
-  const files = await fs.promises.readdir(radarDir);
-
-  const radars = [];
-
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-
-    const filePath = path.join(radarDir, file);
-    try {
-      const text = await fs.promises.readFile(filePath, "utf8");
-      const data = JSON.parse(text);
-
-      if (data.name && data.x != null && data.z != null && data.radius) {
-        radars.push(data);
-      }
-    } catch (err) {
-      console.error("Failed to read radar file:", filePath, err);
-    }
-  }
-
-  return radars;
+  return data && typeof data === "object" ? data : {};
 }
 
 module.exports = {
@@ -50,30 +25,26 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      const radars = await listRadars();
+      const radars = await loadRadars();
+      const names = Object.keys(radars);
 
-      if (!radars.length) {
-        return interaction.reply({
-          content: "No radars are saved yet.",
-          flags: MessageFlags.Ephemeral
-        });
+      if (!names.length) {
+        return replyEphemeral(interaction, "No radars are saved yet.");
       }
+
+      const list = names.map(name => {
+        const r = radars[name] || {};
+        return `• **${name}** — ${Number(r.radius) || 0}m at ${r.channelId ? `<#${r.channelId}>` : "unknown channel"}`;
+      }).join("\n");
 
       const embed = new EmbedBuilder()
         .setTitle("Player Radars")
         .setColor(0x3498db)
-        .setDescription(
-          radars
-            .map(r => `• **${r.name}** — ${r.radius}m at ${r.channelId ? `<#${r.channelId}>` : "unknown channel"}`)
-            .join("\n")
-        );
+        .setDescription(list);
 
       return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
     } catch (err) {
-      return interaction.reply({
-        content: err.message || "Failed to load radars.",
-        flags: MessageFlags.Ephemeral
-      });
+      return replyEphemeral(interaction, err.message || "Failed to load radars.");
     }
   }
 };
