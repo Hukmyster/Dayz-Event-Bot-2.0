@@ -37,7 +37,7 @@ module.exports = {
         userId: interaction.user.id,
         guildId: interaction.guildId,
         username: interaction.user.username,
-        gamertag: gamertag,
+        gamertag,
         lastSeenAt: new Date()
       });
 
@@ -66,6 +66,7 @@ async function findExactQuotedGamertagInServerstate(gamertag) {
       if (extracted === gamertag) return true;
     }
   }
+
   return false;
 }
 
