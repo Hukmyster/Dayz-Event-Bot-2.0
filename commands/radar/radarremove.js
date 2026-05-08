@@ -1,27 +1,38 @@
-const fs = require("fs");
-const path = require("path");
-
-const radarDir = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/radars";
-
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
+const storage = require("../../modules/storage");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
-async function removeRadar(name) {
-  const filePath = path.join(radarDir, `${name}.json`);
-
-  try {
-    await fs.promises.access(filePath);
-    await fs.promises.unlink(filePath);
-
-    return {
-      reply: `✅ Radar **${name}** removed.`
-    };
-  } catch (err) {
-    return { reply: `Could not find or delete radar "${name}".`, success: false };
+async function loadRadars() {
+  const data = await storage.loadJson("radars");
+  if (Array.isArray(data)) {
+    const obj = {};
+    for (const radar of data) {
+      if (radar?.name) obj[radar.name] = radar;
+    }
+    return obj;
   }
+  return data && typeof data === "object" ? data : {};
+}
+
+async function saveRadars(radars) {
+  await storage.saveJson("radars", radars);
+}
+
+async function removeRadar(name) {
+  const radarName = String(name || "").trim();
+  const radars = await loadRadars();
+
+  if (!radars[radarName]) {
+    return { reply: `Could not find radar "${radarName}".`, success: false };
+  }
+
+  delete radars[radarName];
+  await saveRadars(radars);
+
+  return { reply: `✅ Radar **${radarName}** removed.`, success: true };
 }
 
 module.exports = {
@@ -36,11 +47,7 @@ module.exports = {
 
     try {
       const res = await removeRadar(name);
-      if (!res.success && !res.reply.includes("remained")) return interaction.reply({
-        content: res.reply,
-        flags: MessageFlags.Ephemeral
-      });
-
+      if (!res.success) return replyEphemeral(interaction, res.reply || `Could not remove radar "${name}".`);
       return replyEphemeral(interaction, res.reply || `✅ Radar **${name}** removed.`);
     } catch (err) {
       return replyEphemeral(interaction, err.message || "Failed to remove radar.");
