@@ -45,9 +45,7 @@ module.exports = {
         interaction.guildId,
         -amount,
         member.username,
-        {
-          notes: `Admin removemoney by ${interaction.user.username}`
-        }
+        { notes: `Admin removemoney by ${interaction.user.username}` }
       );
 
       const embed = new EmbedBuilder()
