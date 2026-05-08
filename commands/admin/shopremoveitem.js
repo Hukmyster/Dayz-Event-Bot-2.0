@@ -1,10 +1,11 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const shop = require('../../modules/shop');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('shopremoveitem')
     .setDescription('Remove an item from the shop')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option =>
       option
         .setName('name')
