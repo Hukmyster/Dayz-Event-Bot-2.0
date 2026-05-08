@@ -8,7 +8,7 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      if (!economy.hasAccess(interaction.member)) {
+      if (!economy.hasAccess?.(interaction.member)) {
         return interaction.reply({
           content: 'You do not have the required role to use economy commands.',
           ephemeral: true
@@ -17,21 +17,17 @@ module.exports = {
 
       const guildId = interaction.guildId;
 
-      const { data, error } = await economy.supabase
-        .from('economy_accounts')
-        .select('user_id, username, wallet, bank')
-        .eq('guild_id', guildId);
+      // Get all accounts from storage
+      const allAccounts = Object.values(economy.economyData || {}).filter(acc => acc.guild_id === guildId);
 
-      if (error) throw error;
-
-      if (!data || !data.length) {
+      if (!allAccounts.length) {
         return interaction.reply({
           content: 'No economy accounts found yet.',
           ephemeral: true
         });
       }
 
-      const sorted = data
+      const sorted = allAccounts
         .map(x => ({
           user_id: x.user_id,
           username: x.username || 'Unknown',
