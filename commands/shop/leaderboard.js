@@ -16,18 +16,25 @@ module.exports = {
       }
 
       const guildId = interaction.guildId;
+      const allAccounts = await economy.getAllAccounts?.();
 
-      // Get all accounts from storage
-      const allAccounts = Object.values(economy.economyData || {}).filter(acc => acc.guild_id === guildId);
-
-      if (!allAccounts.length) {
+      if (!Array.isArray(allAccounts) || !allAccounts.length) {
         return interaction.reply({
           content: 'No economy accounts found yet.',
           ephemeral: true
         });
       }
 
-      const sorted = allAccounts
+      const filtered = allAccounts.filter(acc => acc && acc.guild_id === guildId);
+
+      if (!filtered.length) {
+        return interaction.reply({
+          content: 'No economy accounts found yet.',
+          ephemeral: true
+        });
+      }
+
+      const sorted = filtered
         .map(x => ({
           user_id: x.user_id,
           username: x.username || 'Unknown',
