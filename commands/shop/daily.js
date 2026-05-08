@@ -43,10 +43,7 @@ module.exports = {
         interaction.guildId,
         DAILY_AMOUNT,
         interaction.user.username,
-        {
-          notes: 'Daily reward',
-          source: 'daily'
-        }
+        { notes: 'Daily reward', source: 'daily' }
       );
 
       await economy.setDailyClaim(interaction.guildId, interaction.user.id, new Date().toISOString());
