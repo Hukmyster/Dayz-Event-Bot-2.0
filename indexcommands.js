@@ -1,9 +1,8 @@
 const fs = require("fs");
 const path = require("path");
-const { MessageFlags, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
+const { MessageFlags } = require("discord.js");
 
 const shop = require("./modules/shop");
-const economy = require("./modules/economy");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
@@ -115,7 +114,6 @@ async function handleInteraction(interaction) {
   const sendError = (msg) =>
     replyOnce(interaction, { content: msg, ephemeral: true });
 
-  // Defer the big body to indexcommandslist
   const { handleCommand } = require("./indexcommandslist");
   return handleCommand(interaction, send, sendError);
 }
