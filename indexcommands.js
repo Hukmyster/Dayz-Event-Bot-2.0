@@ -45,7 +45,7 @@ function serializeOptions(interaction) {
   return out;
 }
 
-// Text-based spinner animation
+// Text‑based spinner animation (1.5–2s)
 async function spinEmbedAnimation(interaction, msg, embed) {
   const displaySpins = [
     "🟢 │ 🟡 │ 🔴",
@@ -62,64 +62,12 @@ async function spinEmbedAnimation(interaction, msg, embed) {
   }
 }
 
-async function replyOnce(interaction, payload, label = "reply") {
-  const data = { ...payload };
-  if (data.ephemeral) {
-    delete data.ephemeral;
-    data.flags = MessageFlags.Ephemeral;
-  }
-  debug.step(label, {
-    action: "send",
-    command: interaction.commandName,
-    replied: interaction.replied,
-    deferred: interaction.deferred
-  });
-  return (interaction.replied || interaction.deferred)
-    ? interaction.followUp(data)
-    : interaction.reply(data);
-}
-
-async function handleAutocomplete(interaction) {
-  const focused = interaction.options.getFocused();
-  const query = typeof focused === "string" ? focused : "";
-  debug.step("autocomplete", { query });
-  const results = await shop.autocomplete(query);
-  logger.interaction({ type: "autocomplete", query, results });
-  debug.step("autocomplete", { query, resultsCount: results.length });
-  return interaction.respond(results.slice(0, 25)).catch(err => {
-    logger.error("AUTOCOMPLETE ERROR", err);
-    debug.fail("autocomplete", err, { query });
-  });
-}
-
-async function handleToggleButton(interaction) {
-  const customId = interaction.customId || "";
-  if (!customId.startsWith("toggle:")) return false;
-
-  const roleId = customId.split(":")[1];
-  const role = interaction.guild.roles.cache.get(roleId);
-  if (!role) {
-    return interaction.reply({ content: "That role no longer exists.", ephemeral: true });
-  }
-
-  const member = interaction.member;
-  const hasRole = member.roles.cache.has(roleId);
-
-  if (hasRole) {
-    await member.roles.remove(roleId);
-    return interaction.reply({ content: `Removed ${role.name}.`, ephemeral: true });
-  } else {
-    await member.roles.add(roleId);
-    return interaction.reply({ content: `Added ${role.name}.`, ephemeral: true });
-  }
-}
-
 function getWinChance(bet) {
   if (bet <= 500) return 0.48;
   if (bet <= 2000) return 0.40;
   if (bet <= 5000) return 0.35;
   if (bet <= 50000) return 0.25;
-  return 0.15; // 50001-100000
+  return 0.15; // 50001–100000
 }
 
 async function getRouletteResult(user, guildId, bet) {
@@ -132,17 +80,21 @@ async function getRouletteResult(user, guildId, bet) {
   const wallet = Number(account.wallet || 0);
 
   if (wallet < bet) {
-    throw new Error(`Insufficient funds. You have ${economy.formatMoney(wallet)}`);
+    throw new Error(`Insufficient funds. You have ${economy.formatNormally(wallet)}`);
   }
 
   const winChance = getWinChance(bet);
-  const spin = Math.floor(Math.random() * 37); // 0-36
+  const spin = Math.floor(Math.random() * 37); // 0–36
 
-  // 0 = green, 1-18 = red, 19-36 = black
+  // 0 = green, 1–18 = red, 19–36 = black
   let color = "black";
-  if (spin === 0) color = "green";
-  else if (spin >= 1 && spin <= 18) color = "red";
-  else if (spin >= 19 && spin <= 36) color = "black";
+  if (spin === 0) {
+    color = "green";
+  } else if (spin >= 1 && spin <= 18) {
+    color = "red";
+  } else if (spin >= 19 && spin <= 36) {
+    color = "black";
+  }
 
   const winRoll = Math.random();
   const win = winRoll < winChance;
@@ -174,7 +126,7 @@ async function handleRouletteSpin(interaction) {
 
   // Ask for bet amount (ephemeral)
   const reply = await interaction.followUp({
-    content: "Enter your bet amount (1-100000).",
+    content: "Enter your bet amount (1–100000).",
     fetchReply: true
   });
 
@@ -193,7 +145,7 @@ async function handleRouletteSpin(interaction) {
 
     if (isNaN(amount) || amount < 1 || !Number.isInteger(amount)) {
       return reply.edit({
-        content: "Invalid bet. Enter a valid number from 1-100000.",
+        content: "Invalid bet. Enter a valid number from 1–100000.",
         components: []
       });
     }
@@ -202,7 +154,7 @@ async function handleRouletteSpin(interaction) {
       const result = await getRouletteResult(user, guildId, amount);
       const { spin, color, bet, payout, delta, winChance } = result;
 
-      // Text-based spin animation (1.5-2s)
+      // Text‑based spin animation (1.5–2s)
       const embed = msg.embeds[0].toJSON();
       await spinEmbedAnimation(interaction, msg, embed);
 
@@ -257,6 +209,58 @@ async function handleRouletteSpin(interaction) {
       reply.delete().catch(() => {});
     }
   });
+}
+
+async function replyOnce(interaction, payload, label = "reply") {
+  const data = { ...payload };
+  if (data.ephemeral) {
+    delete data.ephemeral;
+    data.flags = MessageFlags.Ephemeral;
+  }
+  debug.step(label, {
+    action: "send",
+    command: interaction.commandName,
+    replied: interaction.replied,
+    deferred: interaction.deferred
+  });
+  return (interaction.replied || interaction.deferred)
+    ? interaction.followUp(data)
+    : interaction.reply(data);
+}
+
+async function handleAutocomplete(interaction) {
+  const focused = interaction.options.getFocused();
+  const query = typeof focused === "string" ? focused : "";
+  debug.step("autocomplete", { query });
+  const results = await shop.autocomplete(query);
+  logger.interaction({ type: "autocomplete", query, results });
+  debug.step("autocomplete", { query, resultsCount: results.length });
+  return interaction.respond(results.slice(0, 25)).catch(err => {
+    logger.error("AUTOCOMPLETE ERROR", err);
+    debug.fail("autocomplete", err, { query });
+  });
+}
+
+async function handleToggleButton(interaction) {
+  const customId = interaction.customId || "";
+  if (!customId.startsWith("toggle:")) return false;
+
+  const roleId = customId.split(":")[1];
+  const role = interaction.guild.roles.cache.get(roleId);
+  if (!role) {
+    return interaction.reply({ content: "That role no longer exists.", ephemeral: true });
+  }
+
+  const member = interaction.member;
+  const hasRole = member.roles.cache.has(roleId);
+
+  if (hasRole) {
+    await member.roles.remove(roleId);
+    return interaction.reply({ content: `Removed ${role.name}.`, ephemeral: true });
+  } else {
+    await member.roles.add(roleId);
+    return interaction.reply({ content: `Added ${role.name}.`, ephemeral: true });
+  }
 }
 
 async function handleInteraction(interaction) {
