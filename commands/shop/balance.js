@@ -4,51 +4,38 @@ const economy = require('../../modules/economy');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('balance')
-    .setDescription('Show your wallet and bank balance')
+    .setDescription('Check your or another player\'s balance')
     .addUserOption(option =>
-      option
-        .setName('member')
-        .setDescription('View another member’s balance')
-        .setRequired(false)
-    ),
+      option.setName('member')
+        .setDescription('The member to check')
+        .setRequired(false)),
 
   async execute(interaction) {
     try {
-      if (!economy.hasAccess?.(interaction.member)) {  // safe if function missing
-        return interaction.reply({
-          content: 'You do not have the required role to use economy commands.',
-          ephemeral: true
-        });
-      }
+      const target = interaction.options.getUser('member') || interaction.user;
+      const guildId = interaction.guild.id;
 
-      const targetUser = interaction.options.getUser('member') || interaction.user;
-      const guildId = interaction.guildId;
-
-      const account = await economy.getOrCreateAccount(
-        targetUser.id,
-        guildId,
-        targetUser.username
-      );
+      const account = await economy.getOrCreateAccount(target.id, guildId, target.username);
 
       const wallet = Number(account.wallet || 0);
       const bank = Number(account.bank || 0);
       const total = wallet + bank;
 
       const embed = new EmbedBuilder()
-        .setTitle(`${targetUser.username}'s Balance`)
-        .addFields(
-          { name: 'Wallet', value: economy.formatMoney(wallet), inline: true },
-          { name: 'Bank', value: economy.formatMoney(bank), inline: true },
-          { name: 'Total', value: economy.formatMoney(total), inline: true }
-        )
+        .setTitle(`${target.username}'s Balance`)
         .setColor(0x3498db)
+        .addFields(
+          { name: '💵 Wallet', value: economy.formatMoney(wallet), inline: true },
+          { name: '🏦 Bank', value: economy.formatMoney(bank), inline: true },
+          { name: '💰 Total', value: economy.formatMoney(total), inline: true }
+        )
         .setTimestamp();
 
-      return interaction.reply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     } catch (error) {
       console.error('balance command error:', error);
-      return interaction.reply({
-        content: 'Something went wrong while loading the balance.',
+      await interaction.reply({
+        content: 'Failed to retrieve balance.',
         ephemeral: true
       });
     }
