@@ -1,8 +1,46 @@
+const fs = require("fs");
+const path = require("path");
+
+const radarDir = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/radars";
+
 const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
-const { createRadar } = require("../../modules/playerradars");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
+}
+
+async function createRadar(opts) {
+  const { name, x, z, radius, channelId, createdBy } = opts;
+
+  const filePath = path.join(radarDir, `${name}.json`);
+
+  if (!name || !channelId || isNaN(x) || isNaN(z) || !radius) {
+    return { reply: "Invalid radar data.", success: false };
+  }
+
+  try {
+    fs.mkdirSync(radarDir, { recursive: true });
+
+    const data = {
+      name,
+      x,
+      z,
+      radius,
+      channelId,
+      adminId: createdBy,        // single admin owner
+      ignored: []
+    };
+
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+
+    return {
+      success: true,
+      reply: `✅ Radar **${name}** created at ${x},${z} with radius ${radius}m.`
+    };
+  } catch (err) {
+    console.error("radaradd error:", err);
+    return { reply: "Failed to save radar config.", success: false };
+  }
 }
 
 module.exports = {
@@ -35,6 +73,8 @@ module.exports = {
         channelId: interaction.channelId,
         createdBy: interaction.user.id
       });
+
+      if (!res.success) throw new Error(res.reply);
 
       return replyEphemeral(interaction, res.reply || `✅ Radar **${name}** created.`);
     } catch (err) {
