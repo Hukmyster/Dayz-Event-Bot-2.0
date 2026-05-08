@@ -1,10 +1,11 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const economy = require('../../modules/economy');
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('resetuser')
     .setDescription('Reset a member’s wallet and bank to zero')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addUserOption(option =>
       option
         .setName('member')
@@ -14,7 +15,7 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      if (!interaction.member.permissions?.has('Administrator')) {
+      if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
         return interaction.reply({
           content: 'You do not have permission to use this command.',
           ephemeral: true
