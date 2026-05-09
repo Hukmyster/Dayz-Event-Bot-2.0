@@ -1,6 +1,6 @@
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
-const shopPurchase = require("./modules/shopPurchase");       // <-- explicitly required here
+const shopPurchase = require("./modules/shopPurchase");
 const daily = require("./commands/shop/daily");
 const whereami = require("./commands/economy/whereami");
 const linkgamertag = require("./commands/economy/linkgamertag");
@@ -12,8 +12,15 @@ const radarignore = require("./commands/radar/radarignore");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
-const { loadToggles, saveToggles, getPanelId, serializeOptions, replyOnce } = require("./indexcommands");
-const { ButtonBuilder, ButtonStyle, ActionRowBuilder } = require("discord.js");
+const {
+  loadToggles,
+  saveToggles,
+  getPanelId,
+  serializeOptions,
+  replyOnce
+} = require("./indexcommands");
+
+const { ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder } = require("discord.js");
 
 async function handleCommand(interaction, send, sendError) {
   const cmd = interaction.commandName;
@@ -76,151 +83,225 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "radarignore") return radarignore.execute(interaction);
 
   if (cmd === "createtoggle") {
-    const role = interaction.options.getRole("role", true);
-    const panelId = getPanelId(interaction);
+    const { StringSelectMenuBuilder, ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 
-    const data = loadToggles();
-    data.panels.push({
-      panelId,
-      guildId: interaction.guildId,
-      channelId: interaction.channelId,
-      messageId: null,
-      roleId: role.id,
-      roleName: role.name,
-      createdBy: interaction.user.id,
-      createdAt: new Date().toISOString()
-    });
-    saveToggles(data);
-
-    const button = new ButtonBuilder()
-      .setCustomId(`toggle:${role.id}`)
-      .setLabel(role.name)
-      .setStyle(ButtonStyle.Primary);
-
-    const row = new ActionRowBuilder().addComponents(button);
-
-    const msg = await interaction.channel.send({
-      content: `Click to toggle **${role.name}**.`,
-      components: [row]
-    });
-
-    const updated = loadToggles();
-    const panel = updated.panels.find(p => p.panelId === panelId);
-    if (panel) {
-      panel.messageId = msg.id;
-      saveToggles(updated);
+    if (!interaction.guild || !interaction.channel) {
+      return replyOnce(interaction, {
+        content: "This command can only be used in a server channel.",
+        ephemeral: true
+      });
     }
 
-    return interaction.reply({
-      content: `✅ Created toggle panel for **${role.name}**.`,
+    const roles = interaction.guild.roles.cache
+      .filter(r => r.id !== interaction.guild.id && !r.managed)
+      .sort((a, b) => b.position - a.position)
+      .map(role => ({
+        label: role.name.slice(0, 100),
+        value: role.id,
+        description: role.id
+      }))
+      .slice(0, 25);
+
+    if (!roles.length) {
+      return replyOnce(interaction, {
+        content: "No selectable roles were found in this server.",
+        ephemeral: true
+      });
+    }
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`toggle_role_select:${interaction.user.id}`)
+      .setPlaceholder("Select a role to toggle")
+      .addOptions(roles);
+
+    const row = new ActionRowBuilder().addComponents(menu);
+
+    await interaction.reply({
+      content: "Pick the role you want this toggle to give:",
+      components: [row],
       ephemeral: true
     });
+
+    const promptMsg = await interaction.fetchReply();
+
+    try {
+      const selected = await promptMsg.awaitMessageComponent({
+        time: 60000,
+        filter: i => i.user.id === interaction.user.id && i.customId === `toggle_role_select:${interaction.user.id}`
+      });
+
+      const roleId = selected.values[0];
+      const role = interaction.guild.roles.cache.get(roleId);
+
+      if (!role) {
+        return selected.update({
+          content: "That role no longer exists.",
+          components: []
+        });
+      }
+
+      await selected.update({
+        content: `Selected role: **${role.name}**\nNow send the custom title/message text for the toggle panel in this channel.`,
+        components: []
+      });
+
+      const collected = await interaction.channel.awaitMessages({
+        filter: m => m.author.id === interaction.user.id && m.channel.id === interaction.channel.id,
+        max: 1,
+        time: 60000
+      });
+
+      const message = collected.first();
+      if (!message) {
+        return replyOnce(interaction, {
+          content: "Timed out waiting for the toggle message text.",
+          ephemeral: true
+        });
+      }
+
+      const title = message.content.trim();
+      await message.delete().catch(() => {});
+
+      if (!title) {
+        return replyOnce(interaction, {
+          content: "No title/message was provided. Toggle creation cancelled.",
+          ephemeral: true
+        });
+      }
+
+      const button = new ButtonBuilder()
+        .setCustomId(`toggle:${role.id}`)
+        .setLabel(role.name)
+        .setStyle(ButtonStyle.Success);
+
+      const row2 = new ActionRowBuilder().addComponents(button);
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setColor(0x57F287)
+        .setDescription(`Click the button below to toggle **${role.name}**.`);
+
+      const panelMsg = await interaction.channel.send({
+        embeds: [embed],
+        components: [row2]
+      });
+
+      const data = loadToggles();
+      data.panels = Array.isArray(data.panels) ? data.panels : [];
+      data.panels.push({
+        panelId: getPanelId(interaction),
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: panelMsg.id,
+        roleId: role.id,
+        roleName: role.name,
+        title,
+        createdBy: interaction.user.id,
+        createdAt: new Date().toISOString()
+      });
+      saveToggles(data);
+
+      return replyOnce(interaction, {
+        content: `✅ Toggle created for **${role.name}**.`,
+        ephemeral: true
+      });
+    } catch (error) {
+      return replyOnce(interaction, {
+        content: error.message || "Failed to create the toggle panel.",
+        ephemeral: true
+      });
+    }
   }
 
   if (cmd === "removetoggle") {
     const data = loadToggles();
-    const matches = (data.panels || []).filter(p => p.guildId === interaction.guildId && p.channelId === interaction.channelId);
+    const panels = Array.isArray(data.panels) ? data.panels : [];
+    const matches = panels.filter(
+      p => p.guildId === interaction.guildId && p.channelId === interaction.channelId
+    );
 
     if (!matches.length) {
-      return interaction.reply({ content: "No toggles found in this channel.", ephemeral: true });
+      return replyOnce(interaction, {
+        content: "No toggles found in this channel.",
+        ephemeral: true
+      });
     }
 
+    const first = matches[0];
     const lines = matches
       .map((p, i) => `${i + 1}. ${p.roleName} (${p.messageId || "no message id"})`)
       .join("\n");
 
-    const first = matches[0];
     if (first && first.messageId) {
       try {
         const msg = await interaction.channel.messages.fetch(first.messageId);
-        await msg.delete();
+        await msg.delete().catch(() => {});
       } catch {}
     }
 
-    data.panels = data.panels.filter(p => !(p.guildId === interaction.guildId && p.channelId === interaction.channelId && p.roleId === first.roleId));
+    data.panels = panels.filter(
+      p => !(p.guildId === interaction.guildId && p.channelId === interaction.channelId && p.roleId === first.roleId)
+    );
     saveToggles(data);
 
-    return interaction.reply({
+    return replyOnce(interaction, {
       content: `✅ Removed the first toggle found in this channel.\n\nFound:\n${lines}`,
       ephemeral: true
     });
   }
 
-// -------------------- BUY / ADMIN / RESET / RESTART --------------------
+  // -------------------- BUY / ADMIN / RESET / RESTART --------------------
 
-if (cmd === "addmoney" || cmd === "removemoney") {
-  const target = interaction.options.getUser("member", true);
-  const amount = interaction.options.getInteger("amount", true);
-  const adminUser = interaction.user.username;
+  if (cmd === "addmoney" || cmd === "removemoney") {
+    const target = interaction.options.getUser("member", true);
+    const amount = interaction.options.getInteger("amount", true);
+    const adminUser = interaction.user.username;
 
-  if (amount <= 0) {
-    return send({ reply: "Amount must be greater than 0." });
+    if (amount <= 0) {
+      return send({ reply: "Amount must be greater than 0." });
+    }
+
+    const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
+    const wallet = Number(account.wallet || 0);
+
+    const type = cmd === "addmoney" ? "admin_add" : "admin_remove";
+    const delta = type === "admin_add" ? amount : -amount;
+
+    if (wallet + delta < 0) {
+      return send({ reply: "Insufficient funds. Wallet cannot go negative." });
+    }
+
+    const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: wallet + delta });
+    await economy.logTransaction({
+      guildId: interaction.guildId,
+      userId: target.id,
+      username: target.username,
+      type: type,
+      amount: delta,
+      balanceAfter: updated.wallet,
+      notes: `Admin ${cmd} by ${adminUser}`,
+      metadata: { adminId: interaction.user.id }
+    });
+
+    return send({
+      reply: `✅ ${cmd === "addmoney" ? "Added" : "Removed"} ${economy.formatMoney(Math.abs(delta))} to/from **${target.username}**.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+    });
   }
-
-  const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
-  const wallet = Number(account.wallet || 0);
-
-  const type = cmd === "addmoney" ? "admin_add" : "admin_remove";
-  const delta = type === "admin_add" ? amount : -amount;
-
-  if (wallet + delta < 0) {
-    return send({ reply: "Insufficient funds. Wallet cannot go negative." });
-  }
-
-  const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: wallet + delta });
-  await economy.logTransaction({
-    guildId: interaction.guildId,
-    userId: target.id,
-    username: target.username,
-    type: type,
-    amount: delta,
-    balanceAfter: updated.wallet,
-    notes: `Admin ${cmd} by ${adminUser}`,
-    metadata: { adminId: interaction.user.id }
-  });
-
-  return send({
-    reply: `✅ ${cmd === "addmoney" ? "Added" : "Removed"} ${economy.formatMoney(Math.abs(delta))} to/from **${target.username}**.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
-  });
-}
-
-if (cmd === "resetuser") {
-  const target = interaction.options.getUser("member", true);
-  const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
-  const wallet = Number(account.wallet || 0);
-  const bank = Number(account.bank || 0);
-  const total = wallet + bank;
-
-  const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: 0, bank: 0 });
-  await economy.logTransaction({
-    guildId: interaction.guildId,
-    userId: target.id,
-    username: target.username,
-    type: "reset_all",
-    amount: total,
-    balanceAfter: 0,
-    notes: `Admin resetuser by ${interaction.user.username}`,
-    metadata: { old_wallet: wallet, old_bank: bank, admin: true }
-  });
-
-  return send({
-    reply: `✅ Reset **${target.username}** to zero.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
-  });
-}
 
   if (cmd === "resetuser") {
     const target = interaction.options.getUser("member", true);
     const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
     const wallet = Number(account.wallet || 0);
     const bank = Number(account.bank || 0);
+    const total = wallet + bank;
 
     const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: 0, bank: 0 });
     await economy.logTransaction({
       guildId: interaction.guildId,
       userId: target.id,
       username: target.username,
-      type: "reset",
-      amount: 0,
+      type: "reset_all",
+      amount: total,
       balanceAfter: 0,
       notes: `Admin resetuser by ${interaction.user.username}`,
       metadata: { old_wallet: wallet, old_bank: bank, admin: true }
@@ -258,7 +339,9 @@ if (cmd === "resetuser") {
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
     debug.step("shoplist", { count: items.length });
-    return send({ reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty" });
+    return send({
+      reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty"
+    });
   }
 
   if (cmd === "shopadditem") {
