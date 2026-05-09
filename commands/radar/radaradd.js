@@ -21,22 +21,6 @@ function normalizeRadar(name, data, channelId, createdBy, x, z, radius) {
   };
 }
 
-async function loadRadars() {
-  const data = await storage.loadJson("radars");
-  if (Array.isArray(data)) {
-    const obj = {};
-    for (const radar of data) {
-      if (radar?.name) obj[radar.name] = radar;
-    }
-    return obj;
-  }
-  return data && typeof data === "object" ? data : {};
-}
-
-async function saveRadars(radars) {
-  await storage.saveJson("radars", radars);
-}
-
 async function createRadar(opts) {
   const { name, x, z, radius, channelId, createdBy } = opts;
   const radarName = String(name || "").trim();
@@ -48,14 +32,14 @@ async function createRadar(opts) {
     return { reply: "Invalid radar data.", success: false };
   }
 
-  const radars = await loadRadars();
-
-  if (radars[radarName]) {
+  // Check if radar already exists
+  const existingRadar = await storage.loadRadar(radarName);
+  if (existingRadar) {
     return { reply: `Radar **${radarName}** already exists.`, success: false };
   }
 
-  radars[radarName] = normalizeRadar(radarName, null, channelId, createdBy, radarX, radarZ, radarRadius);
-  await saveRadars(radars);
+  const radarData = normalizeRadar(radarName, null, channelId, createdBy, radarX, radarZ, radarRadius);
+  await storage.saveRadar(radarName, radarData);
 
   return {
     success: true,
