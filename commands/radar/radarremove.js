@@ -5,33 +5,16 @@ function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
-async function loadRadars() {
-  const data = await storage.loadJson("radars");
-  if (Array.isArray(data)) {
-    const obj = {};
-    for (const radar of data) {
-      if (radar?.name) obj[radar.name] = radar;
-    }
-    return obj;
-  }
-  return data && typeof data === "object" ? data : {};
-}
-
-async function saveRadars(radars) {
-  await storage.saveJson("radars", radars);
-}
-
 async function removeRadar(name) {
   const radarName = String(name || "").trim();
-  const radars = await loadRadars();
 
-  if (!radars[radarName]) {
+  // Check if radar exists before deleting
+  const radar = await storage.loadRadar(radarName);
+  if (!radar) {
     return { reply: `Could not find radar "${radarName}".`, success: false };
   }
 
-  delete radars[radarName];
-  await saveRadars(radars);
-
+  await storage.deleteRadar(radarName);
   return { reply: `✅ Radar **${radarName}** removed.`, success: true };
 }
 
