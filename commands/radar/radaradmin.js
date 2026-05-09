@@ -12,22 +12,6 @@ function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
-async function loadRadars() {
-  const data = await storage.loadJson("radars");
-  if (Array.isArray(data)) {
-    const obj = {};
-    for (const radar of data) {
-      if (radar?.name) obj[radar.name] = radar;
-    }
-    return obj;
-  }
-  return data && typeof data === "object" ? data : {};
-}
-
-async function saveRadars(radars) {
-  await storage.saveJson("radars", radars);
-}
-
 function normalizeRadar(radar) {
   if (!radar || typeof radar !== "object") return null;
   radar.admins = Array.isArray(radar.admins) ? radar.admins : [];
@@ -37,15 +21,13 @@ function normalizeRadar(radar) {
 }
 
 async function readRadar(radarName) {
-  const radars = await loadRadars();
-  const radar = normalizeRadar(radars[String(radarName || "").trim()]);
+  const radar = await storage.loadRadar(radarName);
   if (!radar) return { ok: false, error: `Could not load radar "${radarName}".` };
-  return { ok: true, data: radar, radars };
+  return { ok: true, data: normalizeRadar(radar) };
 }
 
-async function writeRadar(radars, data) {
-  radars[data.name] = normalizeRadar(data);
-  await saveRadars(radars);
+async function writeRadar(radarName, data) {
+  await storage.saveRadar(radarName, normalizeRadar(data));
   return { ok: true };
 }
 
@@ -57,9 +39,7 @@ async function addRadarAdmin(radarName, userId) {
   radar.adminId = userId;
   if (!radar.admins.includes(userId)) radar.admins.push(userId);
 
-  const saveRes = await writeRadar(res.radars, radar);
-  if (!saveRes.ok) return saveRes;
-
+  await storage.saveRadar(radarName, radar);
   return { reply: `✅ ${radar.name} admin is now <@${userId}>.`, success: true };
 }
 
@@ -73,8 +53,7 @@ async function removeRadarAdmin(radarName, userId) {
   radar.adminId = null;
   radar.admins = radar.admins.filter(id => id !== userId);
 
-  const saveRes = await writeRadar(res.radars, radar);
-  if (!saveRes.ok) return saveRes;
+  await storage.saveRadar(radarName, radar);
 
   if (!wasAdmin) {
     return { reply: `❌ User is not currently an admin for this radar.`, success: false };
@@ -117,7 +96,7 @@ module.exports = {
     const user = interaction.options.getUser("user", true);
 
     if (sub === "add") {
-      const { ok, data: radar, error, radars } = await readRadar(name);
+      const { ok, data: radar, error } = await readRadar(name);
       if (!ok) return replyEphemeral(interaction, error);
 
       const currentAdminId = radar.adminId;
@@ -166,11 +145,7 @@ module.exports = {
           radar.adminId = newAdminId;
           if (!radar.admins.includes(newAdminId)) radar.admins.push(newAdminId);
 
-          const saveRes = await writeRadar(radars, radar);
-          if (!saveRes.ok) {
-            return button.update({ content: saveRes.error || "Failed to save radar config.", components: [] });
-          }
-
+          await storage.saveRadar(name, radar);
           await button.update({
             content: `✅ Radar "${name}" admin is now <@${newAdminId}>.`,
             components: []
