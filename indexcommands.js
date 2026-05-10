@@ -1,306 +1,469 @@
-const fs = require("fs");
-const path = require("path");
-const { MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
-
-// Roulette state (per-user bet cache)
-const userRouletteBets = new Map(); // userId -> bet
-
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
+const shopPurchase = require("./modules/shopPurchase");
+const daily = require("./commands/shop/daily");
+const whereami = require("./commands/economy/whereami");
+const linkgamertag = require("./commands/economy/linkgamertag");
+const radaradd = require("./commands/radar/radaradd");
+const radarremove = require("./commands/radar/radarremove");
+const radarview = require("./commands/radar/radarview");
+const radaradmin = require("./commands/radar/radaradmin");
+const radarignore = require("./commands/radar/radarignore");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
-const TOGGLE_FILE = path.join(__dirname, "data", "toggles.json");
-
-function ensureToggleFile() {
-  const dir = path.dirname(TOGGLE_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(TOGGLE_FILE)) fs.writeFileSync(TOGGLE_FILE, JSON.stringify({ panels: [] }, null, 2));
-}
-
-function loadToggles() {
-  ensureToggleFile();
-  try {
-    const raw = fs.readFileSync(TOGGLE_FILE, "utf8");
-    const parsed = JSON.parse(raw || "{}");
-    if (!parsed.panels) parsed.panels = [];
-    return parsed;
-  } catch {
-    return { panels: [] };
-  }
-}
-
-function saveToggles(data) {
-  ensureToggleFile();
-  fs.writeFileSync(TOGGLE_FILE, JSON.stringify(data, null, 2));
-}
-
-function getPanelId(interaction) {
-  return `${interaction.guildId}:${interaction.channelId}:${Date.now()}`;
-}
-
-function serializeOptions(interaction) {
-  const out = {};
-  for (const opt of interaction.options.data || []) out[opt.name] = opt.value;
-  return out;
-}
-
-// Text‑based spinner animation (1.5–2s)
-async function spinEmbedAnimation(interaction, msg, embed) {
-  const displaySpins = [
-    "🟢 │ 🟡 │ 🔴",
-    "🟡 │ 🔴 │ 🟢",
-    "🔴 │ 🟢 │ 🟡",
-    "🟢 │ 🟡 │ 🔴",
-    "🟡 │ 🔴 │ 🟢"
-  ];
-
-  for (const text of displaySpins) {
-    await new Promise(r => setTimeout(r, 300)); // 0.3s per frame
-    embed.description = text;
-    await msg.edit({ embeds: [embed] }).catch(() => {});
-  }
-}
-
-function getWinChance(bet) {
-  if (bet <= 500) return 0.48;
-  if (bet <= 2000) return 0.40;
-  if (bet <= 5000) return 0.35;
-  if (bet <= 50000) return 0.25;
-  return 0.15; // 50001–100000
-}
-
-async function getRouletteResult(user, guildId, bet) {
-  const maxBet = 100000;
-  if (bet > maxBet) {
-    throw new Error(`Maximum bet is ${economy.formatMoney(maxBet)}`);
-  }
-
-  const account = await economy.getOrCreateAccount(user.id, guildId, user.username);
-  const wallet = Number(account.wallet || 0);
-
-  if (wallet < bet) {
-    throw new Error(`Insufficient funds. You have ${economy.formatNormally(wallet)}`);
-  }
-
-  const winChance = getWinChance(bet);
-  const spin = Math.floor(Math.random() * 37); // 0–36
-
-  // 0 = green, 1–18 = red, 19–36 = black
-  let color = "black";
-  if (spin === 0) {
-    color = "green";
-  } else if (spin >= 1 && spin <= 18) {
-    color = "red";
-  } else if (spin >= 19 && spin <= 36) {
-    color = "black";
-  }
-
-  const winRoll = Math.random();
-  const win = winRoll < winChance;
-
-  let multiplier = 1; // default loss
-  if (win) {
-    if (color === "green" && spin === 0) {
-      multiplier = 10;
-    } else if (color === "red" && spin >= 1 && spin <= 18) {
-      multiplier = 2;
-    } else if (color === "black" && spin >= 19 && spin <= 36) {
-      multiplier = 2;
-    }
-  }
-
-  const payout = win ? Math.floor(bet * multiplier) : 0;
-  const delta = payout - bet;
-
-  return { spin, color, bet, payout, delta, winChance };
-}
-
-async function handleRouletteSpin(interaction) {
-  const user = interaction.user;
-  const guildId = interaction.guildId;
-  const channel = interaction.channel;
-  const msg = interaction.message;
-
-  await interaction.deferUpdate(); // Just acknowledge the button click
-
-  // Ask for bet amount (ephemeral)
-  const reply = await interaction.followUp({
-    content: "Enter your bet amount (1–100000).",
-    fetchReply: true
-  });
-
-  const collector = channel.createMessageCollector({
-    filter: m => m.author.id === user.id,
-    max: 1,
-    time: 15000 // 15s timeout
-  });
-
-  collector.on("collect", async m => {
-    if (!m.content) return m.delete().catch(() => {});
-    const text = m.content.trim();
-    const amount = Number(text.split(/\s+/)[0]); // Handle possible extra text
-
-    m.delete().catch(() => {});
-
-    if (isNaN(amount) || amount < 1 || !Number.isInteger(amount)) {
-      return reply.edit({
-        content: "Invalid bet. Enter a valid number from 1–100000.",
-        components: []
-      });
-    }
-
-    try {
-      const result = await getRouletteResult(user, guildId, amount);
-      const { spin, color, bet, payout, delta, winChance } = result;
-
-      // Text‑based spin animation (1.5–2s)
-      const embed = msg.embeds[0].toJSON();
-      await spinEmbedAnimation(interaction, msg, embed);
-
-      // Final result
-      const icon = color === "green" ? "🟢" : color === "red" ? "🔴" : "⚫";
-      const payoutText = winChance >= 0.35 ? "high" : winChance >= 0.25 ? "medium" : "low";
-
-      embed.description =
-        `**Roulette Result**\n` +
-        `Bet: ${economy.formatMoney(bet)} (${payoutText} chance - ${Math.round(winChance * 100)}%)\n` +
-        `Number: ${icon} ${spin} (${color})\n` +
-        `Result: ${delta >= 0 ? "✅ WIN" : "❌ LOSS"}\n\n` +
-        `Payout: ${economy.formatMoney(payout)}\n` +
-        `Net: ${delta >= 0 ? "+" : ""}${economy.formatMoney(delta)}\n` +
-        `Wallet: ${economy.formatMoney(account.wallet + delta)}`;
-
-      // Log transaction
-      await economy.logTransaction({
-        guildId,
-        userId: user.id,
-        username: user.username,
-        type: "roulette_spin",
-        amount: delta,
-        balanceAfter: account.wallet + delta,
-        metadata: {
-          spin,
-          color,
-          bet,
-          payout,
-          winChance
-        }
-      });
-
-      // Update message
-      await msg.edit({ embeds: [embed] });
-
-      // Clear user's bet
-      userRouletteBets.delete(user.id);
-
-      // Cleanup reply
-      reply.delete().catch(() => {});
-    } catch (err) {
-      reply.edit({
-        content: `❌ Error: ${err.message}`,
-        components: []
-      }).catch(() => {});
-    }
-  });
-
-  collector.on("end", (_, reason) => {
-    if (reason === "time") {
-      reply.delete().catch(() => {});
-    }
-  });
-}
-
-async function replyOnce(interaction, payload, label = "reply") {
-  const data = { ...payload };
-  if (data.ephemeral) {
-    delete data.ephemeral;
-    data.flags = MessageFlags.Ephemeral;
-  }
-  debug.step(label, {
-    action: "send",
-    command: interaction.commandName,
-    replied: interaction.replied,
-    deferred: interaction.deferred
-  });
-  return (interaction.replied || interaction.deferred)
-    ? interaction.followUp(data)
-    : interaction.reply(data);
-}
-
-async function handleAutocomplete(interaction) {
-  const focused = interaction.options.getFocused();
-  const query = typeof focused === "string" ? focused : "";
-  debug.step("autocomplete", { query });
-  const results = await shop.autocomplete(query);
-  logger.interaction({ type: "autocomplete", query, results });
-  debug.step("autocomplete", { query, resultsCount: results.length });
-  return interaction.respond(results.slice(0, 25)).catch(err => {
-    logger.error("AUTOCOMPLETE ERROR", err);
-    debug.fail("autocomplete", err, { query });
-  });
-}
-
-async function handleToggleButton(interaction) {
-  const customId = interaction.customId || "";
-  if (!customId.startsWith("toggle:")) return false;
-
-  const roleId = customId.split(":")[1];
-  const role = interaction.guild.roles.cache.get(roleId);
-  if (!role) {
-    return interaction.reply({ content: "That role no longer exists.", ephemeral: true });
-  }
-
-  const member = interaction.member;
-  const hasRole = member.roles.cache.has(roleId);
-
-  if (hasRole) {
-    await member.roles.remove(roleId);
-    return interaction.reply({ content: `Removed ${role.name}.`, ephemeral: true });
-  } else {
-    await member.roles.add(roleId);
-    return interaction.reply({ content: `Added ${role.name}.`, ephemeral: true });
-  }
-}
-
-async function handleInteraction(interaction) {
-  if (interaction.isAutocomplete()) {
-    return handleAutocomplete(interaction);
-  }
-
-  if (interaction.isButton()) {
-    // Handle role toggle buttons
-    const handled = await handleToggleButton(interaction);
-    if (handled !== false) return handled;
-
-    // Handle Roulette button
-    if (interaction.customId === "roulette:spin") {
-      return handleRouletteSpin(interaction);
-    }
-  }
-
-  if (!interaction.isChatInputCommand()) return;
-
-  const cmd = interaction.commandName;
-  debug.start(cmd, { user: interaction.user?.tag });
-
-  const send = (res, label = cmd) =>
-    replyOnce(interaction, { content: res.reply || String(res), ephemeral: true }, label);
-
-  const sendError = (msg) =>
-    replyOnce(interaction, { content: msg, ephemeral: true });
-
-  const { handleCommand } = require("./indexcommandslist");
-  return handleCommand(interaction, send, sendError);
-}
-
-module.exports = {
-  handleInteraction,
-  serializeOptions,
-  replyOnce,
+const {
   loadToggles,
   saveToggles,
   getPanelId,
-  handleAutocomplete,
-  handleButton: handleToggleButton
+  serializeOptions,
+  replyOnce
+} = require("./indexcommands");
+
+const { ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder } = require("discord.js");
+
+async function handleCommand(interaction, send, sendError) {
+  const cmd = interaction.commandName;
+  const opts = serializeOptions(interaction);
+
+  if (cmd === "shop" || cmd === "shophelp") {
+    return replyOnce(interaction, {
+      content: [
+        "shoplist - list all shop items",
+        "shopbuyitem - buy an item",
+        "shopadditem - add a new item",
+        "shopremoveitem - remove an item",
+        "shopeditprice - change an item price",
+        "shopstatus - show status",
+        "shopreload - reload data",
+        "balance - show your wallet and bank balance",
+        "deposit - move money from wallet to bank",
+        "withdraw - move money from bank to wallet",
+        "send - send money to another member",
+        "leaderboard - show richest players",
+        "daily - claim your daily reward",
+        "account - show full account",
+        "addmoney - admin add money",
+        "removemoney - admin remove money",
+        "resetuser - admin reset user",
+        "whereami - show your latest known location",
+        "linkgamertag - link your in-game gamertag",
+        "radaradd - add a player radar",
+        "radarremove - remove a player radar",
+        "radarview - view saved player radars",
+        "radaradmin - add or remove radar admins",
+        "radarignore - add or remove ignored players",
+        "createtoggle - create a role toggle button",
+        "removetoggle - remove a role toggle button"
+      ].join("\n"),
+      ephemeral: true
+    });
+  }
+
+  if (cmd === "killfeed") {
+    return replyOnce(interaction, { content: "Killfeed runs automatically on bot startup.", ephemeral: true });
+  }
+
+  if (cmd === "eventfeed") {
+    return replyOnce(interaction, { content: "Eventfeed runs automatically on bot startup.", ephemeral: true });
+  }
+
+  if (cmd === "serverstate") {
+    const serverstate = require("./modules/serverstate");
+    return replyOnce(interaction, { content: JSON.stringify(serverstate.state, null, 2), ephemeral: true });
+  }
+
+  if (cmd === "whereami") return whereami.execute(interaction);
+  if (cmd === "linkgamertag") return linkgamertag.execute(interaction);
+
+  if (cmd === "radaradd") return radaradd.execute(interaction);
+  if (cmd === "radarremove") return radarremove.execute(interaction);
+  if (cmd === "radarview") return radarview.execute(interaction);
+  if (cmd === "radaradmin") return radaradmin.execute(interaction);
+  if (cmd === "radarignore") return radarignore.execute(interaction);
+
+  if (cmd === "createtoggle") {
+    const { StringSelectMenuBuilder, ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+
+    if (!interaction.guild || !interaction.channel) {
+      return replyOnce(interaction, {
+        content: "This command can only be used in a server channel.",
+        ephemeral: true
+      });
+    }
+
+    const roles = interaction.guild.roles.cache
+      .filter(r => r.id !== interaction.guild.id && !r.managed)
+      .sort((a, b) => b.position - a.position)
+      .map(role => ({
+        label: role.name.slice(0, 100),
+        value: role.id,
+        description: role.id
+      }))
+      .slice(0, 25);
+
+    if (!roles.length) {
+      return replyOnce(interaction, {
+        content: "No selectable roles were found in this server.",
+        ephemeral: true
+      });
+    }
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId(`toggle_role_select:${interaction.user.id}`)
+      .setPlaceholder("Select a role to toggle")
+      .addOptions(roles);
+
+    const row = new ActionRowBuilder().addComponents(menu);
+
+    await interaction.reply({
+      content: "Pick the role you want this toggle to give:",
+      components: [row],
+      ephemeral: true
+    });
+
+    const promptMsg = await interaction.fetchReply();
+
+    try {
+      const selected = await promptMsg.awaitMessageComponent({
+        time: 60000,
+        filter: i => i.user.id === interaction.user.id && i.customId === `toggle_role_select:${interaction.user.id}`
+      });
+
+      const roleId = selected.values[0];
+      const role = interaction.guild.roles.cache.get(roleId);
+
+      if (!role) {
+        return selected.update({
+          content: "That role no longer exists.",
+          components: []
+        });
+      }
+
+      await selected.update({
+        content: `Selected role: **${role.name}**\nNow send the custom title/message text for the toggle panel in this channel.`,
+        components: []
+      });
+
+      const collected = await interaction.channel.awaitMessages({
+        filter: m => m.author.id === interaction.user.id && m.channel.id === interaction.channel.id,
+        max: 1,
+        time: 60000
+      });
+
+      const message = collected.first();
+      if (!message) {
+        return replyOnce(interaction, {
+          content: "Timed out waiting for the toggle message text.",
+          ephemeral: true
+        });
+      }
+
+      const title = message.content.trim();
+      await message.delete().catch(() => {});
+
+      if (!title) {
+        return replyOnce(interaction, {
+          content: "No title/message was provided. Toggle creation cancelled.",
+          ephemeral: true
+        });
+      }
+
+      const button = new ButtonBuilder()
+        .setCustomId(`toggle:${role.id}`)
+        .setLabel(role.name)
+        .setStyle(ButtonStyle.Success);
+
+      const row2 = new ActionRowBuilder().addComponents(button);
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setColor(0x57F287)
+        .setDescription(`Click the button below to toggle **${role.name}**.`);
+
+      const panelMsg = await interaction.channel.send({
+        embeds: [embed],
+        components: [row2]
+      });
+
+      const data = loadToggles();
+      data.panels = Array.isArray(data.panels) ? data.panels : [];
+      data.panels.push({
+        panelId: getPanelId(interaction),
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: panelMsg.id,
+        roleId: role.id,
+        roleName: role.name,
+        title,
+        createdBy: interaction.user.id,
+        createdAt: new Date().toISOString()
+      });
+      saveToggles(data);
+
+      return replyOnce(interaction, {
+        content: `✅ Toggle created for **${role.name}**.`,
+        ephemeral: true
+      });
+    } catch (error) {
+      return replyOnce(interaction, {
+        content: error.message || "Failed to create the toggle panel.",
+        ephemeral: true
+      });
+    }
+  }
+
+  if (cmd === "removetoggle") {
+    const data = loadToggles();
+    const panels = Array.isArray(data.panels) ? data.panels : [];
+    const matches = panels.filter(
+      p => p.guildId === interaction.guildId && p.channelId === interaction.channelId
+    );
+
+    if (!matches.length) {
+      return replyOnce(interaction, {
+        content: "No toggles found in this channel.",
+        ephemeral: true
+      });
+    }
+
+    const first = matches[0];
+    const lines = matches
+      .map((p, i) => `${i + 1}. ${p.roleName} (${p.messageId || "no message id"})`)
+      .join("\n");
+
+    if (first && first.messageId) {
+      try {
+        const msg = await interaction.channel.messages.fetch(first.messageId);
+        await msg.delete().catch(() => {});
+      } catch {}
+    }
+
+    data.panels = panels.filter(
+      p => !(p.guildId === interaction.guildId && p.channelId === interaction.channelId && p.roleId === first.roleId)
+    );
+    saveToggles(data);
+
+    return replyOnce(interaction, {
+      content: `✅ Removed the first toggle found in this channel.\n\nFound:\n${lines}`,
+      ephemeral: true
+    });
+  }
+
+  // -------------------- BUY / ADMIN / RESET / RESTART --------------------
+
+  if (cmd === "addmoney" || cmd === "removemoney") {
+    const target = interaction.options.getUser("member", true);
+    const amount = interaction.options.getInteger("amount", true);
+    const adminUser = interaction.user.username;
+
+    if (amount <= 0) {
+      return send({ reply: "Amount must be greater than 0." });
+    }
+
+    const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
+    const wallet = Number(account.wallet || 0);
+
+    const type = cmd === "addmoney" ? "admin_add" : "admin_remove";
+    const delta = type === "admin_add" ? amount : -amount;
+
+    if (wallet + delta < 0) {
+      return send({ reply: "Insufficient funds. Wallet cannot go negative." });
+    }
+
+    const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: wallet + delta });
+    await economy.logTransaction({
+      guildId: interaction.guildId,
+      userId: target.id,
+      username: target.username,
+      type: type,
+      amount: delta,
+      balanceAfter: updated.wallet,
+      notes: `Admin ${cmd} by ${adminUser}`,
+      metadata: { adminId: interaction.user.id }
+    });
+
+    return send({
+      reply: `✅ ${cmd === "addmoney" ? "Added" : "Removed"} ${economy.formatMoney(Math.abs(delta))} to/from **${target.username}**.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+    });
+  }
+
+  if (cmd === "resetuser") {
+    const target = interaction.options.getUser("member", true);
+    const account = await economy.getOrCreateAccount(target.id, interaction.guildId, target.username);
+    const wallet = Number(account.wallet || 0);
+    const bank = Number(account.bank || 0);
+    const total = wallet + bank;
+
+    const updated = await economy.updateAccount(target.id, interaction.guildId, { wallet: 0, bank: 0 });
+    await economy.logTransaction({
+      guildId: interaction.guildId,
+      userId: target.id,
+      username: target.username,
+      type: "reset_all",
+      amount: total,
+      balanceAfter: 0,
+      notes: `Admin resetuser by ${interaction.user.username}`,
+      metadata: { old_wallet: wallet, old_bank: bank, admin: true }
+    });
+
+    return send({
+      reply: `✅ Reset **${target.username}** to zero.\nWallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}`
+    });
+  }
+
+  if (cmd === "serverrestart") {
+    await interaction.reply({
+      content: "Starting server restart process now...",
+      ephemeral: true
+    });
+
+    try {
+      const restart = require("../../restart");
+      await restart.runRestartProcedure("manual");
+      return interaction.followUp({
+        content: "✅ Server restart process completed.",
+        ephemeral: true
+      });
+    } catch (err) {
+      debug.fail("serverrestart", err, { user: interaction.user.tag });
+      return interaction.followUp({
+        content: `❌ Restart process failed: ${err.message || "Unknown error"}`,
+        ephemeral: true
+      });
+    }
+  }
+
+  // -------------------- SHOP --------------------
+
+  if (cmd === "shoplist") {
+    const items = await shop.getShopList();
+    debug.step("shoplist", { count: items.length });
+    return send({
+      reply: items.length ? items.map(i => `• ${i.name} (${i.type}) - $${i.price}`).join("\n") : "Shop empty"
+    });
+  }
+
+  if (cmd === "shopadditem") {
+    return send(await shop.addItem(
+      interaction.options.getString("name"),
+      interaction.options.getString("type"),
+      interaction.options.getInteger("price")
+    ));
+  }
+
+  if (cmd === "shopbuyitem") {
+    const itemName = interaction.options.getString("item", true);
+    const quantity = interaction.options.getInteger("quantity", true);
+    const x = interaction.options.getInteger("x", true);
+    const y = interaction.options.getInteger("y") ?? 0;
+    const z = interaction.options.getInteger("z", true);
+    const method = interaction.options.getString("method") || "wallet";
+    const attachments = [];
+
+    const result = await shopPurchase.buyItem({
+      itemName,
+      quantity,
+      x,
+      y,
+      z,
+      method,
+      playerId: interaction.user.id,
+      guildId: interaction.guildId,
+      username: interaction.user.username,
+      attachments
+    });
+    return send(result);
+  }
+
+  if (cmd === "shopremoveitem") {
+    return send(await shop.deleteItem(interaction.options.getString("name")));
+  }
+
+  if (cmd === "shopeditprice") {
+    return send(await shop.editPrice(
+      interaction.options.getString("name"),
+      interaction.options.getInteger("price")
+    ));
+  }
+
+  if (cmd === "shopstatus") {
+    const items = await shop.getShopList();
+    const orders = shop.getOrders() || [];
+    debug.step("shopstatus", { items: items.length, orders: orders.length });
+    return send({ reply: `Items: ${items.length}\nOrders: ${orders.length}` });
+  }
+
+  if (cmd === "shopreload") {
+    return send(await shop.reloadData());
+  }
+
+  // -------------------- ECONOMY --------------------
+
+  if (cmd === "balance") {
+    const targetUser = interaction.options.getUser("member") || interaction.user;
+    const account = await economy.getOrCreateAccount(targetUser.id, interaction.guildId, targetUser.username);
+    const wallet = Number(account.wallet || 0);
+    const bank = Number(account.bank || 0);
+    return send({
+      reply: `${targetUser.username}\nWallet: ${economy.formatMoney(wallet)}\nBank: ${economy.formatMoney(bank)}\nTotal: ${economy.formatMoney(wallet + bank)}`
+    });
+  }
+
+  if (cmd === "deposit") {
+    const amount = interaction.options.getInteger("amount", true);
+    if (amount <= 0) return send({ reply: "Deposit amount must be a positive number." });
+    try {
+      const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
+      const wallet = Number(account.wallet || 0);
+      if (wallet < amount) {
+        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(wallet)} in your wallet.` });
+      }
+      const updated = await economy.transferWalletToBank(interaction.user.id, interaction.guildId, amount, interaction.user.username, { notes: "User deposit" });
+      return send({ reply: `Deposited ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}` });
+    } catch (err) {
+      debug.fail("deposit", err, { user: interaction.user?.tag });
+      return sendError("Deposit failed.");
+    }
+  }
+
+  if (cmd === "withdraw") {
+    const amount = interaction.options.getInteger("amount", true);
+    if (amount <= 0) return send({ reply: "Withdraw amount must be a positive number." });
+    try {
+      const account = await economy.getOrCreateAccount(interaction.user.id, interaction.guildId, interaction.user.username);
+      const bank = Number(account.bank || 0);
+      if (bank < amount) {
+        return send({ reply: `Insufficient funds. You only have ${economy.formatMoney(bank)} in your bank.` });
+      }
+      const updated = await economy.transferBankToWallet(interaction.user.id, interaction.guildId, amount, interaction.user.username, { notes: "User withdraw" });
+      return send({ reply: `Withdrew ${economy.formatMoney(amount)}. Wallet: ${economy.formatMoney(updated.wallet)} Bank: ${economy.formatMoney(updated.bank)}` });
+    } catch (err) {
+      debug.fail("withdraw", err, { user: interaction.user?.tag });
+      return sendError("Withdraw failed.");
+    }
+  }
+
+  if (cmd === "send") {
+    const member = interaction.options.getUser("member", true);
+    const amount = interaction.options.getInteger("amount", true);
+    if (amount <= 0) return send({ reply: "Amount must be a positive number." });
+    try {
+      const result = await economy.transferWallet(interaction.user.id, member.id, interaction.guildId, amount, interaction.user.username, member.username);
+      return send({ reply: `✅ Sent ${economy.formatMoney(amount)} to **${member.username}**.\nYour new wallet: ${economy.formatMoney(result.sender.wallet)}` });
+    } catch (err) {
+      debug.fail("send", err, { user: interaction.user?.tag });
+      return sendError(err.message || "Send failed.");
+    }
+  }
+
+  if (cmd === "daily") {
+    return daily.execute(interaction);
+  }
+
+  return sendError(`Command **${cmd}** is not fully implemented yet.`);
+}
+
+module.exports = {
+  handleCommand
 };
