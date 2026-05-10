@@ -86,8 +86,8 @@ module.exports = {
         .setRequired(true)
         .setMaxLength(100);
 
-      const row1 = new ActionRowBuilder().addComponents(titleInput);
-      modal.addComponents(row1);
+      const modalRow = new ActionRowBuilder().addComponents(titleInput);
+      modal.addComponents(modalRow);
 
       await selected.showModal(modal);
 
