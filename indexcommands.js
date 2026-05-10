@@ -1,9 +1,8 @@
 const fs = require("fs");
 const path = require("path");
-const { MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require("discord.js");
 
-// Roulette state (per-user bet cache)
-const userRouletteBets = new Map(); // userId -> bet
+const userRouletteBets = new Map();
 
 const shop = require("./modules/shop");
 const economy = require("./modules/economy");
@@ -11,6 +10,8 @@ const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
 const TOGGLE_FILE = path.join(__dirname, "data", "toggles.json");
+
+if (!global.__pendingToggleCreates) global.__pendingToggleCreates = new Map();
 
 function ensureToggleFile() {
   const dir = path.dirname(TOGGLE_FILE);
@@ -45,7 +46,6 @@ function serializeOptions(interaction) {
   return out;
 }
 
-// Text‑based spinner animation (1.5–2s)
 async function spinEmbedAnimation(interaction, msg, embed) {
   const displaySpins = [
     "🟢 │ 🟡 │ 🔴",
@@ -72,9 +72,7 @@ function getWinChance(bet) {
 
 async function getRouletteResult(user, guildId, bet) {
   const maxBet = 100000;
-  if (bet > maxBet) {
-    throw new Error(`Maximum bet is ${economy.formatMoney(maxBet)}`);
-  }
+  if (bet > maxBet) throw new Error(`Maximum bet is ${economy.formatMoney(maxBet)}`);
 
   const account = await economy.getOrCreateAccount(user.id, guildId, user.username);
   const wallet = Number(account.wallet || 0);
@@ -87,26 +85,16 @@ async function getRouletteResult(user, guildId, bet) {
   const spin = Math.floor(Math.random() * 37);
 
   let color = "black";
-  if (spin === 0) {
-    color = "green";
-  } else if (spin >= 1 && spin <= 18) {
-    color = "red";
-  } else if (spin >= 19 && spin <= 36) {
-    color = "black";
-  }
+  if (spin === 0) color = "green";
+  else if (spin >= 1 && spin <= 18) color = "red";
+  else color = "black";
 
-  const winRoll = Math.random();
-  const win = winRoll < winChance;
+  const win = Math.random() < winChance;
 
   let multiplier = 1;
   if (win) {
-    if (color === "green" && spin === 0) {
-      multiplier = 10;
-    } else if (color === "red" && spin >= 1 && spin <= 18) {
-      multiplier = 2;
-    } else if (color === "black" && spin >= 19 && spin <= 36) {
-      multiplier = 2;
-    }
+    if (color === "green") multiplier = 10;
+    else multiplier = 2;
   }
 
   const payout = win ? Math.floor(bet * multiplier) : 0;
@@ -136,8 +124,7 @@ async function handleRouletteSpin(interaction) {
 
   collector.on("collect", async m => {
     if (!m.content) return m.delete().catch(() => {});
-    const text = m.content.trim();
-    const amount = Number(text.split(/\s+/)[0]);
+    const amount = Number(m.content.trim().split(/\s+/)[0]);
 
     m.delete().catch(() => {});
 
@@ -207,12 +194,14 @@ async function replyOnce(interaction, payload, label = "reply") {
     delete data.ephemeral;
     data.flags = MessageFlags.Ephemeral;
   }
+
   debug.step(label, {
     action: "send",
     command: interaction.commandName,
     replied: interaction.replied,
     deferred: interaction.deferred
   });
+
   return (interaction.replied || interaction.deferred)
     ? interaction.followUp(data)
     : interaction.reply(data);
@@ -238,7 +227,7 @@ async function handleToggleButton(interaction) {
   const roleId = customId.split(":")[1];
   const role = interaction.guild.roles.cache.get(roleId);
   if (!role) {
-    return interaction.reply({ content: "That role no longer exists.", ephemeral: true });
+    return interaction.reply({ content: "That role no longer exists.", flags: MessageFlags.Ephemeral });
   }
 
   const member = interaction.member;
@@ -246,16 +235,83 @@ async function handleToggleButton(interaction) {
 
   if (hasRole) {
     await member.roles.remove(roleId);
-    return interaction.reply({ content: `Removed ${role.name}.`, ephemeral: true });
+    return interaction.reply({ content: `Removed ${role.name}.`, flags: MessageFlags.Ephemeral });
   } else {
     await member.roles.add(roleId);
-    return interaction.reply({ content: `Added ${role.name}.`, ephemeral: true });
+    return interaction.reply({ content: `Added ${role.name}.`, flags: MessageFlags.Ephemeral });
   }
+}
+
+async function handleToggleModal(interaction) {
+  const customId = interaction.customId || "";
+  if (!customId.startsWith("toggle_modal:")) return false;
+
+  const parts = customId.split(":");
+  const userId = parts[1];
+  const roleId = parts[2];
+
+  if (interaction.user.id !== userId) {
+    return interaction.reply({ content: "This modal is not for you.", flags: MessageFlags.Ephemeral });
+  }
+
+  const pending = global.__pendingToggleCreates.get(userId);
+  if (!pending || pending.roleId !== roleId) {
+    return interaction.reply({ content: "This toggle setup has expired.", flags: MessageFlags.Ephemeral });
+  }
+
+  const title = interaction.fields.getTextInputValue("panel_title").trim();
+  if (!title) {
+    return interaction.reply({ content: "No title was entered.", flags: MessageFlags.Ephemeral });
+  }
+
+  const button = new ButtonBuilder()
+    .setCustomId(`toggle:${roleId}`)
+    .setLabel(pending.roleName)
+    .setStyle(ButtonStyle.Success);
+
+  const row = new ActionRowBuilder().addComponents(button);
+
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setColor(0x57F287)
+    .setDescription(`Click the button below to toggle **${pending.roleName}**.`);
+
+  const panelMsg = await interaction.channel.send({
+    embeds: [embed],
+    components: [row]
+  });
+
+  const data = loadToggles();
+  data.panels = Array.isArray(data.panels) ? data.panels : [];
+  data.panels.push({
+    panelId: getPanelId(interaction),
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    messageId: panelMsg.id,
+    roleId,
+    roleName: pending.roleName,
+    title,
+    createdBy: interaction.user.id,
+    createdAt: new Date().toISOString()
+  });
+  saveToggles(data);
+
+  global.__pendingToggleCreates.delete(userId);
+
+  return interaction.reply({
+    content: `✅ Toggle created for **${pending.roleName}**.`,
+    flags: MessageFlags.Ephemeral
+  });
 }
 
 async function handleInteraction(interaction) {
   if (interaction.isAutocomplete()) {
     return handleAutocomplete(interaction);
+  }
+
+  if (interaction.isModalSubmit()) {
+    const handled = await handleToggleModal(interaction);
+    if (handled !== false) return handled;
   }
 
   if (interaction.isButton()) {
