@@ -3,9 +3,6 @@ const {
   PermissionFlagsBits,
   ActionRowBuilder,
   StringSelectMenuBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
   MessageFlags
 } = require("discord.js");
 
