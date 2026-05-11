@@ -3,10 +3,13 @@ const {
   PermissionFlagsBits,
   ActionRowBuilder,
   StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
   MessageFlags
 } = require("discord.js");
 
-const { pendingToggleCreates, buildToggleModal } = require("../../indexcommands");
+const { loadToggles, saveToggles, getPanelId } = require("../../indexcommands");
 
 function replyEphemeral(interaction, content) {
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
@@ -68,17 +71,62 @@ module.exports = {
         });
       }
 
-      pendingToggleCreates.set(interaction.user.id, {
-        guildId: interaction.guildId,
-        channelId: interaction.channelId,
-        roleId,
-        roleName: role.name
+      await selected.update({
+        content: `Selected role: **${role.name}**\nNow type the custom title/message text for the toggle panel in this channel.`,
+        components: []
       });
 
-      const modal = buildToggleModal(interaction.user.id, role.id, role.name);
-      await selected.showModal(modal);
+      const collected = await interaction.channel.awaitMessages({
+        filter: m => m.author.id === interaction.user.id && m.channel.id === interaction.channel.id,
+        max: 1,
+        time: 60000
+      });
 
-      return;
+      const message = collected.first();
+      if (!message) {
+        return replyEphemeral(interaction, "Timed out waiting for the panel text.");
+      }
+
+      const title = message.content.trim();
+      await message.delete().catch(() => {});
+
+      if (!title) {
+        return replyEphemeral(interaction, "No text was entered.");
+      }
+
+      const button = new ButtonBuilder()
+        .setCustomId(`toggle:${role.id}`)
+        .setLabel(role.name)
+        .setStyle(ButtonStyle.Success);
+
+      const buttonRow = new ActionRowBuilder().addComponents(button);
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setColor(0x57F287)
+        .setDescription(`Click the button below to toggle **${role.name}**.`);
+
+      const panelMsg = await interaction.channel.send({
+        embeds: [embed],
+        components: [buttonRow]
+      });
+
+      const data = loadToggles();
+      data.panels = Array.isArray(data.panels) ? data.panels : [];
+      data.panels.push({
+        panelId: getPanelId(interaction),
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: panelMsg.id,
+        roleId: role.id,
+        roleName: role.name,
+        title,
+        createdBy: interaction.user.id,
+        createdAt: new Date().toISOString()
+      });
+      saveToggles(data);
+
+      return replyEphemeral(interaction, `✅ Toggle created for **${role.name}**.`);
     } catch (error) {
       console.error("createtoggle command error:", error);
       return replyEphemeral(interaction, error.message || "Failed to start toggle creation.");
