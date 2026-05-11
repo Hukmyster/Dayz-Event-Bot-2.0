@@ -14,22 +14,22 @@ async function handleReactionRoleButton(interaction) {
   const idPart = String(interaction.customId || "").split(":")[1];
   const id = Number(idPart);
   if (!Number.isInteger(id) || id < 1) {
-    return interaction.reply({ content: "Invalid reaction role button.", ephemeral: true }).catch(() => {});
+    return interaction.deferUpdate().catch(() => {});
   }
 
-  await interaction.deferReply({ ephemeral: true }).catch(() => {});
+  await interaction.deferUpdate().catch(() => {});
 
   const config = await storage.loadJson(`reaction${id}`).catch(() => null);
   if (!config) {
-    return interaction.editReply({ content: "This reaction role is not configured anymore." }).catch(() => {});
+    return;
   }
 
   if (config.guild_id && config.guild_id !== interaction.guildId) {
-    return interaction.editReply({ content: "This reaction role belongs to a different server." }).catch(() => {});
+    return;
   }
 
   if (config.message_id && interaction.message?.id && config.message_id !== interaction.message.id) {
-    return interaction.editReply({ content: "This button does not match the configured reaction role message." }).catch(() => {});
+    return;
   }
 
   const guild = interaction.guild;
@@ -39,7 +39,7 @@ async function handleReactionRoleButton(interaction) {
     await guild.roles.fetch(roleId).catch(() => null);
 
   if (!role) {
-    return interaction.editReply({ content: "That role no longer exists." }).catch(() => {});
+    return;
   }
 
   const member =
@@ -47,7 +47,7 @@ async function handleReactionRoleButton(interaction) {
     await guild.members.fetch(interaction.user.id).catch(() => null);
 
   if (!member) {
-    return interaction.editReply({ content: "Could not resolve your server membership." }).catch(() => {});
+    return;
   }
 
   const me =
@@ -55,11 +55,11 @@ async function handleReactionRoleButton(interaction) {
     await guild.members.fetchMe().catch(() => null);
 
   if (!me?.permissions?.has?.(PermissionFlagsBits.ManageRoles)) {
-    return interaction.editReply({ content: "Bot is missing Manage Roles permission." }).catch(() => {});
+    return;
   }
 
   if (me.roles?.highest?.comparePositionTo?.(role) <= 0) {
-    return interaction.editReply({ content: "Bot role must be higher than the target role." }).catch(() => {});
+    return;
   }
 
   const hasRole = member.roles.cache.has(role.id);
@@ -67,16 +67,16 @@ async function handleReactionRoleButton(interaction) {
   try {
     if (hasRole) {
       debug.step("reactionrole", { action: "already", id, role: role.id, user: interaction.user.id });
-      return interaction.editReply({ content: `You already have role: ${role.name}` }).catch(() => {});
+      return;
     }
 
     await member.roles.add(role.id);
     debug.step("reactionrole", { action: "add", id, role: role.id, user: interaction.user.id });
-    return interaction.editReply({ content: `Added role: ${role.name}` }).catch(() => {});
+    return interaction.followUp({ content: `Added role: ${role.name}`, ephemeral: true }).catch(() => {});
   } catch (err) {
     logger.error("REACTIONROLE BUTTON ERROR", err);
     debug.fail("reactionrole", err, { id, role: role.id, user: interaction.user.id });
-    return interaction.editReply({ content: `Failed to update role: ${err.message}` }).catch(() => {});
+    return interaction.followUp({ content: `Failed to update role: ${err.message}`, ephemeral: true }).catch(() => {});
   }
 }
 
