@@ -1,47 +1,63 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require("discord.js");
-const storage = require("../../services/storage");
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const storage = require('../../services/storage');
+const logger = require('../../utils/logger');
+const debug = require('../../utils/debug');
 
-function replyEphemeral(interaction, content) {
-  return interaction.reply({ content, flags: MessageFlags.Ephemeral });
+function normalizeKey(input) {
+  const key = String(input || '').trim();
+  const m = key.match(/^reaction(\d+)$/i);
+  if (!m) return null;
+  return `reaction${Number(m[1])}`;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName("removetoggle")
-    .setDescription("Remove the saved role toggle panel.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    .setName('reactionroleremove')
+    .setDescription('Remove a reaction role panel')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(option =>
+      option.setName('reaction')
+        .setDescription('Reaction key (reaction1, reaction2, ...)')
+        .setRequired(true)
+        .setAutocomplete(true)
+    ),
 
   async execute(interaction) {
     try {
-      if (!interaction.guild || !interaction.channel) {
-        return replyEphemeral(interaction, "This command can only be used in a server channel.");
+      debug.start('reactionroleremove', { user: interaction.user.tag });
+      await interaction.deferReply({ ephemeral: true });
+
+      const key = normalizeKey(interaction.options.getString('reaction', true));
+      if (!key) {
+        return interaction.editReply({ content: 'Invalid selection.' });
       }
 
-      const toggle = await storage.loadJson("toggle").catch(() => null);
+      const config = await storage.loadJson(key).catch(() => null);
 
-      if (!toggle || !toggle.messageId) {
-        return replyEphemeral(interaction, "No saved toggle was found.");
+      if (config?.guild_id && config.guild_id !== interaction.guildId) {
+        return interaction.editReply({ content: 'This reaction role belongs to a different server.' });
       }
 
-      if (toggle.guildId && toggle.guildId !== interaction.guildId) {
-        return replyEphemeral(interaction, "This toggle belongs to a different server.");
+      if (config?.channel_id && config?.message_id) {
+        const channel = await interaction.client.channels.fetch(config.channel_id).catch(() => null);
+        const msg = channel?.messages?.fetch
+          ? await channel.messages.fetch(config.message_id).catch(() => null)
+          : null;
+        if (msg?.delete) await msg.delete().catch(() => {});
       }
 
-      if (toggle.channelId && toggle.channelId !== interaction.channelId) {
-        return replyEphemeral(interaction, "The saved toggle is in a different channel.");
-      }
-
-      try {
-        const msg = await interaction.channel.messages.fetch(toggle.messageId);
-        await msg.delete();
-      } catch {}
-
-      await storage.saveJson("toggle", {});
-
-      return replyEphemeral(interaction, `✅ Removed the saved toggle panel for **${toggle.roleName || "that role"}**.`);
+      await storage.deleteJson(key).catch(() => {});
+      logger.info(`[REACTIONROLE] Removed ${key}`, { key, by: interaction.user.id });
+      return interaction.editReply({ content: `✅ Removed **${key}**` });
     } catch (error) {
-      console.error("removetoggle command error:", error);
-      return replyEphemeral(interaction, error.message || "Failed to remove the toggle panel.");
+      logger.error('reactionroleremove error', error);
+      debug.fail('reactionroleremove', error);
+      const msg = `❌ Failed: ${error.message}`;
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: msg }).catch(() => {});
+      } else {
+        await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+      }
     }
   }
 };
