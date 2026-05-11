@@ -25,7 +25,8 @@ const {
   ButtonStyle,
   ActionRowBuilder,
   StringSelectMenuBuilder,
-  EmbedBuilder
+  EmbedBuilder,
+  MessageFlags
 } = require("discord.js");
 
 async function handleCommand(interaction, send, sendError) {
@@ -62,21 +63,21 @@ async function handleCommand(interaction, send, sendError) {
         "createtoggle - create a role toggle button",
         "removetoggle - remove a role toggle button"
       ].join("\n"),
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
   if (cmd === "killfeed") {
-    return replyOnce(interaction, { content: "Killfeed runs automatically on bot startup.", ephemeral: true });
+    return replyOnce(interaction, { content: "Killfeed runs automatically on bot startup.", flags: MessageFlags.Ephemeral });
   }
 
   if (cmd === "eventfeed") {
-    return replyOnce(interaction, { content: "Eventfeed runs automatically on bot startup.", ephemeral: true });
+    return replyOnce(interaction, { content: "Eventfeed runs automatically on bot startup.", flags: MessageFlags.Ephemeral });
   }
 
   if (cmd === "serverstate") {
     const serverstate = require("./modules/serverstate");
-    return replyOnce(interaction, { content: JSON.stringify(serverstate.state, null, 2), ephemeral: true });
+    return replyOnce(interaction, { content: JSON.stringify(serverstate.state, null, 2), flags: MessageFlags.Ephemeral });
   }
 
   if (cmd === "whereami") return whereami.execute(interaction);
@@ -92,7 +93,7 @@ async function handleCommand(interaction, send, sendError) {
     if (!interaction.guild || !interaction.channel) {
       return replyOnce(interaction, {
         content: "This command can only be used in a server channel.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -109,7 +110,7 @@ async function handleCommand(interaction, send, sendError) {
     if (!roles.length) {
       return replyOnce(interaction, {
         content: "No selectable roles were found in this server.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -123,7 +124,7 @@ async function handleCommand(interaction, send, sendError) {
     await interaction.reply({
       content: "Pick the role you want this toggle to give:",
       components: [row],
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
 
     const promptMsg = await interaction.fetchReply();
@@ -131,7 +132,9 @@ async function handleCommand(interaction, send, sendError) {
     try {
       const selected = await promptMsg.awaitMessageComponent({
         time: 60000,
-        filter: i => i.user.id === interaction.user.id && i.customId === `toggle_role_select:${interaction.user.id}`
+        filter: i =>
+          i.user.id === interaction.user.id &&
+          i.customId === `toggle_role_select:${interaction.user.id}`
       });
 
       const roleId = selected.values[0];
@@ -154,7 +157,9 @@ async function handleCommand(interaction, send, sendError) {
       });
 
       const collected = await interaction.channel.awaitMessages({
-        filter: m => m.author.id === interaction.user.id && m.channel.id === interaction.channel.id,
+        filter: m =>
+          m.author.id === interaction.user.id &&
+          m.channel.id === interaction.channel.id,
         max: 1,
         time: 60000
       });
@@ -165,7 +170,7 @@ async function handleCommand(interaction, send, sendError) {
       if (!message) {
         return replyOnce(interaction, {
           content: "Timed out waiting for the toggle message text.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -175,7 +180,7 @@ async function handleCommand(interaction, send, sendError) {
       if (!title) {
         return replyOnce(interaction, {
           content: "No title/message was provided. Toggle creation cancelled.",
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -213,12 +218,12 @@ async function handleCommand(interaction, send, sendError) {
 
       return replyOnce(interaction, {
         content: `✅ Toggle created for **${role.name}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     } catch (error) {
       return replyOnce(interaction, {
         content: error.message || "Failed to create the toggle panel.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }
@@ -233,7 +238,7 @@ async function handleCommand(interaction, send, sendError) {
     if (!matches.length) {
       return replyOnce(interaction, {
         content: "No toggles found in this channel.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -256,7 +261,7 @@ async function handleCommand(interaction, send, sendError) {
 
     return replyOnce(interaction, {
       content: `✅ Removed the first toggle found in this channel.\n\nFound:\n${lines}`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -323,7 +328,7 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "serverrestart") {
     await interaction.reply({
       content: "Starting server restart process now...",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
 
     try {
@@ -331,13 +336,13 @@ async function handleCommand(interaction, send, sendError) {
       await restart.runRestartProcedure("manual");
       return interaction.followUp({
         content: "✅ Server restart process completed.",
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     } catch (err) {
       debug.fail("serverrestart", err, { user: interaction.user.tag });
       return interaction.followUp({
         content: `❌ Restart process failed: ${err.message || "Unknown error"}`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }
