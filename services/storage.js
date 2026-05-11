@@ -19,8 +19,12 @@ async function ensureLocalDir() {
   await fs.mkdir(LOCAL_DATA_DIR, { recursive: true }).catch(() => {});
 }
 
+function isReactionKey(key) {
+  return /^reaction\d+$/.test(String(key));
+}
+
 function getJsonSpec(key) {
-  if (/^reaction\d+$/.test(String(key))) {
+  if (isReactionKey(key)) {
     return { name: `${key}.json`, remoteDir: INFO_DIR, localSubdir: 'info' };
   }
   const file = FILES[key] || { name: `${key}.json`, format: 'json' };
@@ -85,6 +89,9 @@ async function loadJson(key) {
     console.log(`[STORAGE] ✅ Loaded ${spec.name}`);
     return JSON.parse(raw);
   } catch (err) {
+    if (isReactionKey(key)) {
+      return null;
+    }
     console.log(`[STORAGE] Creating new file: ${spec.name}`);
     const defaultData = (key === 'shop') ? [] : {};
     await fs.writeFile(localPath, JSON.stringify(defaultData, null, 2));
@@ -112,6 +119,53 @@ async function saveJson(key, data) {
     console.log(`[FTP] ✅ Uploaded ${spec.name}`);
   } catch (err) {
     console.error(`[STORAGE] Save failed for ${spec.name}:`, err.message);
+  } finally {
+    if (client) client.close();
+  }
+}
+
+async function deleteJson(key) {
+  await ensureLocalDir();
+  const spec = getJsonSpec(key);
+  const localPath = spec.localSubdir
+    ? path.join(LOCAL_DATA_DIR, spec.localSubdir, spec.name)
+    : path.join(LOCAL_DATA_DIR, spec.name);
+
+  try {
+    await fs.unlink(localPath).catch(() => {});
+  } catch {}
+
+  let client;
+  try {
+    client = await getFtpClient();
+    await client.ensureDir(spec.remoteDir);
+    await client.remove(`${spec.remoteDir}/${spec.name}`).catch(() => {});
+  } finally {
+    if (client) client.close();
+  }
+}
+
+async function listReactions() {
+  let client;
+  try {
+    client = await getFtpClient();
+    await client.ensureDir(INFO_DIR);
+    const entries = await client.list(INFO_DIR).catch(() => []);
+    const keys = entries
+      .map(e => e?.name)
+      .filter(Boolean)
+      .filter(name => /^reaction\d+\.json$/i.test(name))
+      .map(name => name.replace(/\.json$/i, ''));
+
+    keys.sort((a, b) => {
+      const ai = Number(String(a).replace(/^reaction/i, ""));
+      const bi = Number(String(b).replace(/^reaction/i, ""));
+      return ai - bi;
+    });
+
+    return keys;
+  } catch {
+    return [];
   } finally {
     if (client) client.close();
   }
@@ -241,6 +295,8 @@ async function saveRadarIndex(radars) {
 module.exports = {
   loadJson,
   saveJson,
+  deleteJson,
+  listReactions,
   loadTable,
   saveTable,
   loadRadar,
