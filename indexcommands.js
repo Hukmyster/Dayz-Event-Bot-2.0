@@ -72,11 +72,11 @@ async function handleReactionRoleButton(interaction) {
 
     await member.roles.add(role.id);
     debug.step("reactionrole", { action: "add", id, role: role.id, user: interaction.user.id });
-    return interaction.followUp({ content: `Added role: ${role.name}`, ephemeral: true }).catch(() => {});
+    return;
   } catch (err) {
     logger.error("REACTIONROLE BUTTON ERROR", err);
     debug.fail("reactionrole", err, { id, role: role.id, user: interaction.user.id });
-    return interaction.followUp({ content: `Failed to update role: ${err.message}`, ephemeral: true }).catch(() => {});
+    return;
   }
 }
 
@@ -242,15 +242,32 @@ async function replyOnce(interaction, payload, label = "reply") {
 }
 
 async function handleAutocomplete(interaction) {
+  const cmd = interaction.commandName;
   const focused = interaction.options.getFocused();
   const query = typeof focused === "string" ? focused : "";
-  debug.step("autocomplete", { query });
+
+  if (cmd === "reactionroleremove") {
+    const all = await storage.listReactions().catch(() => []);
+    const q = query.toLowerCase();
+    const filtered = q
+      ? all.filter(k => k.toLowerCase().includes(q))
+      : all;
+
+    const results = filtered.slice(0, 25).map(k => ({ name: k, value: k }));
+    debug.step("autocomplete", { cmd, query, resultsCount: results.length });
+    return interaction.respond(results).catch(err => {
+      logger.error("AUTOCOMPLETE ERROR", err);
+      debug.fail("autocomplete", err, { cmd, query });
+    });
+  }
+
+  debug.step("autocomplete", { cmd, query });
   const results = await shop.autocomplete(query);
   logger.interaction({ type: "autocomplete", query, results });
-  debug.step("autocomplete", { query, resultsCount: results.length });
+  debug.step("autocomplete", { cmd, query, resultsCount: results.length });
   return interaction.respond(results.slice(0, 25)).catch(err => {
     logger.error("AUTOCOMPLETE ERROR", err);
-    debug.fail("autocomplete", err, { query });
+    debug.fail("autocomplete", err, { cmd, query });
   });
 }
 
@@ -277,9 +294,9 @@ async function handleInteraction(interaction) {
     return reactionrolecreate.execute(interaction);
   }
 
-  if (cmd === "removetoggle") {
-    const removetoggle = require("./commands/admin/removetoggle");
-    return removetoggle.execute(interaction);
+  if (cmd === "reactionroleremove") {
+    const reactionroleremove = require("./commands/admin/reactionroleremove");
+    return reactionroleremove.execute(interaction);
   }
 
   debug.start(cmd, { user: interaction.user?.tag });
