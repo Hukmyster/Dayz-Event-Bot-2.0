@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require("discord.js");
+const { MessageFlags } = require("discord.js");
 
 const userRouletteBets = new Map();
 
@@ -8,41 +8,6 @@ const shop = require("./modules/shop");
 const economy = require("./modules/economy");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
-
-const TOGGLE_FILE = path.join(__dirname, "data", "toggles.json");
-
-function ensureToggleFile() {
-  const dir = path.dirname(TOGGLE_FILE);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(TOGGLE_FILE)) fs.writeFileSync(TOGGLE_FILE, JSON.stringify({ panels: [] }, null, 2));
-}
-
-function loadToggles() {
-  ensureToggleFile();
-  try {
-    const raw = fs.readFileSync(TOGGLE_FILE, "utf8");
-    const parsed = JSON.parse(raw || "{}");
-    if (!parsed.panels) parsed.panels = [];
-    return parsed;
-  } catch {
-    return { panels: [] };
-  }
-}
-
-function saveToggles(data) {
-  ensureToggleFile();
-  fs.writeFileSync(TOGGLE_FILE, JSON.stringify(data, null, 2));
-}
-
-function getPanelId(interaction) {
-  return `${interaction.guildId}:${interaction.channelId}:${Date.now()}`;
-}
-
-function serializeOptions(interaction) {
-  const out = {};
-  for (const opt of interaction.options.data || []) out[opt.name] = opt.value;
-  return out;
-}
 
 async function spinEmbedAnimation(interaction, msg, embed) {
   const displaySpins = [
@@ -218,46 +183,12 @@ async function handleAutocomplete(interaction) {
   });
 }
 
-async function handleToggleButton(interaction) {
-  const customId = interaction.customId || "";
-  if (!customId.startsWith("toggle:")) return false;
-
-  const roleId = customId.split(":")[1];
-  const role = interaction.guild.roles.cache.get(roleId);
-  if (!role) {
-    return interaction.reply({
-      content: "That role no longer exists.",
-      flags: MessageFlags.Ephemeral
-    });
-  }
-
-  const member = interaction.member;
-  const hasRole = member.roles.cache.has(roleId);
-
-  if (hasRole) {
-    await member.roles.remove(roleId);
-    return interaction.reply({
-      content: `Removed ${role.name}.`,
-      flags: MessageFlags.Ephemeral
-    });
-  } else {
-    await member.roles.add(roleId);
-    return interaction.reply({
-      content: `Added ${role.name}.`,
-      flags: MessageFlags.Ephemeral
-    });
-  }
-}
-
 async function handleInteraction(interaction) {
   if (interaction.isAutocomplete()) {
     return handleAutocomplete(interaction);
   }
 
   if (interaction.isButton()) {
-    const handled = await handleToggleButton(interaction);
-    if (handled !== false) return handled;
-
     if (interaction.customId === "roulette:spin") {
       return handleRouletteSpin(interaction);
     }
@@ -280,11 +211,6 @@ async function handleInteraction(interaction) {
 
 module.exports = {
   handleInteraction,
-  serializeOptions,
   replyOnce,
-  loadToggles,
-  saveToggles,
-  getPanelId,
-  handleAutocomplete,
-  handleButton: handleToggleButton
+  handleAutocomplete
 };
