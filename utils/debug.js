@@ -46,19 +46,14 @@ function processErrorPayload(err) {
   };
 }
 
+// === CORE DEBUG FUNCTIONS (KEEPING) ===
 function start(command, meta = {}) {
   write("DEBUG", command, {
     step: "start",
     ...meta,
     pid: process.pid,
     cwd: process.cwd(),
-    env: {
-      hasSupabaseUrl: !!process.env.SUPABASE_URL,
-      hasSupabaseKey: !!process.env.SUPABASE_KEY,
-      hasDiscordToken: !!process.env.DISCORD_TOKEN,
-      hasGuildId: !!process.env.GUILD_ID,
-      shopDebug: SHOP_DEBUG
-    }
+    shopDebug: SHOP_DEBUG
   });
 }
 
@@ -78,23 +73,47 @@ function reply(command, meta = {}) {
   write("REPLY", command, meta);
 }
 
-function supabase(command, action, meta = {}) {
-  write("SUPABASE", command, { action, ...meta });
+// === NEW DIAGNOSTIC FUNCTIONS ===
+function deadEnd(command, interaction = null, meta = {}) {
+  const trace = {
+    command: interaction?.commandName,
+    user: interaction?.user?.tag,
+    customId: interaction?.customId,
+    interactionType: interaction?.type,
+    replied: interaction?.replied,
+    deferred: interaction?.deferred,
+    file: __filename,
+    ...meta
+  };
+  write("DEAD-END", command, trace);
 }
 
-function supabaseError(command, action, err, meta = {}) {
-  write("SUPABASE_ERROR", command, {
-    action,
-    ...meta,
-    ...processErrorPayload(err)
-  });
+function pathCheck(filePath, expected = null) {
+  const result = {
+    filePath,
+    exists: fs.existsSync(filePath),
+    expected,
+    basename: path.basename(filePath),
+    containsSupabase: filePath.toLowerCase().includes('supabase'),
+    containsDb: filePath.toLowerCase().includes('db'),
+    isCommandsAdmin: filePath.includes('commands/admin'),
+    isToggle: filePath.includes('toggle') || filePath.includes('createtoggle')
+  };
+  write("PATH-CHECK", path.basename(filePath), result);
+  return result;
 }
 
+function flagIssue(command, issue, details = {}) {
+  write("ISSUE-FLAG", command, { issue, details });
+}
+
+// === SHOP DEBUG (KEEPING) ===
 function debug(command, meta = {}) {
   if (!SHOP_DEBUG) return;
   write("DEBUG", command, meta);
 }
 
+// === GLOBAL ERROR HANDLERS (KEEPING) ===
 function installGlobalHandlers() {
   if (globalHandlersInstalled) return;
   globalHandlersInstalled = true;
@@ -126,10 +145,6 @@ function init() {
   write("OK", "debug", { message: "debug logger initialized", shopDebug: SHOP_DEBUG });
 }
 
-function initGlobal() {
-  installGlobalHandlers();
-}
-
 init();
 
 module.exports = {
@@ -138,10 +153,10 @@ module.exports = {
   ok,
   fail,
   reply,
-  supabase,
-  supabaseError,
+  deadEnd,        // NEW: traces dead ends
+  pathCheck,      // NEW: file path validation
+  flagIssue,      // NEW: flags issues
   debug,
   init,
-  initGlobal,
   SHOP_DEBUG
 };
