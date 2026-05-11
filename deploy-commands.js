@@ -1,4 +1,4 @@
-const { REST, Routes, ApplicationCommandOptionType } = require("discord.js");
+const { REST, Routes, ApplicationCommandOptionType, PermissionFlagsBits } = require("discord.js");
 require("dotenv").config();
 
 if (!process.env.DISCORD_TOKEN) {
@@ -201,6 +201,16 @@ const commands = [
 
   { name: "createtoggle", description: "Create a role toggle button" },
   { name: "removetoggle", description: "Remove a role toggle button" },
+
+  {
+    name: "reactionrolecreate",
+    description: "Create a reaction role button",
+    default_member_permissions: PermissionFlagsBits.Administrator.toString(),
+    options: [
+      { name: "message", type: ApplicationCommandOptionType.String, description: "Embed title and button label", required: true },
+      { name: "role", type: ApplicationCommandOptionType.Role, description: "Role to assign on click", required: true }
+    ]
+  },
 
   { name: "serverrestart", description: "Run the JSON build, upload, and restart process now" },
 
