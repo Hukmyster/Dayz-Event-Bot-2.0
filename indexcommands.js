@@ -11,8 +11,6 @@ const debug = require("./utils/debug");
 
 const TOGGLE_FILE = path.join(__dirname, "data", "toggles.json");
 
-if (!global.__pendingToggleCreates) global.__pendingToggleCreates = new Map();
-
 function ensureToggleFile() {
   const dir = path.dirname(TOGGLE_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -242,76 +240,9 @@ async function handleToggleButton(interaction) {
   }
 }
 
-async function handleToggleModal(interaction) {
-  const customId = interaction.customId || "";
-  if (!customId.startsWith("toggle_modal:")) return false;
-
-  const parts = customId.split(":");
-  const userId = parts[1];
-  const roleId = parts[2];
-
-  if (interaction.user.id !== userId) {
-    return interaction.reply({ content: "This modal is not for you.", flags: MessageFlags.Ephemeral });
-  }
-
-  const pending = global.__pendingToggleCreates.get(userId);
-  if (!pending || pending.roleId !== roleId) {
-    return interaction.reply({ content: "This toggle setup has expired.", flags: MessageFlags.Ephemeral });
-  }
-
-  const title = interaction.fields.getTextInputValue("panel_title").trim();
-  if (!title) {
-    return interaction.reply({ content: "No title was entered.", flags: MessageFlags.Ephemeral });
-  }
-
-  const button = new ButtonBuilder()
-    .setCustomId(`toggle:${roleId}`)
-    .setLabel(pending.roleName)
-    .setStyle(ButtonStyle.Success);
-
-  const row = new ActionRowBuilder().addComponents(button);
-
-  const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setColor(0x57F287)
-    .setDescription(`Click the button below to toggle **${pending.roleName}**.`);
-
-  const panelMsg = await interaction.channel.send({
-    embeds: [embed],
-    components: [row]
-  });
-
-  const data = loadToggles();
-  data.panels = Array.isArray(data.panels) ? data.panels : [];
-  data.panels.push({
-    panelId: getPanelId(interaction),
-    guildId: interaction.guildId,
-    channelId: interaction.channelId,
-    messageId: panelMsg.id,
-    roleId,
-    roleName: pending.roleName,
-    title,
-    createdBy: interaction.user.id,
-    createdAt: new Date().toISOString()
-  });
-  saveToggles(data);
-
-  global.__pendingToggleCreates.delete(userId);
-
-  return interaction.reply({
-    content: `✅ Toggle created for **${pending.roleName}**.`,
-    flags: MessageFlags.Ephemeral
-  });
-}
-
 async function handleInteraction(interaction) {
   if (interaction.isAutocomplete()) {
     return handleAutocomplete(interaction);
-  }
-
-  if (interaction.isModalSubmit()) {
-    const handled = await handleToggleModal(interaction);
-    if (handled !== false) return handled;
   }
 
   if (interaction.isButton()) {
