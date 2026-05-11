@@ -5,10 +5,14 @@ const debug = require('../../utils/debug');
 
 async function getNextReactionId() {
   let id = 1;
-  while (await storage.loadJson(`reaction${id}`).catch(() => null)) {
-    id++;
+  while (true) {
+    const existing = await storage.loadJson(`reaction${id}`).catch(() => null);
+    if (existing && typeof existing === 'object' && Object.keys(existing).length) {
+      id++;
+      continue;
+    }
+    return id;
   }
-  return id;
 }
 
 module.exports = {
