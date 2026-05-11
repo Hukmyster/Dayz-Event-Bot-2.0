@@ -199,9 +199,6 @@ const commands = [
     ]
   },
 
-  { name: "createtoggle", description: "Create a role toggle button" },
-  { name: "removetoggle", description: "Remove a role toggle button" },
-
   {
     name: "reactionrolecreate",
     description: "Create a reaction role button",
