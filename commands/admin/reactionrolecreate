@@ -1,127 +1,94 @@
-const { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionFlagsBits } = require("discord.js");
-const path = require("path");
-const fs = require("fs").promises;
-const storage = require("../../services/storage");
-const logger = require("../../utils/logger");
-const debug = require("../../utils/debug");
+const { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionFlagsBits } = require('discord.js');
+const storage = require('../../services/storage');
+const logger = require('../../utils/logger');
+const debug = require('../../utils/debug');
 
-function safeLabel(text) {
-  const s = String(text || "").trim();
-  return s.length > 80 ? s.slice(0, 77) + "..." : s;
-}
-
-async function getNextReactionName() {
-  const index = await storage.loadJson("reactionIndex").catch(() => ({}));
-  const current = Number(index?.last || 0);
-  return { next: current + 1, current };
-}
-
-async function saveNextReactionIndex(next) {
-  await storage.saveJson("reactionIndex", { last: next });
-}
-
-async function loadAllReactions() {
-  const index = await storage.loadJson("reactionIndex").catch(() => ({}));
-  const last = Number(index?.last || 0);
-  const items = [];
-
-  for (let i = 1; i <= last; i++) {
-    const data = await storage.loadJson(`reaction${i}`).catch(() => null);
-    if (data && data.message_id && data.role_id) {
-      items.push({ id: i, ...data });
-    }
+async function getNextReactionId() {
+  let id = 1;
+  while (await storage.loadJson(`reaction${id}`).catch(() => null)) {
+    id++;
   }
-
-  return items;
+  return id;
 }
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName("reactionrolecreate")
-    .setDescription("Create a reaction-role button message")
+    .setName('reactionrolecreate')
+    .setDescription('Create a reaction role button')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption(option =>
-      option
-        .setName("message")
-        .setDescription("Text to use as the embed title and button label")
+    .addStringOption(option => 
+      option.setName('message')
+        .setDescription('Embed title and button label')
         .setRequired(true)
+        .setMaxLength(100)
     )
     .addRoleOption(option =>
-      option
-        .setName("role")
-        .setDescription("Role to give when the button is clicked")
+      option.setName('role')
+        .setDescription('Role to assign on click')
         .setRequired(true)
     ),
 
   async execute(interaction) {
     try {
-      if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-        return interaction.reply({
-          content: "You must be an administrator to use this command.",
-          ephemeral: true
-        });
+      debug.start('reactionrolecreate', { user: interaction.user.tag });
+
+      const message = interaction.options.getString('message').trim();
+      const role = interaction.options.getRole('role');
+
+      if (message.length < 1 || message.length > 100) {
+        return interaction.reply({ content: 'Message must be 1-100 characters.', ephemeral: true });
       }
 
-      const message = interaction.options.getString("message", true).trim();
-      const role = interaction.options.getRole("role", true);
-
-      if (!message) {
-        return interaction.reply({
-          content: "Message cannot be empty.",
-          ephemeral: true
-        });
-      }
-
-      const indexData = await storage.loadJson("reactionIndex").catch(() => ({ last: 0 }));
-      const nextId = Number(indexData?.last || 0) + 1;
-      const fileKey = `reaction${nextId}`;
+      const id = await getNextReactionId();
+      const fileKey = `reaction${id}`;
+      const label = message.length > 80 ? message.slice(0, 77) + '...' : message;
 
       const embed = new EmbedBuilder()
         .setTitle(message)
-        .setColor(0x2ecc71);
+        .setColor(0x00ff00)
+        .setTimestamp();
 
       const button = new ButtonBuilder()
-        .setCustomId(`reactionrole:${nextId}`)
-        .setLabel(safeLabel(message))
-        .setStyle(ButtonStyle.Primary);
+        .setCustomId(`reactionrole:${id}`)
+        .setLabel(label)
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('✅');
 
       const row = new ActionRowBuilder().addComponents(button);
 
-      const sent = await interaction.reply({
-        embeds: [embed],
-        components: [row],
-        fetchReply: true
+      const sentMsg = await interaction.reply({ 
+        embeds: [embed], 
+        components: [row], 
+        fetchReply: true 
       });
 
-      const data = {
-        id: nextId,
+      const config = {
+        id,
         guild_id: interaction.guildId,
         channel_id: interaction.channelId,
-        message_id: sent.id,
+        message_id: sentMsg.id,
         role_id: role.id,
         role_name: role.name,
         label: message,
         created_by: interaction.user.id,
-        created_at: new Date().toISOString()
+        created: Date.now()
       };
 
-      await storage.saveJson(fileKey, data);
-      await storage.saveJson("reactionIndex", { last: nextId });
+      await storage.saveJson(fileKey, config);
+      logger.info(`[REACTIONROLE] Created ${fileKey}`, config);
 
-      const ok = await interaction.followUp({
-        content: `✅ Reaction role created and saved as **${fileKey}.json**.`,
-        ephemeral: true
+      await interaction.followUp({ 
+        content: `✅ Created reaction role **${fileKey}** (role: ${role.name})`, 
+        ephemeral: true 
       });
 
-      setTimeout(() => {
-        ok.delete().catch(() => {});
-      }, 5000);
-    } catch (err) {
-      logger.error("reactionrolecreate error", err);
-      debug.fail("reactionrolecreate", err, { user: interaction.user?.tag });
-      return interaction.reply({
-        content: `❌ Failed to create reaction role: ${err.message || "Unknown error"}`,
-        ephemeral: true
+      debug.step('reactionrolecreate', { success: true, id });
+    } catch (error) {
+      logger.error('reactionrolecreate error', error);
+      debug.fail('reactionrolecreate', error);
+      await interaction.reply({ 
+        content: `❌ Failed: ${error.message}`, 
+        ephemeral: true 
       }).catch(() => {});
     }
   }
