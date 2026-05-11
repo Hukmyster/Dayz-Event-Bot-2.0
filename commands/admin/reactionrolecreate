@@ -1,18 +1,12 @@
-const { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, ButtonBuilder, ButtonStyle, ActionRowBuilder, PermissionFlagsBits } = require('discord.js');
 const storage = require('../../services/storage');
 const logger = require('../../utils/logger');
 const debug = require('../../utils/debug');
 
 async function getNextReactionId() {
   let id = 1;
-  while (true) {
-    const existing = await storage.loadJson(`reaction${id}`).catch(() => null);
-    if (existing && typeof existing === 'object' && Object.keys(existing).length) {
-      id++;
-      continue;
-    }
-    return id;
-  }
+  while (await storage.loadJson(`reaction${id}`).catch(() => null)) id++;
+  return id;
 }
 
 module.exports = {
@@ -22,9 +16,9 @@ module.exports = {
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(option => 
       option.setName('message')
-        .setDescription('Embed title and button label')
+        .setDescription('Button label (1-80 chars)')
         .setRequired(true)
-        .setMaxLength(100)
+        .setMaxLength(80)
     )
     .addRoleOption(option =>
       option.setName('role')
@@ -36,21 +30,18 @@ module.exports = {
     try {
       debug.start('reactionrolecreate', { user: interaction.user.tag });
 
+      await interaction.deferReply({ ephemeral: true });
+
       const message = interaction.options.getString('message').trim();
       const role = interaction.options.getRole('role');
 
-      if (message.length < 1 || message.length > 100) {
-        return interaction.reply({ content: 'Message must be 1-100 characters.', ephemeral: true });
+      if (message.length < 1 || message.length > 80) {
+        return interaction.editReply({ content: 'Message must be 1-80 characters.' });
       }
 
       const id = await getNextReactionId();
       const fileKey = `reaction${id}`;
-      const label = message.length > 80 ? message.slice(0, 77) + '...' : message;
-
-      const embed = new EmbedBuilder()
-        .setTitle(message)
-        .setColor(0x00ff00)
-        .setTimestamp();
+      const label = message;
 
       const button = new ButtonBuilder()
         .setCustomId(`reactionrole:${id}`)
@@ -60,11 +51,16 @@ module.exports = {
 
       const row = new ActionRowBuilder().addComponents(button);
 
-      const sentMsg = await interaction.reply({ 
-        embeds: [embed], 
-        components: [row], 
-        fetchReply: true 
-      });
+      if (!interaction.channel) {
+        return interaction.editReply({ content: 'This command can only be used in a server channel.' });
+      }
+
+      let sentMsg;
+      try {
+        sentMsg = await interaction.channel.send({ components: [row] });
+      } catch {
+        sentMsg = await interaction.channel.send({ content: '\u200b', components: [row] });
+      }
 
       const config = {
         id,
@@ -81,19 +77,18 @@ module.exports = {
       await storage.saveJson(fileKey, config);
       logger.info(`[REACTIONROLE] Created ${fileKey}`, config);
 
-      await interaction.followUp({ 
-        content: `✅ Created reaction role **${fileKey}** (role: ${role.name})`, 
-        ephemeral: true 
-      });
+      await interaction.editReply({ content: `✅ Created **${fileKey}**` });
 
       debug.step('reactionrolecreate', { success: true, id });
     } catch (error) {
       logger.error('reactionrolecreate error', error);
       debug.fail('reactionrolecreate', error);
-      await interaction.reply({ 
-        content: `❌ Failed: ${error.message}`, 
-        ephemeral: true 
-      }).catch(() => {});
+      const msg = `❌ Failed: ${error.message}`;
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: msg }).catch(() => {});
+      } else {
+        await interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+      }
     }
   }
 };
