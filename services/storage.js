@@ -5,6 +5,7 @@ const path = require('path');
 const LOCAL_DATA_DIR = path.join(__dirname, '../data');
 const REMOTE_BASE = '/dayzps_missions/dayzOffline.chernarusplus/custom/server';
 const RADARS_DIR = `${REMOTE_BASE}/radars`;
+const INFO_DIR = `${REMOTE_BASE}/info`;
 
 console.log("[STORAGE] Using path:", REMOTE_BASE);
 
@@ -16,6 +17,14 @@ const FILES = {
 
 async function ensureLocalDir() {
   await fs.mkdir(LOCAL_DATA_DIR, { recursive: true }).catch(() => {});
+}
+
+function getJsonSpec(key) {
+  if (/^reaction\d+$/.test(String(key))) {
+    return { name: `${key}.json`, remoteDir: INFO_DIR, localSubdir: 'info' };
+  }
+  const file = FILES[key] || { name: `${key}.json`, format: 'json' };
+  return { name: file.name, remoteDir: REMOTE_BASE, localSubdir: '' };
 }
 
 async function getFtpClient() {
@@ -60,19 +69,23 @@ function toCsv(rows, headers) {
 
 async function loadJson(key) {
   await ensureLocalDir();
-  const file = FILES[key] || { name: `${key}.json`, format: 'json' };
-  const localPath = path.join(LOCAL_DATA_DIR, file.name);
+  const spec = getJsonSpec(key);
+  const localPath = spec.localSubdir
+    ? path.join(LOCAL_DATA_DIR, spec.localSubdir, spec.name)
+    : path.join(LOCAL_DATA_DIR, spec.name);
   let client;
 
   try {
+    await fs.mkdir(path.dirname(localPath), { recursive: true }).catch(() => {});
     client = await getFtpClient();
-    const remotePath = `${REMOTE_BASE}/${file.name}`;
+    await client.ensureDir(spec.remoteDir);
+    const remotePath = `${spec.remoteDir}/${spec.name}`;
     await client.downloadTo(localPath, remotePath).catch(() => {});
     const raw = await fs.readFile(localPath, 'utf8');
-    console.log(`[STORAGE] ✅ Loaded ${file.name}`);
+    console.log(`[STORAGE] ✅ Loaded ${spec.name}`);
     return JSON.parse(raw);
   } catch (err) {
-    console.log(`[STORAGE] Creating new file: ${file.name}`);
+    console.log(`[STORAGE] Creating new file: ${spec.name}`);
     const defaultData = (key === 'shop') ? [] : {};
     await fs.writeFile(localPath, JSON.stringify(defaultData, null, 2));
     return defaultData;
@@ -83,18 +96,22 @@ async function loadJson(key) {
 
 async function saveJson(key, data) {
   await ensureLocalDir();
-  const file = FILES[key] || { name: `${key}.json`, format: 'json' };
-  const localPath = path.join(LOCAL_DATA_DIR, file.name);
+  const spec = getJsonSpec(key);
+  const localPath = spec.localSubdir
+    ? path.join(LOCAL_DATA_DIR, spec.localSubdir, spec.name)
+    : path.join(LOCAL_DATA_DIR, spec.name);
   let client;
 
   try {
+    await fs.mkdir(path.dirname(localPath), { recursive: true }).catch(() => {});
     await fs.writeFile(localPath, JSON.stringify(data, null, 2));
     client = await getFtpClient();
-    const remotePath = `${REMOTE_BASE}/${file.name}`;
+    await client.ensureDir(spec.remoteDir);
+    const remotePath = `${spec.remoteDir}/${spec.name}`;
     await client.uploadFrom(localPath, remotePath);
-    console.log(`[FTP] ✅ Uploaded ${file.name}`);
+    console.log(`[FTP] ✅ Uploaded ${spec.name}`);
   } catch (err) {
-    console.error(`[STORAGE] Save failed for ${file.name}:`, err.message);
+    console.error(`[STORAGE] Save failed for ${spec.name}:`, err.message);
   } finally {
     if (client) client.close();
   }
