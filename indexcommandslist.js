@@ -13,19 +13,11 @@ const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
 const {
-  loadToggles,
-  saveToggles,
-  getPanelId,
   serializeOptions,
   replyOnce
 } = require("./indexcommands");
 
 const {
-  ButtonBuilder,
-  ButtonStyle,
-  ActionRowBuilder,
-  StringSelectMenuBuilder,
-  EmbedBuilder,
   MessageFlags
 } = require("discord.js");
 
@@ -59,9 +51,7 @@ async function handleCommand(interaction, send, sendError) {
         "radarremove - remove a player radar",
         "radarview - view saved player radars",
         "radaradmin - add or remove radar admins",
-        "radarignore - add or remove ignored players",
-        "createtoggle - create a role toggle button",
-        "removetoggle - remove a role toggle button"
+        "radarignore - add or remove ignored players"
       ].join("\n"),
       flags: MessageFlags.Ephemeral
     });
@@ -97,182 +87,6 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "radarview") return radarview.execute(interaction);
   if (cmd === "radaradmin") return radaradmin.execute(interaction);
   if (cmd === "radarignore") return radarignore.execute(interaction);
-
-  if (cmd === "createtoggle") {
-    if (!interaction.guild || !interaction.channel) {
-      return replyOnce(interaction, {
-        content: "This command can only be used in a server channel.",
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    const roles = interaction.guild.roles.cache
-      .filter(r => r.id !== interaction.guild.id && !r.managed)
-      .sort((a, b) => b.position - a.position)
-      .map(role => ({
-        label: role.name.slice(0, 100),
-        value: role.id,
-        description: role.id.slice(0, 100)
-      }))
-      .slice(0, 25);
-
-    if (!roles.length) {
-      return replyOnce(interaction, {
-        content: "No selectable roles were found in this server.",
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    const menu = new StringSelectMenuBuilder()
-      .setCustomId(`toggle_role_select:${interaction.user.id}`)
-      .setPlaceholder("Select a role to toggle")
-      .addOptions(roles);
-
-    const row = new ActionRowBuilder().addComponents(menu);
-
-    await interaction.reply({
-      content: "Pick the role you want this toggle to give:",
-      components: [row],
-      flags: MessageFlags.Ephemeral
-    });
-
-    const promptMsg = await interaction.fetchReply();
-
-    try {
-      const selected = await promptMsg.awaitMessageComponent({
-        time: 60000,
-        filter: i =>
-          i.user.id === interaction.user.id &&
-          i.customId === `toggle_role_select:${interaction.user.id}`
-      });
-
-      const roleId = selected.values[0];
-      const role = interaction.guild.roles.cache.get(roleId);
-
-      if (!role) {
-        return selected.update({
-          content: "That role no longer exists.",
-          components: []
-        });
-      }
-
-      await selected.reply({
-        content: `Selected **${role.name}**. Type the panel title below:`,
-        flags: MessageFlags.Ephemeral
-      });
-
-      const prompt = await interaction.channel.send({
-        content: `**${interaction.user.username}** please type the panel title/message now.`
-      });
-
-      const collected = await interaction.channel.awaitMessages({
-        filter: m =>
-          m.author.id === interaction.user.id &&
-          m.channel.id === interaction.channel.id,
-        max: 1,
-        time: 60000
-      });
-
-      const message = collected.first();
-      await prompt.delete().catch(() => {});
-
-      if (!message) {
-        return replyOnce(interaction, {
-          content: "Timed out waiting for the toggle message text.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const title = message.content.trim();
-      await message.delete().catch(() => {});
-
-      if (!title) {
-        return replyOnce(interaction, {
-          content: "No title/message was provided. Toggle creation cancelled.",
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const button = new ButtonBuilder()
-        .setCustomId(`toggle:${role.id}`)
-        .setLabel(role.name)
-        .setStyle(ButtonStyle.Success);
-
-      const row2 = new ActionRowBuilder().addComponents(button);
-
-      const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setColor(0x57F287)
-        .setDescription(`Click the button below to toggle **${role.name}**.`);
-
-      const panelMsg = await interaction.channel.send({
-        embeds: [embed],
-        components: [row2]
-      });
-
-      const data = loadToggles();
-      data.panels = Array.isArray(data.panels) ? data.panels : [];
-      data.panels.push({
-        panelId: getPanelId(interaction),
-        guildId: interaction.guildId,
-        channelId: interaction.channelId,
-        messageId: panelMsg.id,
-        roleId: role.id,
-        roleName: role.name,
-        title,
-        createdBy: interaction.user.id,
-        createdAt: new Date().toISOString()
-      });
-      saveToggles(data);
-
-      return replyOnce(interaction, {
-        content: `✅ Toggle created for **${role.name}**.`,
-        flags: MessageFlags.Ephemeral
-      });
-    } catch (error) {
-      return replyOnce(interaction, {
-        content: error.message || "Failed to create the toggle panel.",
-        flags: MessageFlags.Ephemeral
-      });
-    }
-  }
-
-  if (cmd === "removetoggle") {
-    const data = loadToggles();
-    const panels = Array.isArray(data.panels) ? data.panels : [];
-    const matches = panels.filter(
-      p => p.guildId === interaction.guildId && p.channelId === interaction.channelId
-    );
-
-    if (!matches.length) {
-      return replyOnce(interaction, {
-        content: "No toggles found in this channel.",
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    const first = matches[0];
-    const lines = matches
-      .map((p, i) => `${i + 1}. ${p.roleName} (${p.messageId || "no message id"})`)
-      .join("\n");
-
-    if (first && first.messageId) {
-      try {
-        const msg = await interaction.channel.messages.fetch(first.messageId);
-        await msg.delete().catch(() => {});
-      } catch {}
-    }
-
-    data.panels = panels.filter(
-      p => !(p.guildId === interaction.guildId && p.channelId === interaction.channelId && p.roleId === first.roleId)
-    );
-    saveToggles(data);
-
-    return replyOnce(interaction, {
-      content: `✅ Removed the first toggle found in this channel.\n\nFound:\n${lines}`,
-      flags: MessageFlags.Ephemeral
-    });
-  }
 
   if (cmd === "addmoney" || cmd === "removemoney") {
     const target = interaction.options.getUser("member", true);
