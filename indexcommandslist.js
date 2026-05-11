@@ -20,7 +20,13 @@ const {
   replyOnce
 } = require("./indexcommands");
 
-const { ButtonBuilder, ButtonStyle, ActionRowBuilder, StringSelectMenuBuilder, EmbedBuilder } = require("discord.js");
+const {
+  ButtonBuilder,
+  ButtonStyle,
+  ActionRowBuilder,
+  StringSelectMenuBuilder,
+  EmbedBuilder
+} = require("discord.js");
 
 async function handleCommand(interaction, send, sendError) {
   const cmd = interaction.commandName;
@@ -83,8 +89,6 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "radarignore") return radarignore.execute(interaction);
 
   if (cmd === "createtoggle") {
-    const { StringSelectMenuBuilder, ActionRowBuilder, EmbedBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
-
     if (!interaction.guild || !interaction.channel) {
       return replyOnce(interaction, {
         content: "This command can only be used in a server channel.",
@@ -98,7 +102,7 @@ async function handleCommand(interaction, send, sendError) {
       .map(role => ({
         label: role.name.slice(0, 100),
         value: role.id,
-        description: role.id
+        description: role.id.slice(0, 100)
       }))
       .slice(0, 25);
 
@@ -141,8 +145,12 @@ async function handleCommand(interaction, send, sendError) {
       }
 
       await selected.update({
-        content: `Selected role: **${role.name}**\nNow send the custom title/message text for the toggle panel in this channel.`,
+        content: `Selected role: **${role.name}**\nNow type the custom title/message text for the toggle panel in this channel.`,
         components: []
+      });
+
+      const prompt = await interaction.channel.send({
+        content: `**${interaction.user.username}** please type the panel title/message now.`
       });
 
       const collected = await interaction.channel.awaitMessages({
@@ -152,6 +160,8 @@ async function handleCommand(interaction, send, sendError) {
       });
 
       const message = collected.first();
+      await prompt.delete().catch(() => {});
+
       if (!message) {
         return replyOnce(interaction, {
           content: "Timed out waiting for the toggle message text.",
@@ -250,8 +260,6 @@ async function handleCommand(interaction, send, sendError) {
     });
   }
 
-  // -------------------- BUY / ADMIN / RESET / RESTART --------------------
-
   if (cmd === "addmoney" || cmd === "removemoney") {
     const target = interaction.options.getUser("member", true);
     const amount = interaction.options.getInteger("amount", true);
@@ -334,8 +342,6 @@ async function handleCommand(interaction, send, sendError) {
     }
   }
 
-  // -------------------- SHOP --------------------
-
   if (cmd === "shoplist") {
     const items = await shop.getShopList();
     debug.step("shoplist", { count: items.length });
@@ -397,8 +403,6 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "shopreload") {
     return send(await shop.reloadData());
   }
-
-  // -------------------- ECONOMY --------------------
 
   if (cmd === "balance") {
     const targetUser = interaction.options.getUser("member") || interaction.user;
