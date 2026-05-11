@@ -225,7 +225,10 @@ async function handleToggleButton(interaction) {
   const roleId = customId.split(":")[1];
   const role = interaction.guild.roles.cache.get(roleId);
   if (!role) {
-    return interaction.reply({ content: "That role no longer exists.", flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: "That role no longer exists.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   const member = interaction.member;
@@ -233,10 +236,16 @@ async function handleToggleButton(interaction) {
 
   if (hasRole) {
     await member.roles.remove(roleId);
-    return interaction.reply({ content: `Removed ${role.name}.`, flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: `Removed ${role.name}.`,
+      flags: MessageFlags.Ephemeral
+    });
   } else {
     await member.roles.add(roleId);
-    return interaction.reply({ content: `Added ${role.name}.`, flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: `Added ${role.name}.`,
+      flags: MessageFlags.Ephemeral
+    });
   }
 }
 
