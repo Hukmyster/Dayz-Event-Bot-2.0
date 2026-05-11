@@ -204,8 +204,16 @@ const commands = [
     description: "Create a reaction role button",
     default_member_permissions: PermissionFlagsBits.Administrator.toString(),
     options: [
-      { name: "message", type: ApplicationCommandOptionType.String, description: "Embed title and button label", required: true },
+      { name: "message", type: ApplicationCommandOptionType.String, description: "Button label (1-80 chars)", required: true, max_length: 80 },
       { name: "role", type: ApplicationCommandOptionType.Role, description: "Role to assign on click", required: true }
+    ]
+  },
+  {
+    name: "reactionroleremove",
+    description: "Remove a reaction role panel",
+    default_member_permissions: PermissionFlagsBits.Administrator.toString(),
+    options: [
+      { name: "reaction", type: ApplicationCommandOptionType.String, description: "Reaction key (reaction1, reaction2, ...)", required: true, autocomplete: true }
     ]
   },
 
