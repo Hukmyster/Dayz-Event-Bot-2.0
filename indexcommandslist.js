@@ -90,12 +90,23 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "radarignore") return radarignore.execute(interaction);
 
   if (cmd === "createtoggle") {
-    if (!interaction.guild || !interaction.channel) {
-      return replyOnce(interaction, {
-        content: "This command can only be used in a server channel.",
-        flags: MessageFlags.Ephemeral
-      });
-    }
+  await interaction.reply({
+    content: "Pick a role for your toggle:",
+    components: [new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("temp_role_picker")
+        .setPlaceholder("Select role")
+        .addOptions(
+          interaction.guild.roles.cache
+            .filter(r => !r.managed)
+            .map(r => ({ label: r.name.slice(0,100), value: r.id }))
+            .slice(0,25)
+        )
+    )],
+    flags: MessageFlags.Ephemeral
+  });
+  return;
+  }
 
     const roles = interaction.guild.roles.cache
       .filter(r => r.id !== interaction.guild.id && !r.managed)
