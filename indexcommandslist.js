@@ -147,9 +147,9 @@ async function handleCommand(interaction, send, sendError) {
         });
       }
 
-      await selected.update({
-        content: `Selected role: **${role.name}**\nNow type the custom title/message text for the toggle panel in this channel.`,
-        components: []
+      await selected.reply({
+      content: `Selected **${role.name}**. Type the panel title below:`,
+      flags: MessageFlags.Ephemeral
       });
 
       const prompt = await interaction.channel.send({
