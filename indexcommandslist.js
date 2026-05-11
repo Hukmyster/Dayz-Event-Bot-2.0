@@ -68,16 +68,25 @@ async function handleCommand(interaction, send, sendError) {
   }
 
   if (cmd === "killfeed") {
-    return replyOnce(interaction, { content: "Killfeed runs automatically on bot startup.", flags: MessageFlags.Ephemeral });
+    return replyOnce(interaction, {
+      content: "Killfeed runs automatically on bot startup.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   if (cmd === "eventfeed") {
-    return replyOnce(interaction, { content: "Eventfeed runs automatically on bot startup.", flags: MessageFlags.Ephemeral });
+    return replyOnce(interaction, {
+      content: "Eventfeed runs automatically on bot startup.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   if (cmd === "serverstate") {
     const serverstate = require("./modules/serverstate");
-    return replyOnce(interaction, { content: JSON.stringify(serverstate.state, null, 2), flags: MessageFlags.Ephemeral });
+    return replyOnce(interaction, {
+      content: JSON.stringify(serverstate.state, null, 2),
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   if (cmd === "whereami") return whereami.execute(interaction);
@@ -90,23 +99,12 @@ async function handleCommand(interaction, send, sendError) {
   if (cmd === "radarignore") return radarignore.execute(interaction);
 
   if (cmd === "createtoggle") {
-  await interaction.reply({
-    content: "Pick a role for your toggle:",
-    components: [new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("temp_role_picker")
-        .setPlaceholder("Select role")
-        .addOptions(
-          interaction.guild.roles.cache
-            .filter(r => !r.managed)
-            .map(r => ({ label: r.name.slice(0,100), value: r.id }))
-            .slice(0,25)
-        )
-    )],
-    flags: MessageFlags.Ephemeral
-  });
-  return;
-  }
+    if (!interaction.guild || !interaction.channel) {
+      return replyOnce(interaction, {
+        content: "This command can only be used in a server channel.",
+        flags: MessageFlags.Ephemeral
+      });
+    }
 
     const roles = interaction.guild.roles.cache
       .filter(r => r.id !== interaction.guild.id && !r.managed)
@@ -159,8 +157,8 @@ async function handleCommand(interaction, send, sendError) {
       }
 
       await selected.reply({
-      content: `Selected **${role.name}**. Type the panel title below:`,
-      flags: MessageFlags.Ephemeral
+        content: `Selected **${role.name}**. Type the panel title below:`,
+        flags: MessageFlags.Ephemeral
       });
 
       const prompt = await interaction.channel.send({
@@ -300,7 +298,7 @@ async function handleCommand(interaction, send, sendError) {
       guildId: interaction.guildId,
       userId: target.id,
       username: target.username,
-      type: type,
+      type,
       amount: delta,
       balanceAfter: updated.wallet,
       notes: `Admin ${cmd} by ${adminUser}`,
