@@ -23,7 +23,6 @@ const {
 
 async function handleCommand(interaction, send, sendError) {
   const cmd = interaction.commandName;
-  const opts = serializeOptions(interaction);
 
   if (cmd === "shop" || cmd === "shophelp") {
     return replyOnce(interaction, {
