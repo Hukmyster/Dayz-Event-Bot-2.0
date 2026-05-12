@@ -1,4 +1,5 @@
 const { getFiles, start: startServerState } = require("./serverstate");
+const playerstats = require("./playerstats");
 
 const WEBHOOK_URL = process.env.KILLFEED_WEBHOOK_URL || "";
 const LOOP_MS = Number(process.env.KILLFEED_INTERNAL_MS || 30000);
@@ -227,7 +228,16 @@ async function loopOnce() {
 
       for (const evt of events) {
         newEvents++;
+
         await postWebhook(evt);
+
+        await playerstats.recordPvpEvent({
+          killerPsns: evt.killer && evt.killer !== "NPC" && evt.killer !== "Unknown" ? [evt.killer] : [],
+          victimPsns: evt.victim && evt.victim !== "NPC" ? [evt.victim] : [],
+          distance: Number(evt.distance || 0),
+          weapon: evt.weapon || "unknown",
+          timestamp: new Date().toISOString()
+        });
       }
     }
 
