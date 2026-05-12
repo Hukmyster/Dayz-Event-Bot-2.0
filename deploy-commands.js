@@ -16,8 +16,7 @@ if (!process.env.CLIENT_ID) {
   process.exit(1);
 }
 
-// ✅ This is your current command list with:
-//    - /shop, /account, /shopstatus, /shopreload, /eventfeed, /killfeed, /serverstate removed
+// ✅ Updated command list including /playerstats
 const commands = [
   { name: "shophelp", description: "Show shop and economy help commands" },
   { name: "shoplist", description: "List all shop items" },
@@ -220,7 +219,21 @@ const commands = [
   { name: "serverrestart", description: "Run the JSON build, upload, and restart process now" },
 
   // <<< ✅ ADD ROULETTE SETUP COMMAND HERE >>> ///
-  { name: "addroulette", description: "Create a Roulette game panel in this channel" }
+  { name: "addroulette", description: "Create a Roulette game panel in this channel" },
+
+  // ✅ NEW: /playerstats command (linked to your economy/playerstats.js)
+  {
+    name: "playerstats",
+    description: "Show detailed player stats (inventory, killfeed, etc.)",
+    options: [
+      {
+        name: "member",
+        type: ApplicationCommandOptionType.User,
+        description: "Show stats for this member (optional, defaults to self)",
+        required: false
+      }
+    ]
+  }
 ];
 
 async function main() {
