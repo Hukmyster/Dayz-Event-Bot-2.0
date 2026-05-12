@@ -9,6 +9,7 @@ const economy = require("./modules/economy");
 const storage = require("./services/storage");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
+const playerstats = require("./modules/playerstats");
 
 async function handleReactionRoleButton(interaction) {
   const idPart = String(interaction.customId || "").split(":")[1];
