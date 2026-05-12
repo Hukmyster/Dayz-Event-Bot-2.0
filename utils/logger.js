@@ -20,9 +20,9 @@ function writeLog(type, data) {
 
 module.exports = {
   log: (msg) => writeLog("INFO", msg),
+  info: (msg) => writeLog("INFO", msg),
   warn: (msg) => writeLog("WARN", msg),
   error: (msg, err) => writeLog("ERROR", { msg, err: err?.stack || err }),
   interaction: (data) => writeLog("INTERACTION", data),
-  shop: (data) => writeLog("SHOP", data),
-  xml: (data) => writeLog("XML", data)
+  shop: (data) => writeLog("SHOP", data)
 };
