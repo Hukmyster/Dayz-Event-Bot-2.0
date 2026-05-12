@@ -56,20 +56,6 @@ async function handleCommand(interaction, send, sendError) {
     });
   }
 
-  if (cmd === "killfeed") {
-    return replyOnce(interaction, {
-      content: "Killfeed runs automatically on bot startup.",
-      flags: MessageFlags.Ephemeral
-    });
-  }
-
-  if (cmd === "eventfeed") {
-    return replyOnce(interaction, {
-      content: "Eventfeed runs automatically on bot startup.",
-      flags: MessageFlags.Ephemeral
-    });
-  }
-
   if (cmd === "serverstate") {
     const serverstate = require("./modules/serverstate");
     return replyOnce(interaction, {
