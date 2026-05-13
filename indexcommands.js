@@ -1,7 +1,6 @@
 const { MessageFlags, PermissionFlagsBits } = require("discord.js");
 
 const shop = require("./modules/shop");
-const economy = require("./modules/economy");
 const storage = require("./services/storage");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
