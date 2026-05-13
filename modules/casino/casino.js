@@ -8,20 +8,18 @@ function createCasinoEmbed() {
     .setColor(0x000000);
 }
 
-function createCasinoRows() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("casino:roulette:play")
-        .setLabel("Play")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId("casino:label:roulette")
-        .setLabel("Roulette")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(true)
-    )
-  ];
+function createCasinoRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("casino:roulette:play")
+      .setLabel("Play")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("casino:label:roulette")
+      .setLabel("Roulette")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true)
+  );
 }
 
 async function handleCasinoInteraction(interaction) {
@@ -33,11 +31,23 @@ async function handleCasinoInteraction(interaction) {
     return roulette.openPrivateSession(interaction);
   }
 
+  if (id === "casino:roulette:amount") {
+    return roulette.handleAmountButton(interaction);
+  }
+
+  if (id === "casino:roulette:bet") {
+    return roulette.handleBetButton(interaction);
+  }
+
+  if (id === "casino:roulette:spin") {
+    return roulette.handleSpin(interaction);
+  }
+
   return false;
 }
 
 module.exports = {
   createCasinoEmbed,
-  createCasinoRows,
+  createCasinoRow,
   handleCasinoInteraction
 };
