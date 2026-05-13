@@ -8,13 +8,17 @@ module.exports = {
     .setDefaultMemberPermissions(0x0000000008),
 
   async execute(interaction) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await interaction.deferReply({
+      flags: MessageFlags.Ephemeral
+    });
 
     const msg = await interaction.channel.send({
       embeds: [casino.createCasinoEmbed()],
       components: [casino.createCasinoRow()]
     });
 
-    await interaction.editReply({ content: `✅ Casino panel created: ${msg.url}` });
+    await interaction.editReply({
+      content: `✅ Casino panel created: ${msg.url}`
+    });
   }
 };
