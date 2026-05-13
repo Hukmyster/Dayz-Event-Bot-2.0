@@ -12,14 +12,7 @@ const radarignore = require("./commands/radar/radarignore");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 
-const {
-  serializeOptions,
-  replyOnce
-} = require("./indexcommands");
-
-const {
-  MessageFlags
-} = require("discord.js");
+const { MessageFlags } = require("discord.js");
 
 async function handleCommand(interaction, send, sendError) {
   const cmd = interaction.commandName;
@@ -279,10 +272,10 @@ async function handleCommand(interaction, send, sendError) {
   }
 
   if (cmd === "addroulette") {
-  const addroulette = require("./commands/admin/addroulette");
-  return addroulette.execute(interaction);
-}
-  
+    const addroulette = require("./commands/admin/addroulette");
+    return addroulette.execute(interaction);
+  }
+
   return sendError(`Command **${cmd}** is not fully implemented yet.`);
 }
 
