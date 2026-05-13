@@ -247,7 +247,7 @@ async function handleSpin(interaction) {
     lastResultText: `${win ? "WIN" : "LOSS"} ${delta >= 0 ? "+" : ""}${economy.formatMoney(delta)} — ${number} (${color})`
   });
 
-  sessionStore.touchSession(interaction.user.id, SESSION_IDLEMS);
+  sessionStore.touchSession(interaction.user.id, SESSION_IDLE_MS);
 
   return interaction.reply({
     content: `${win ? "✅ You won" : "❌ You lost"} ${economy.formatMoney(Math.abs(delta))}. Number: ${number} (${color}).`,
