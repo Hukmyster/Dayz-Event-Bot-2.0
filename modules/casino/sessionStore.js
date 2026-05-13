@@ -8,11 +8,11 @@ function createSession(userId, data = {}) {
     betAmount: null,
     betType: null,
     betChoice: null,
+    betChoiceLabel: null,
     lastResult: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    expiresAt: Date.now() + (10 * 60 * 1000),
-    timeout: null,
+    expiresAt: Date.now() + 10 * 60 * 1000,
     active: true
   };
 
@@ -27,7 +27,6 @@ function getSession(userId) {
 function updateSession(userId, patch = {}) {
   const session = sessions.get(userId);
   if (!session) return null;
-
   Object.assign(session, patch, { updatedAt: Date.now() });
   sessions.set(userId, session);
   return session;
@@ -36,7 +35,6 @@ function updateSession(userId, patch = {}) {
 function touchSession(userId, ms = 10 * 60 * 1000) {
   const session = sessions.get(userId);
   if (!session) return null;
-
   session.updatedAt = Date.now();
   session.expiresAt = Date.now() + ms;
   sessions.set(userId, session);
@@ -44,8 +42,6 @@ function touchSession(userId, ms = 10 * 60 * 1000) {
 }
 
 function deleteSession(userId) {
-  const session = sessions.get(userId);
-  if (session?.timeout) clearTimeout(session.timeout);
   sessions.delete(userId);
 }
 
