@@ -23,25 +23,17 @@ function getColor(number) {
 }
 
 function createSessionEmbed(session, user) {
+  const amount = session.betAmount ? economy.formatMoney(session.betAmount) : "0";
+  const type = session.betType || "-";
+  const choice = session.betChoiceLabel || "-";
+
   return new EmbedBuilder()
     .setTitle("🎲 Roulette")
     .setColor(0x000000)
     .addFields(
-      {
-        name: "Bet",
-        value: session.betAmount ? economy.formatMoney(session.betAmount) : "0",
-        inline: true
-      },
-      {
-        name: "Type",
-        value: session.betType || "-",
-        inline: true
-      },
-      {
-        name: "Choice",
-        value: session.betChoiceLabel || "-",
-        inline: true
-      }
+      { name: "Bet", value: amount, inline: true },
+      { name: "Type", value: type, inline: true },
+      { name: "Choice", value: choice, inline: true }
     )
     .setFooter({ text: user.username });
 }
@@ -64,6 +56,33 @@ function createSessionRows(session) {
         .setDisabled(!session.betAmount || session.betChoice == null || !session.betType)
     )
   ];
+}
+
+function createBetSelectMenu() {
+  const options = [
+    { label: "Red", value: "red" },
+    { label: "Black", value: "black" }
+  ];
+
+  for (let i = 0; i <= 36; i++) {
+    options.push({ label: String(i), value: `number:${i}` });
+  }
+
+  return new StringSelectMenuBuilder()
+    .setCustomId("casino:roulette:betselect")
+    .setPlaceholder("Choose red, black, or a number")
+    .addOptions(options);
+}
+
+async function renderSession(interaction, session) {
+  const embed = createSessionEmbed(session, interaction.user);
+  const components = createSessionRows(session);
+
+  if (interaction.replied || interaction.deferred) {
+    return interaction.editReply({ embeds: [embed], components });
+  }
+
+  return interaction.update({ embeds: [embed], components });
 }
 
 async function openPrivateSession(interaction) {
@@ -103,7 +122,10 @@ async function handleAmountButton(interaction) {
 async function handleAmountModal(interaction) {
   const session = sessionStore.getSession(interaction.user.id);
   if (!session) {
-    return interaction.reply({ content: "Session expired.", flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: "Session expired.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   const raw = String(interaction.fields.getTextInputValue("amount") || "").trim();
@@ -116,11 +138,12 @@ async function handleAmountModal(interaction) {
     });
   }
 
-  sessionStore.updateSession(interaction.user.id, { betAmount: amount });
+  sessionStore.updateSession(interaction.user.id, {
+    betAmount: amount
+  });
   sessionStore.touchSession(interaction.user.id, SESSION_IDLE_MS);
 
   const updated = sessionStore.getSession(interaction.user.id);
-
   return interaction.reply({
     embeds: [createSessionEmbed(updated, interaction.user)],
     components: createSessionRows(updated),
@@ -128,23 +151,15 @@ async function handleAmountModal(interaction) {
   });
 }
 
-function createBetSelectMenu() {
-  const options = [
-    { label: "Red", value: "red" },
-    { label: "Black", value: "black" }
-  ];
-
-  for (let i = 0; i <= 36; i++) {
-    options.push({ label: String(i), value: `number:${i}` });
+async function handleBetButton(interaction) {
+  const session = sessionStore.getSession(interaction.user.id);
+  if (!session) {
+    return interaction.reply({
+      content: "Session expired.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
-  return new StringSelectMenuBuilder()
-    .setCustomId("casino:roulette:betselect")
-    .setPlaceholder("Choose red, black, or a number")
-    .addOptions(options);
-}
-
-async function handleBetButton(interaction) {
   const row = new ActionRowBuilder().addComponents(createBetSelectMenu());
 
   return interaction.reply({
@@ -157,12 +172,18 @@ async function handleBetButton(interaction) {
 async function handleBetSelect(interaction) {
   const session = sessionStore.getSession(interaction.user.id);
   if (!session) {
-    return interaction.reply({ content: "Session expired.", flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: "Session expired.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   const value = interaction.values?.[0];
   if (!value) {
-    return interaction.reply({ content: "Invalid selection.", flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: "Invalid selection.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   if (value === "red" || value === "black") {
@@ -174,7 +195,10 @@ async function handleBetSelect(interaction) {
   } else if (value.startsWith("number:")) {
     const num = Number(value.split(":")[1]);
     if (!Number.isInteger(num) || num < 0 || num > 36) {
-      return interaction.reply({ content: "Invalid number.", flags: MessageFlags.Ephemeral });
+      return interaction.reply({
+        content: "Invalid number.",
+        flags: MessageFlags.Ephemeral
+      });
     }
 
     sessionStore.updateSession(interaction.user.id, {
@@ -183,12 +207,15 @@ async function handleBetSelect(interaction) {
       betChoiceLabel: String(num)
     });
   } else {
-    return interaction.reply({ content: "Invalid selection.", flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: "Invalid selection.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   sessionStore.touchSession(interaction.user.id, SESSION_IDLE_MS);
-  const updated = sessionStore.getSession(interaction.user.id);
 
+  const updated = sessionStore.getSession(interaction.user.id);
   return interaction.update({
     embeds: [createSessionEmbed(updated, interaction.user)],
     components: createSessionRows(updated)
@@ -198,7 +225,10 @@ async function handleBetSelect(interaction) {
 async function handleSpin(interaction) {
   const session = sessionStore.getSession(interaction.user.id);
   if (!session) {
-    return interaction.reply({ content: "Session expired.", flags: MessageFlags.Ephemeral });
+    return interaction.reply({
+      content: "Session expired.",
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   if (!session.betAmount || session.betChoice == null || !session.betType) {
@@ -289,5 +319,8 @@ module.exports = {
   handleAmountModal,
   handleBetButton,
   handleBetSelect,
-  handleSpin
+  handleSpin,
+  renderSession,
+  createSessionEmbed,
+  createSessionRows
 };
