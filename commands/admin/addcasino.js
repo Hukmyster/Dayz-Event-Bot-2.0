@@ -1,14 +1,14 @@
-const { SlashCommandBuilder } = require("discord.js");
+const { SlashCommandBuilder, MessageFlags } = require("discord.js");
 const casino = require("../../modules/casino/casino");
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName("addroulette")
+    .setName("addcasino")
     .setDescription("Create a Casino panel in this channel")
     .setDefaultMemberPermissions(0x0000000008),
 
   async execute(interaction) {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const msg = await interaction.channel.send({
       embeds: [casino.createCasinoEmbed()],
