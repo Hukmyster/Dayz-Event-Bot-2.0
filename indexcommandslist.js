@@ -271,9 +271,9 @@ async function handleCommand(interaction, send, sendError) {
     return daily.execute(interaction);
   }
 
-  if (cmd === "addroulette") {
-    const addroulette = require("./commands/admin/addroulette");
-    return addroulette.execute(interaction);
+  if (cmd === "addcasino") {
+    const addcasino = require("./commands/admin/addcasino");
+    return addcasino.execute(interaction);
   }
 
   return sendError(`Command **${cmd}** is not fully implemented yet.`);
