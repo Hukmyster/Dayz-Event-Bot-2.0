@@ -16,7 +16,6 @@ if (!process.env.CLIENT_ID) {
   process.exit(1);
 }
 
-// ✅ Updated command list including /playerstats
 const commands = [
   { name: "shophelp", description: "Show shop and economy help commands" },
   { name: "shoplist", description: "List all shop items" },
@@ -218,10 +217,8 @@ const commands = [
 
   { name: "serverrestart", description: "Run the JSON build, upload, and restart process now" },
 
-  // <<< ✅ ADD ROULETTE SETUP COMMAND HERE >>> ///
-  { name: "addroulette", description: "Create a Roulette game panel in this channel" },
+  { name: "addcasino", description: "Create a Casino game panel in this channel" },
 
-  // ✅ NEW: /playerstats command (linked to your economy/playerstats.js)
   {
     name: "playerstats",
     description: "Show detailed player stats (inventory, killfeed, etc.)",
