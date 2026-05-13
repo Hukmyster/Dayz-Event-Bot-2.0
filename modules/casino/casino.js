@@ -1,31 +1,40 @@
+const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
 const roulette = require("./roulette");
-const sessionStore = require("./sessionStore");
+
+function createCasinoEmbed() {
+  return new EmbedBuilder()
+    .setTitle("🎲 Casino")
+    .setDescription("🟢 Roulette")
+    .setColor(0x000000);
+}
+
+function createCasinoRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("casino:roulette:play")
+      .setLabel("Play")
+      .setStyle(ButtonStyle.Success)
+  );
+}
 
 async function handleCasinoInteraction(interaction) {
   const id = String(interaction.customId || "");
 
   if (interaction.isButton()) {
-    if (id === "casino:roulette:play") {
-      return roulette.openPrivateSession(interaction);
-    }
-
-    if (id.startsWith("casino:roulette:setbet:")) {
-      return roulette.handleSetBet(interaction);
-    }
-
-    if (id.startsWith("casino:roulette:spin:")) {
-      return roulette.handleSpin(interaction);
-    }
+    if (id === "casino:roulette:play") return roulette.openPrivateSession(interaction);
+    if (id === "casino:roulette:setbet") return roulette.handleSetBet(interaction);
+    if (id === "casino:roulette:setchoice") return roulette.handleSetChoice(interaction);
+    if (id === "casino:roulette:spin") return roulette.handleSpin(interaction);
   }
 
   if (interaction.isStringSelectMenu()) {
-    if (id.startsWith("casino:roulette:bettype:")) {
-      return roulette.handleBetTypeSelect(interaction);
+    if (id === "casino:roulette:choicemenu") {
+      return roulette.handleChoiceMenu(interaction);
     }
   }
 
   if (interaction.isModalSubmit()) {
-    if (id.startsWith("casino:roulette:betmodal:")) {
+    if (id === "casino:roulette:betmodal") {
       return roulette.handleBetModalSubmit(interaction);
     }
   }
@@ -34,6 +43,7 @@ async function handleCasinoInteraction(interaction) {
 }
 
 module.exports = {
-  handleCasinoInteraction,
-  sessionStore
+  createCasinoEmbed,
+  createCasinoRow,
+  handleCasinoInteraction
 };
