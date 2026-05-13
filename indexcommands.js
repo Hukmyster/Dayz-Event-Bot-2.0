@@ -16,10 +16,17 @@ async function handleReactionRoleButton(interaction) {
   await interaction.deferUpdate().catch(() => {});
 
   const config = await storage.loadJson(`reaction${id}`).catch(() => null);
-  if (!config) return;
+  if (!config) {
+    return;
+  }
 
-  if (config.guild_id && config.guild_id !== interaction.guildId) return;
-  if (config.message_id && interaction.message?.id && config.message_id !== interaction.message.id) return;
+  if (config.guild_id && config.guild_id !== interaction.guildId) {
+    return;
+  }
+
+  if (config.message_id && interaction.message?.id && config.message_id !== interaction.message.id) {
+    return;
+  }
 
   const guild = interaction.guild;
   const roleId = config.role_id;
@@ -27,20 +34,29 @@ async function handleReactionRoleButton(interaction) {
     guild.roles.cache.get(roleId) ||
     await guild.roles.fetch(roleId).catch(() => null);
 
-  if (!role) return;
+  if (!role) {
+    return;
+  }
 
   const member =
     interaction.member ||
     await guild.members.fetch(interaction.user.id).catch(() => null);
 
-  if (!member) return;
+  if (!member) {
+    return;
+  }
 
   const me =
     guild.members.me ||
     await guild.members.fetchMe().catch(() => null);
 
-  if (!me?.permissions?.has?.(PermissionFlagsBits.ManageRoles)) return;
-  if (me.roles?.highest?.comparePositionTo?.(role) <= 0) return;
+  if (!me?.permissions?.has?.(PermissionFlagsBits.ManageRoles)) {
+    return;
+  }
+
+  if (me.roles?.highest?.comparePositionTo?.(role) <= 0) {
+    return;
+  }
 
   const hasRole = member.roles.cache.has(role.id);
 
