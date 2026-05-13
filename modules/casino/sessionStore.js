@@ -5,6 +5,7 @@ function createSession(userId, data = {}) {
     userId,
     channelId: data.channelId || null,
     messageId: data.messageId || null,
+    step: "amount",
     betAmount: null,
     betType: null,
     betChoice: null,
@@ -27,6 +28,7 @@ function getSession(userId) {
 function updateSession(userId, patch = {}) {
   const session = sessions.get(userId);
   if (!session) return null;
+
   Object.assign(session, patch, { updatedAt: Date.now() });
   sessions.set(userId, session);
   return session;
@@ -35,6 +37,7 @@ function updateSession(userId, patch = {}) {
 function touchSession(userId, ms = 10 * 60 * 1000) {
   const session = sessions.get(userId);
   if (!session) return null;
+
   session.updatedAt = Date.now();
   session.expiresAt = Date.now() + ms;
   sessions.set(userId, session);
