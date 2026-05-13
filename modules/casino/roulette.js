@@ -6,7 +6,8 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder,
+  MessageFlags
 } = require("discord.js");
 
 const economy = require("../economy");
@@ -19,11 +20,6 @@ function getColor(number) {
   if (number === 0) return "green";
   if (number >= 1 && number <= 18) return "red";
   return "black";
-}
-
-function getChoiceLabel(session) {
-  if (!session.betChoiceLabel) return "-";
-  return session.betChoiceLabel;
 }
 
 function createSessionEmbed(session, user) {
@@ -43,7 +39,7 @@ function createSessionEmbed(session, user) {
       },
       {
         name: "Choice",
-        value: getChoiceLabel(session),
+        value: session.betChoiceLabel || "-",
         inline: true
       }
     )
@@ -65,20 +61,9 @@ function createSessionRows(session) {
         .setCustomId("casino:roulette:spin")
         .setLabel("Spin")
         .setStyle(ButtonStyle.Success)
-        .setDisabled(!session.betAmount || !session.betChoice)
+        .setDisabled(!session.betAmount || session.betChoice == null || !session.betType)
     )
   ];
-}
-
-async function renderSession(interaction, session) {
-  const embed = createSessionEmbed(session, interaction.user);
-  const rows = createSessionRows(session);
-
-  if (interaction.replied || interaction.deferred) {
-    return interaction.editReply({ embeds: [embed], components: rows });
-  }
-
-  return interaction.update({ embeds: [embed], components: rows });
 }
 
 async function openPrivateSession(interaction) {
@@ -95,7 +80,7 @@ async function openPrivateSession(interaction) {
   return interaction.reply({
     embeds: [createSessionEmbed(session, interaction.user)],
     components: createSessionRows(session),
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -118,7 +103,7 @@ async function handleAmountButton(interaction) {
 async function handleAmountModal(interaction) {
   const session = sessionStore.getSession(interaction.user.id);
   if (!session) {
-    return interaction.reply({ content: "Session expired.", ephemeral: true });
+    return interaction.reply({ content: "Session expired.", flags: MessageFlags.Ephemeral });
   }
 
   const raw = String(interaction.fields.getTextInputValue("amount") || "").trim();
@@ -127,7 +112,7 @@ async function handleAmountModal(interaction) {
   if (!Number.isInteger(amount) || amount < 1 || amount > MAX_BET) {
     return interaction.reply({
       content: `Enter a valid amount between 1 and ${MAX_BET}.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -135,10 +120,11 @@ async function handleAmountModal(interaction) {
   sessionStore.touchSession(interaction.user.id, SESSION_IDLE_MS);
 
   const updated = sessionStore.getSession(interaction.user.id);
+
   return interaction.reply({
     embeds: [createSessionEmbed(updated, interaction.user)],
     components: createSessionRows(updated),
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -160,22 +146,23 @@ function createBetSelectMenu() {
 
 async function handleBetButton(interaction) {
   const row = new ActionRowBuilder().addComponents(createBetSelectMenu());
+
   return interaction.reply({
     content: "Choose your bet.",
     components: [row],
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
 async function handleBetSelect(interaction) {
   const session = sessionStore.getSession(interaction.user.id);
   if (!session) {
-    return interaction.reply({ content: "Session expired.", ephemeral: true });
+    return interaction.reply({ content: "Session expired.", flags: MessageFlags.Ephemeral });
   }
 
   const value = interaction.values?.[0];
   if (!value) {
-    return interaction.reply({ content: "Invalid selection.", ephemeral: true });
+    return interaction.reply({ content: "Invalid selection.", flags: MessageFlags.Ephemeral });
   }
 
   if (value === "red" || value === "black") {
@@ -187,7 +174,7 @@ async function handleBetSelect(interaction) {
   } else if (value.startsWith("number:")) {
     const num = Number(value.split(":")[1]);
     if (!Number.isInteger(num) || num < 0 || num > 36) {
-      return interaction.reply({ content: "Invalid number.", ephemeral: true });
+      return interaction.reply({ content: "Invalid number.", flags: MessageFlags.Ephemeral });
     }
 
     sessionStore.updateSession(interaction.user.id, {
@@ -196,14 +183,13 @@ async function handleBetSelect(interaction) {
       betChoiceLabel: String(num)
     });
   } else {
-    return interaction.reply({ content: "Invalid selection.", ephemeral: true });
+    return interaction.reply({ content: "Invalid selection.", flags: MessageFlags.Ephemeral });
   }
 
   sessionStore.touchSession(interaction.user.id, SESSION_IDLE_MS);
   const updated = sessionStore.getSession(interaction.user.id);
 
   return interaction.update({
-    content: "Bet choice updated.",
     embeds: [createSessionEmbed(updated, interaction.user)],
     components: createSessionRows(updated)
   });
@@ -212,13 +198,13 @@ async function handleBetSelect(interaction) {
 async function handleSpin(interaction) {
   const session = sessionStore.getSession(interaction.user.id);
   if (!session) {
-    return interaction.reply({ content: "Session expired.", ephemeral: true });
+    return interaction.reply({ content: "Session expired.", flags: MessageFlags.Ephemeral });
   }
 
   if (!session.betAmount || session.betChoice == null || !session.betType) {
     return interaction.reply({
       content: "Set amount and bet choice first.",
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -233,7 +219,7 @@ async function handleSpin(interaction) {
   if (wallet < session.betAmount) {
     return interaction.reply({
       content: `Insufficient funds. You have ${economy.formatMoney(wallet)}.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -267,7 +253,7 @@ async function handleSpin(interaction) {
     content: `${win ? "✅ You won" : "❌ You lost"} ${economy.formatMoney(Math.abs(delta))}.`,
     embeds: [createSessionEmbed(updated, interaction.user)],
     components: createSessionRows(updated),
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -299,6 +285,9 @@ async function handleCasinoInteraction(interaction) {
 module.exports = {
   openPrivateSession,
   handleCasinoInteraction,
-  createSessionEmbed,
-  createSessionRows
+  handleAmountButton,
+  handleAmountModal,
+  handleBetButton,
+  handleBetSelect,
+  handleSpin
 };
