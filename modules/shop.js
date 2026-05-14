@@ -1,10 +1,9 @@
-// modules/shop.js - FULL FTP VERSION (preserves all original logic)
 const debug = require("../utils/debug");
 const storage = require("../services/storage");
 const { buildSingleEntry } = require("./shopSnippetBuilder");
 const economy = require("./economy");
 
-const SHOP_KEY = 'shop';
+const SHOP_KEY = "shop";
 let shopItems = [];
 
 async function loadShop() {
@@ -22,7 +21,6 @@ async function saveShop() {
   await storage.saveJson(SHOP_KEY, shopItems);
 }
 
-// Initial load
 loadShop().catch(console.error);
 
 function normalizeText(v) {
@@ -31,7 +29,8 @@ function normalizeText(v) {
 
 function normalizeNumber(v) {
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  return Math.floor(Math.max(0, n));
 }
 
 function mapShopRow(item) {
@@ -45,7 +44,7 @@ function mapShopRow(item) {
 }
 
 function buildAttachmentWhitelist() {
-  return new Set(["M4A1","AKM","AK74","SG5K","VSD","VSS","M16A2","CR-527"]);
+  return new Set(["M4A1", "AKM", "AK74", "SG5K", "VSD", "VSS", "M16A2", "CR-527"]);
 }
 
 function supportsAttachments(itemName) {
@@ -78,7 +77,7 @@ async function addItem(name, type, price) {
   debug.debug("shop.addItem", { name, type, price });
 
   if (!name || !type) return { reply: "Display name and type are required" };
-  if (price === null || price < 0) return { reply: "Price must be a valid number" };
+  if (price === null || price <= 0) return { reply: "Price must be a valid number greater than 0" };
 
   const existing = await getShopList();
   if (existing.some(i => i.name.toLowerCase() === name.toLowerCase())) {
@@ -104,7 +103,7 @@ async function editPrice(name, price) {
   debug.debug("shop.editPrice", { name, price });
 
   if (!name) return { reply: "Item name is required" };
-  if (price === null || price < 0) return { reply: "Price must be a valid number" };
+  if (price === null || price <= 0) return { reply: "Price must be a valid number greater than 0" };
 
   const item = await findShopItemByName(name);
   if (!item) return { reply: "Item not found" };
@@ -174,38 +173,39 @@ async function buyItem(itemName, quantity, x, z, method, available, userId, guil
   const item = await findShopItemByName(itemName);
   if (!item) return { reply: "Item not found" };
 
-  const qty = Math.max(1, Number(quantity || 1));
-  const total = Number(item.price || 0) * qty;
+  const qty = normalizeNumber(quantity) ?? 1;
+  const safeQty = Math.max(1, Math.min(100, qty));
+  const total = Number(item.price || 0) * safeQty;
   const funds = Number(available || 0);
 
-  debug.debug("shop.buyItem", { itemName, quantity: qty, x, z, method, available: funds, userId, guildId, total });
+  debug.debug("shop.buyItem", { itemName, quantity: safeQty, x, z, method, available: funds, userId, guildId, total });
 
+  if (!Number.isFinite(total) || total <= 0) return { reply: "Invalid purchase total." };
   if (funds < total) return { reply: `Not enough funds. Need ${total} dollars.` };
 
-  if (userId && guildId) {
-    debug.step("shop.buyItem.charge", { userId, guildId, method, total });
-
-    if (String(method || "wallet").toLowerCase() === "bank") {
-      await economy.deductFromBank(userId, guildId, total, username || userId, {
-        notes: `Shop purchase: ${item.name}`
-      });
-    } else {
-      await economy.deductFromWallet(userId, guildId, total, username || userId, {
-        notes: `Shop purchase: ${item.name}`
-      });
-    }
-
-    const after = await economy.getOrCreateAccount(userId, guildId, username || userId);
-    debug.ok("shop.buyItem.charge", { userId, guildId, method, total, wallet: after.wallet, bank: after.bank });
-  } else {
+  if (!userId || !guildId) {
     return { reply: "Missing player or guild information for charging." };
   }
 
-  // Purchase snippets - for now we skip DB storage (you can extend later with a separate JSON if needed)
-  const purchaseId = `${Date.now()}`;
-  debug.ok("shop.buyItem", { purchaseId, qty, item: item.name });
+  debug.step("shop.buyItem.charge", { userId, guildId, method, total });
 
-  return { reply: `Bought ${qty}x ${item.name} for ${total} dollars using ${method}.` };
+  if (String(method || "wallet").toLowerCase() === "bank") {
+    await economy.deductFromBank(userId, guildId, total, username || userId, {
+      notes: `Shop purchase: ${item.name}`
+    });
+  } else {
+    await economy.deductFromWallet(userId, guildId, total, username || userId, {
+      notes: `Shop purchase: ${item.name}`
+    });
+  }
+
+  const after = await economy.getOrCreateAccount(userId, guildId, username || userId);
+  debug.ok("shop.buyItem.charge", { userId, guildId, method, total, wallet: after.wallet, bank: after.bank });
+
+  const purchaseId = `${Date.now()}`;
+  debug.ok("shop.buyItem", { purchaseId, qty: safeQty, item: item.name });
+
+  return { reply: `Bought ${safeQty}x ${item.name} for ${total} dollars using ${method}.` };
 }
 
 module.exports = {
