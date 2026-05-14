@@ -1,6 +1,4 @@
-// commands/economy/playerstats.js
-const { SlashCommandBuilder, PermissionsBitField } = require("discord.js");
-
+const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 const playerstats = require("../../modules/playerstats");
 
 module.exports = {
@@ -15,17 +13,12 @@ module.exports = {
     const discordId = interaction.user.id;
     const discordName = interaction.user.username;
 
-    // 1. You need to know which PSN this Discord user is linked to.
-    //    This depends on your /linkgamertag system.
-    //    For now, assume you have a helper `getLinkedPsn(discordId)` that returns a PSN string or throws.
-
     let linkedPsn = null;
 
-    // EXAMPLE: pseudo‑call to your existing /linkgamertag map
-    // You'll need to adapt this to your own storage.
     try {
-      linkedPsn = await getLinkedPsn(discordId);
+      linkedPsn = await playerstats.getLinkedPsnByDiscordId(discordId);
     } catch (err) {
+      console.error("playerstats link lookup error:", err);
       return interaction.editReply(
         "You haven't linked a PSN gamertag yet. Use `/linkgamertag <your-psn>` first."
       );
@@ -37,7 +30,6 @@ module.exports = {
       );
     }
 
-    // 2. Ask playerstats module for that PSN's data
     let stats;
     try {
       stats = await playerstats.getPlayerStats(linkedPsn, discordId);
@@ -52,66 +44,26 @@ module.exports = {
       );
     }
 
-    // 3. Build embed from computed values
-    const kdText = stats.kd ? stats.kd.toFixed(2) : "0.00";
+    const kdText = Number.isFinite(stats.kd) ? stats.kd.toFixed(2) : "0.00";
 
-    const embed = {
-      title: `PvP Stats for ${stats.psn}`,
-      color: 0x00ff00,
-      fields: [
-        {
-          name: "Kills / Deaths",
-          value: `\`${stats.kills} / ${stats.deaths}\``, // K/D visible, but not raw K/D
-          inline: true
-        },
-        {
-          name: "K/D Ratio (computed)",
-          value: `\`${kdText}\``,
-          inline: true
-        },
-        {
-          name: "Favourite Weapon",
-          value: `\`${stats.favoriteWeapon}\``,
-          inline: true
-        },
+    const embed = new EmbedBuilder()
+      .setTitle(`PvP Stats for ${stats.psn}`)
+      .setColor(0x00ff00)
+      .addFields(
+        { name: "Kills / Deaths", value: `\`${stats.kills} / ${stats.deaths}\``, inline: true },
+        { name: "K/D Ratio", value: `\`${kdText}\``, inline: true },
+        { name: "Favourite Weapon", value: `\`${stats.favoriteWeapon}\``, inline: true },
         {
           name: "Longest PvP Kill",
-          value: stats.maxPvpDistance
-            ? `\`${stats.maxPvpDistance.toFixed(2)}m\``
-            : "`N/A`",
+          value: stats.maxPvpDistance ? `\`${Number(stats.maxPvpDistance).toFixed(2)}m\`` : "`N/A`",
           inline: true
         },
-        {
-          name: "First PvP Kill",
-          value: stats.firstKillAt ? `\`${stats.firstKillAt}\`` : "`N/A`",
-          inline: true
-        },
-        {
-          name: "Last PvP Kill",
-          value: stats.lastKillAt ? `\`${stats.lastKillAt}\`` : "`N/A`",
-          inline: true
-        },
-        {
-          name: "Last Death",
-          value: stats.lastDeathAt ? `\`${stats.lastDeathAt}\`` : "`N/A`",
-          inline: true
-        }
-      ],
-      footer: {
-        text: `Linked to: ${discordName}`
-      }
-    };
+        { name: "First PvP Kill", value: stats.firstKillAt ? `\`${stats.firstKillAt}\`` : "`N/A`", inline: true },
+        { name: "Last PvP Kill", value: stats.lastKillAt ? `\`${stats.lastKillAt}\`` : "`N/A`", inline: true },
+        { name: "Last Death", value: stats.lastDeathAt ? `\`${stats.lastDeathAt}\`` : "`N/A`", inline: true }
+      )
+      .setFooter({ text: `Linked to: ${discordName}` });
 
-    await interaction.editReply({ embeds: [embed] });
+    return interaction.editReply({ embeds: [embed] });
   }
 };
-
-// ⚠️ Placeholder: replace this with your existing /linkgamertag logic
-// You can either:
-//  - move this helper into a service, or
-//  - inline the lookup directly in your command file.
-async function getLinkedPsn(discordId) {
-  // This is an example; you must adapt it to your own storage / linking scheme.
-  // e.g., reads a mapping JSON or checks playerstats/<psn>.json for userId.
-  throw new Error("IMPLEMENT YOUR OWN getLinkedPsn()");
-}
