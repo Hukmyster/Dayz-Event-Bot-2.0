@@ -17,8 +17,29 @@ module.exports = {
 
   async execute(interaction) {
     try {
+      if (!economy.hasAccess?.(interaction.member)) {
+        return interaction.reply({
+          content: 'You do not have the required role to use economy commands.',
+          ephemeral: true
+        });
+      }
+
       const target = interaction.options.getUser('member');
-      const amount = interaction.options.getInteger('amount');
+      const amount = interaction.options.getInteger('amount', true);
+
+      if (amount <= 0) {
+        return interaction.reply({
+          content: 'Amount must be greater than 0.',
+          ephemeral: true
+        });
+      }
+
+      if (amount > 500000) {
+        return interaction.reply({
+          content: 'Maximum transfer is 500,000.',
+          ephemeral: true
+        });
+      }
 
       if (target.bot) {
         return interaction.reply({
@@ -37,7 +58,7 @@ module.exports = {
       await economy.transferWallet(
         interaction.user.id,
         target.id,
-        interaction.guild.id,
+        interaction.guildId,
         amount,
         interaction.user.username,
         target.username
