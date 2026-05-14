@@ -1,9 +1,15 @@
+const fs = require("fs").promises;
+const path = require("path");
 const storage = require("../services/storage");
 
 const STATS_DIR = "custom/server/playerstats";
+const LEADERBOARD_DIR = "custom/server/playerstats/leaderboards";
 
 function normalizePsn(psn) {
-  return String(psn || "").trim().toLowerCase().replace(/[^a-z0-9\-_]/g, "_");
+  return String(psn || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\-_]/g, "_");
 }
 
 function defaultStats(psn) {
@@ -21,48 +27,76 @@ function defaultStats(psn) {
   };
 }
 
+function mergeStats(base, incoming = {}) {
+  return {
+    ...defaultStats(base.psn || incoming.psn),
+    ...base,
+    ...incoming,
+    psn: normalizePsn(base.psn || incoming.psn),
+    userId: incoming.userId ?? base.userId ?? "notlinked",
+    discordName: incoming.discordName ?? base.discordName ?? null,
+    kills: Number(incoming.kills ?? base.kills ?? 0),
+    deaths: Number(incoming.deaths ?? base.deaths ?? 0),
+    favoriteWeapon: incoming.favoriteWeapon ?? base.favoriteWeapon ?? "unknown",
+    maxPvpDistance: Number(incoming.maxPvpDistance ?? base.maxPvpDistance ?? 0),
+    firstKillAt: incoming.firstKillAt ?? base.firstKillAt ?? null,
+    lastKillAt: incoming.lastKillAt ?? base.lastKillAt ?? null,
+    lastDeathAt: incoming.lastDeathAt ?? base.lastDeathAt ?? null
+  };
+}
+
+async function ensureLocalDir(dir) {
+  await fs.mkdir(dir, { recursive: true }).catch(() => {});
+}
+
 async function readPlayerStats(psn) {
   const norm = normalizePsn(psn);
   const remotePath = `${STATS_DIR}/${norm}.json`;
 
   try {
     const data = await storage.loadJson(remotePath);
-    if (!data || typeof data !== "object") return defaultStats(norm);
-
-    return {
-      ...defaultStats(norm),
-      ...data,
-      psn: norm,
-      userId: data.userId ?? "notlinked",
-      discordName: data.discordName ?? null,
-      kills: Number(data.kills ?? 0),
-      deaths: Number(data.deaths ?? 0),
-      favoriteWeapon: data.favoriteWeapon ?? "unknown",
-      maxPvpDistance: Number(data.maxPvpDistance ?? 0),
-      firstKillAt: data.firstKillAt ?? null,
-      lastKillAt: data.lastKillAt ?? null,
-      lastDeathAt: data.lastDeathAt ?? null
-    };
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return defaultStats(norm);
+    }
+    return mergeStats(defaultStats(norm), data);
   } catch {
     return defaultStats(norm);
   }
 }
 
 async function writePlayerStats(stats) {
-  const normalized = {
-    psn: normalizePsn(stats.psn),
-    userId: stats.userId ?? "notlinked",
-    discordName: stats.discordName ?? null,
-    kills: Number(stats.kills ?? 0),
-    deaths: Number(stats.deaths ?? 0),
-    favoriteWeapon: stats.favoriteWeapon ?? "unknown",
-    maxPvpDistance: Number(stats.maxPvpDistance ?? 0),
-    firstKillAt: stats.firstKillAt ?? null,
-    lastKillAt: stats.lastKillAt ?? null,
-    lastDeathAt: stats.lastDeathAt ?? null
-  };
-
+  const normalized = mergeStats(defaultStats(stats.psn), stats);
   await storage.saveJson(`${STATS_DIR}/${normalized.psn}.json`, normalized);
+  return normalized;
+}
+
+async function getAllPlayerFiles() {
+  const dir = path.join(process.cwd(), "data", "custom", "server", "playerstats");
+  try {
+    await ensureLocalDir(dir);
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries
+      .filter(e => e.isFile() && e.name.toLowerCase().endsWith(".json"))
+      .map(e => e.name)
+      .filter(name => !["week.json", "month.json", "alltime.json"].includes(name.toLowerCase()));
+  } catch {
+    return [];
+  }
+}
+
+async function getLinkedPsnByDiscordId(discordId) {
+  const target = String(discordId);
+
+  const files = await getAllPlayerFiles();
+  for (const file of files) {
+    const psn = file.replace(/\.json$/i, "");
+    const stats = await readPlayerStats(psn);
+    if (String(stats.userId || "") === target) {
+      return stats.psn;
+    }
+  }
+
+  return null;
 }
 
 async function updatePlayerStats(psn, isKiller, distance, weapon, timestamp) {
@@ -115,7 +149,7 @@ async function getPlayerStats(psn, userId = null) {
   const norm = normalizePsn(psn);
   const stats = await readPlayerStats(norm);
 
-  if (userId && stats.userId !== "notlinked" && stats.userId !== userId) {
+  if (userId && stats.userId !== "notlinked" && String(stats.userId) !== String(userId)) {
     return null;
   }
 
@@ -135,17 +169,12 @@ async function linkPsn(psn, discordId, discordName) {
   return stats;
 }
 
-async function getLinkedPsnByDiscordId(discordId) {
-  const target = String(discordId);
-  const list = await storage.loadJson(STATS_DIR).catch(() => null);
-  if (Array.isArray(list)) return null;
-  return null;
-}
-
 module.exports = {
   recordPvpEvent,
   getPlayerStats,
   linkPsn,
   getLinkedPsnByDiscordId,
-  normalizePsn
+  normalizePsn,
+  readPlayerStats,
+  writePlayerStats
 };
