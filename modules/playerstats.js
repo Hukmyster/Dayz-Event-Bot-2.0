@@ -1,9 +1,4 @@
-const fs = require("fs").promises;
-const path = require("path");
 const storage = require("../services/storage");
-
-const STATS_DIR = "custom/server/playerstats";
-const LEADERBOARD_DIR = "custom/server/playerstats/leaderboards";
 
 function normalizePsn(psn) {
   return String(psn || "")
@@ -45,58 +40,19 @@ function mergeStats(base, incoming = {}) {
   };
 }
 
-async function ensureLocalDir(dir) {
-  await fs.mkdir(dir, { recursive: true }).catch(() => {});
-}
-
 async function readPlayerStats(psn) {
   const norm = normalizePsn(psn);
-  const remotePath = `${STATS_DIR}/${norm}.json`;
-
-  try {
-    const data = await storage.loadJson(remotePath);
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return defaultStats(norm);
-    }
-    return mergeStats(defaultStats(norm), data);
-  } catch {
+  const data = await storage.loadJson(`playerstats/${norm}.json`);
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
     return defaultStats(norm);
   }
+  return mergeStats(defaultStats(norm), data);
 }
 
 async function writePlayerStats(stats) {
   const normalized = mergeStats(defaultStats(stats.psn), stats);
-  await storage.saveJson(`${STATS_DIR}/${normalized.psn}.json`, normalized);
+  await storage.saveJson(`playerstats/${normalized.psn}.json`, normalized);
   return normalized;
-}
-
-async function getAllPlayerFiles() {
-  const dir = path.join(process.cwd(), "data", "custom", "server", "playerstats");
-  try {
-    await ensureLocalDir(dir);
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    return entries
-      .filter(e => e.isFile() && e.name.toLowerCase().endsWith(".json"))
-      .map(e => e.name)
-      .filter(name => !["week.json", "month.json", "alltime.json"].includes(name.toLowerCase()));
-  } catch {
-    return [];
-  }
-}
-
-async function getLinkedPsnByDiscordId(discordId) {
-  const target = String(discordId);
-
-  const files = await getAllPlayerFiles();
-  for (const file of files) {
-    const psn = file.replace(/\.json$/i, "");
-    const stats = await readPlayerStats(psn);
-    if (String(stats.userId || "") === target) {
-      return stats.psn;
-    }
-  }
-
-  return null;
 }
 
 async function updatePlayerStats(psn, isKiller, distance, weapon, timestamp) {
@@ -173,7 +129,6 @@ module.exports = {
   recordPvpEvent,
   getPlayerStats,
   linkPsn,
-  getLinkedPsnByDiscordId,
   normalizePsn,
   readPlayerStats,
   writePlayerStats
