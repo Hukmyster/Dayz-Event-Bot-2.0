@@ -6,6 +6,8 @@ const LOCAL_DATA_DIR = path.join(__dirname, '../data');
 const REMOTE_BASE = '/dayzps_missions/dayzOffline.chernarusplus/custom/server';
 const RADARS_DIR = `${REMOTE_BASE}/radars`;
 const INFO_DIR = `${REMOTE_BASE}/info`;
+const PLAYERSTATS_DIR = `${REMOTE_BASE}/playerstats`;
+const PLAYERSTATS_LEADERBOARDS_DIR = `${REMOTE_BASE}/playerstats/leaderboards`;
 
 console.log("[STORAGE] Using path:", REMOTE_BASE);
 
@@ -23,11 +25,32 @@ function isReactionKey(key) {
   return /^reaction\d+$/.test(String(key));
 }
 
+function isPlayerStatsFile(key) {
+  return typeof key === 'string' && key.startsWith('playerstats/');
+}
+
+function isLeaderboardFile(key) {
+  return typeof key === 'string' && key.startsWith('leaderboards/');
+}
+
 function getJsonSpec(key) {
-  if (isReactionKey(key)) {
-    return { name: `${key}.json`, remoteDir: INFO_DIR, localSubdir: 'info' };
+  const keyStr = String(key || '');
+
+  if (isReactionKey(keyStr)) {
+    return { name: `${keyStr}.json`, remoteDir: INFO_DIR, localSubdir: 'info' };
   }
-  const file = FILES[key] || { name: `${key}.json`, format: 'json' };
+
+  if (isPlayerStatsFile(keyStr)) {
+    const fileName = keyStr.split('/').slice(1).join('/');
+    return { name: fileName, remoteDir: PLAYERSTATS_DIR, localSubdir: path.join('playerstats') };
+  }
+
+  if (isLeaderboardFile(keyStr)) {
+    const fileName = keyStr.split('/').slice(1).join('/');
+    return { name: fileName, remoteDir: PLAYERSTATS_LEADERBOARDS_DIR, localSubdir: path.join('playerstats', 'leaderboards') };
+  }
+
+  const file = FILES[keyStr] || { name: `${keyStr}.json`, format: 'json' };
   return { name: file.name, remoteDir: REMOTE_BASE, localSubdir: '' };
 }
 
