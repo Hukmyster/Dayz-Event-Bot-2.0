@@ -4,6 +4,7 @@ const { Client: FTPClient } = require("basic-ftp");
 const debug = require("./utils/debug");
 const { buildJsonFile } = require("./modules/shopSnippetBuilder");
 const { loadJson, saveJson } = require("./services/storage");
+const { getModeForRun } = require("./timekeeper");
 
 const FTP_HOST = process.env.FTP_HOST;
 const FTP_USER = process.env.FTP_USER;
@@ -18,6 +19,18 @@ const TIMEZONE = "America/Los_Angeles";
 const TARGET_HOURS = [0, 3, 6, 9, 12, 15, 18, 21];
 const EARLY_MINUTES = 2;
 const SCHEDULE_MINUTE = 58;
+
+const MODE_ROOT = "/dayzps_missions/dayzOffline.chernarusplus/custom/server/restart";
+const MODE_FILES = [
+  {
+    name: "messages.xml",
+    remote: "/dayzps_missions/dayzOffline.chernarusplus/db/messages.xml"
+  },
+  {
+    name: "cfggameplay.json",
+    remote: "/dayzps_missions/dayzOffline.chernarusplus/cfggameplay.json"
+  }
+];
 
 let schedulerTimer = null;
 let runLock = false;
@@ -135,7 +148,7 @@ async function writeFiles(jsonObject) {
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(jsonObject, null, 2), "utf8");
 }
 
-async function uploadToServer() {
+async function ftpConnect() {
   if (!FTP_HOST || !FTP_USER || !FTP_PASS) {
     throw new Error("Missing FTP_HOST, FTP_USER, or FTP_PASS");
   }
@@ -143,15 +156,61 @@ async function uploadToServer() {
   const client = new FTPClient();
   client.ftp.verbose = false;
 
-  try {
-    await client.access({
-      host: FTP_HOST,
-      user: FTP_USER,
-      password: FTP_PASS,
-      secure: false
-    });
+  await client.access({
+    host: FTP_HOST,
+    user: FTP_USER,
+    password: FTP_PASS,
+    secure: false
+  });
 
+  return client;
+}
+
+async function uploadToServer() {
+  const client = await ftpConnect();
+  try {
     await client.uploadFrom(OUTPUT_FILE, REMOTE_FILE);
+  } finally {
+    client.close();
+  }
+}
+
+async function retryAsync(fn, attempts = 5, delayMs = 1000) {
+  let lastError = null;
+
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (i < attempts) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+async function syncModeFiles(mode) {
+  if (!mode) return;
+
+  const client = await ftpConnect();
+  try {
+    for (const file of MODE_FILES) {
+      const localFile = path.join(CUSTOM_DIR, "mode-cache", mode, file.name);
+      const remoteSource = `${MODE_ROOT}/${mode}/${file.name}`;
+
+      await fs.promises.mkdir(path.dirname(localFile), { recursive: true });
+
+      await retryAsync(async () => {
+        await client.downloadTo(localFile, remoteSource);
+      });
+
+      await retryAsync(async () => {
+        await client.uploadFrom(localFile, file.remote);
+      });
+    }
   } finally {
     client.close();
   }
@@ -184,6 +243,11 @@ async function runRestartProcedure(source = "scheduled") {
     await writeFiles(finalJson);
     await uploadToServer();
 
+    const mode = getModeForRun(new Date());
+    if (mode) {
+      await syncModeFiles(mode);
+    }
+
     if (snippets.length) {
       await clearProcessedSnippets(snippets.map((_, i) => String(i)));
     }
@@ -194,7 +258,8 @@ async function runRestartProcedure(source = "scheduled") {
       source,
       snippets: snippets.length,
       file: OUTPUT_FILE,
-      remote: REMOTE_FILE
+      remote: REMOTE_FILE,
+      mode
     });
   } finally {
     runLock = false;
