@@ -6,18 +6,41 @@ module.exports = {
     .setName('withdraw')
     .setDescription('Withdraw money from bank to wallet')
     .addIntegerOption(option =>
-      option.setName('amount')
+      option
+        .setName('amount')
         .setDescription('Amount to withdraw')
         .setRequired(true)
-        .setMinValue(1)),
+        .setMinValue(1)
+    ),
 
   async execute(interaction) {
     try {
-      const amount = interaction.options.getInteger('amount');
+      if (!economy.hasAccess?.(interaction.member)) {
+        return interaction.reply({
+          content: 'You do not have the required role to use economy commands.',
+          ephemeral: true
+        });
+      }
+
+      const amount = interaction.options.getInteger('amount', true);
+
+      if (amount <= 0) {
+        return interaction.reply({
+          content: 'Amount must be greater than 0.',
+          ephemeral: true
+        });
+      }
+
+      if (amount > 1000000) {
+        return interaction.reply({
+          content: 'Amount is too large (max 1,000,000).',
+          ephemeral: true
+        });
+      }
 
       const result = await economy.transferBankToWallet(
         interaction.user.id,
-        interaction.guild.id,
+        interaction.guildId,
         amount,
         interaction.user.username
       );
