@@ -1,63 +1,48 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const economy = require('../../modules/economy');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } = require("discord.js");
+const economy = require("../../modules/economy");
+const playerstats = require("../../modules/playerstats");
+const storage = require("../../services/storage");
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('leaderboard')
-    .setDescription('Show the richest players in the server'),
+    .setName("leaderboard")
+    .setDescription("Show economy or PvP leaderboards"),
 
   async execute(interaction) {
     try {
       if (!economy.hasAccess?.(interaction.member)) {
         return interaction.reply({
-          content: 'You do not have the required role to use economy commands.',
+          content: "You do not have the required role to use this command.",
           ephemeral: true
         });
       }
 
-      const guildId = interaction.guildId;
-      const allAccounts = await economy.getAllAccounts?.();
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId("leaderboard:select")
+        .setPlaceholder("Choose a leaderboard")
+        .addOptions(
+          { label: "Economy", description: "Richest players", value: "economy" },
+          { label: "Week", description: "Weekly PvP leaderboard", value: "week" },
+          { label: "Month", description: "Monthly PvP leaderboard", value: "month" },
+          { label: "All Time", description: "All-time PvP leaderboard", value: "alltime" }
+        );
 
-      if (!Array.isArray(allAccounts) || !allAccounts.length) {
-        return interaction.reply({
-          content: 'No economy accounts found yet.',
-          ephemeral: true
-        });
-      }
-
-      const filtered = allAccounts.filter(acc => acc && acc.guild_id === guildId);
-
-      if (!filtered.length) {
-        return interaction.reply({
-          content: 'No economy accounts found yet.',
-          ephemeral: true
-        });
-      }
-
-      const sorted = filtered
-        .map(x => ({
-          user_id: x.user_id,
-          username: x.username || 'Unknown',
-          total: Number(x.wallet || 0) + Number(x.bank || 0)
-        }))
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 10);
-
-      const lines = sorted.map((user, index) => {
-        return `${index + 1}. **${user.username}** — ${economy.formatMoney(user.total)}`;
-      });
+      const row = new ActionRowBuilder().addComponents(menu);
 
       const embed = new EmbedBuilder()
-        .setTitle('Economy Leaderboard')
-        .setDescription(lines.join('\n'))
-        .setColor(0xf1c40f)
-        .setTimestamp();
+        .setTitle("Leaderboard")
+        .setDescription("Choose which leaderboard you want to view.")
+        .setColor(0xf1c40f);
 
-      return interaction.reply({ embeds: [embed] });
-    } catch (error) {
-      console.error('leaderboard command error:', error);
       return interaction.reply({
-        content: 'Something went wrong while loading the leaderboard.',
+        embeds: [embed],
+        components: [row],
+        ephemeral: true
+      });
+    } catch (error) {
+      console.error("leaderboard command error:", error);
+      return interaction.reply({
+        content: "Something went wrong while loading the leaderboard menu.",
         ephemeral: true
       });
     }
