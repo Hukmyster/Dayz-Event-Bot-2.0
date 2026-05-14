@@ -64,7 +64,7 @@ module.exports = {
 
   async execute(interaction) {
     try {
-      if (!economy.hasAccess(interaction.member)) {
+      if (!economy.hasAccess?.(interaction.member)) {
         return interaction.reply({
           content: 'You do not have the required role to use shop commands.',
           ephemeral: true
@@ -81,6 +81,13 @@ module.exports = {
       if (quantity <= 0) {
         return interaction.reply({
           content: 'Quantity must be greater than 0.',
+          ephemeral: true
+        });
+      }
+
+      if (quantity > 100) {
+        return interaction.reply({
+          content: 'Quantity is too large (max 100).',
           ephemeral: true
         });
       }
