@@ -10,6 +10,7 @@ module.exports = {
         .setName('amount')
         .setDescription('Amount to deposit')
         .setRequired(true)
+        .setMinValue(1)
     ),
 
   async execute(interaction) {
@@ -22,9 +23,6 @@ module.exports = {
       }
 
       const amount = interaction.options.getInteger('amount', true);
-      const guildId = interaction.guildId;
-      const userId = interaction.user.id;
-      const username = interaction.user.username;
 
       if (amount <= 0) {
         return interaction.reply({
@@ -32,6 +30,17 @@ module.exports = {
           ephemeral: true
         });
       }
+
+      if (amount > 1000000) {
+        return interaction.reply({
+          content: 'Amount is too large (max 1,000,000).',
+          ephemeral: true
+        });
+      }
+
+      const guildId = interaction.guildId;
+      const userId = interaction.user.id;
+      const username = interaction.user.username;
 
       const updated = await economy.transferWalletToBank(userId, guildId, amount, username, {
         notes: 'User deposit'
