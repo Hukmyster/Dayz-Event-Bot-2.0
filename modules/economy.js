@@ -10,7 +10,7 @@ async function loadEconomy() {
   try {
     const data = await storage.loadJson(ECONOMY_KEY);
     economyData = data.accounts || {};
-    transactions = data.transactions || [];
+    transactions = Array.isArray(data.transactions) ? data.transactions : [];
     debug.ok("economy.loadEconomy", { accounts: Object.keys(economyData).length });
   } catch (err) {
     debug.fail("economy.loadEconomy", err);
@@ -38,7 +38,8 @@ async function saveEconomy() {
 
 function normalizeNumber(v) {
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  return Math.floor(Math.max(0, n));
 }
 
 function formatMoney(value) {
