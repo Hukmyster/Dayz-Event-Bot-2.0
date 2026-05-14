@@ -3,46 +3,6 @@ const economy = require("../../modules/economy");
 const serverstate = require("../../modules/serverstate");
 const playerstats = require("../../modules/playerstats");
 
-function escapeCsv(value) {
-  const s = String(value ?? '');
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function parseCsv(text) {
-  const lines = String(text ?? '').trim().split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return [];
-  const headers = lines[0].split(',').map(h => h.trim());
-  return lines.slice(1).map(line => {
-    const cols = line.match(/("([^"]|"")*"|[^,]+)/g) || [];
-    const values = cols.map(v => v.startsWith('"') && v.endsWith('"') ? v.slice(1, -1).replace(/""/g, '"') : v);
-    const row = {};
-    headers.forEach((h, i) => { row[h] = values[i] ?? ''; });
-    return row;
-  });
-}
-
-function toCsv(rows, headers) {
-  const headerLine = headers.join(',');
-  const lines = rows.map(row => headers.map(h => escapeCsv(row[h])).join(','));
-  return [headerLine, ...lines].join('\n');
-}
-
-function indexOf(matrix, key, value) {
-  const idx = matrix.findIndex(row => row[key] === value);
-  return idx < 0 ? matrix.length : idx;
-}
-
-function replaceOrPush(matrix, key, value, row) {
-  const idx = indexOf(matrix, key, value);
-  if (idx === matrix.length) {
-    matrix.push(row);
-  } else {
-    Object.assign(matrix[idx], row);
-  }
-  return matrix;
-}
-
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("linkgamertag")
