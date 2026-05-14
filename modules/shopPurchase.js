@@ -11,7 +11,8 @@ function normalizeText(v) {
 
 function normalizeNumber(v) {
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  if (!Number.isFinite(n)) return null;
+  return Math.floor(Math.max(0, n));
 }
 
 function splitKitItems({ item, attachments = [] }) {
@@ -27,9 +28,10 @@ function splitKitItems({ item, attachments = [] }) {
 function buildShopObjectRows({ itemName, quantity, x, z, y = 0, attachments = [], customString = "" }) {
   const rows = [];
   const base = normalizeText(itemName);
-  const qty = Math.max(1, Math.floor(normalizeNumber(quantity) || 1));
+  const qty = normalizeNumber(quantity) ?? 1;
+  const safeQty = Math.max(1, Math.min(100, qty));
 
-  for (let i = 0; i < qty; i++) {
+  for (let i = 0; i < safeQty; i++) {
     rows.push(buildSingleEntry({
       name: base,
       x,
@@ -119,7 +121,8 @@ async function buyItem({
   });
 
   const cleanItemName = normalizeText(itemName);
-  const qty = Math.max(1, Math.floor(normalizeNumber(quantity) || 1));
+  const qty = normalizeNumber(quantity) ?? 1;
+  const safeQty = Math.max(1, Math.min(100, qty));
   const cleanX = normalizeNumber(x);
   const cleanZ = normalizeNumber(z);
   const cleanY = normalizeNumber(y) ?? 0;
@@ -135,29 +138,37 @@ async function buyItem({
     return { reply: "This item cannot be purchased because its price is invalid." };
   }
 
-  const totalCost = price * qty;
+  const totalCost = price * safeQty;
+  if (!Number.isFinite(totalCost) || totalCost <= 0) {
+    return { reply: "Invalid purchase total." };
+  }
 
-  if (playerId && guildId) {
-    try {
-      await chargePurchase({
-        userId: playerId,
-        guildId,
-        username: username || playerId,
-        amount: totalCost,
-        method,
-        notes: `Shop purchase: ${shopItem.name}`
-      });
-    } catch (err) {
-      debug.fail("shopPurchase.chargePurchase", err, { itemName: cleanItemName, qty, method });
-      return { reply: err.message || "Failed to charge player." };
-    }
-  } else {
+  if (safeQty !== qty) {
+    debug.step("shopPurchase.buyItem.quantityClamped", { requested: qty, used: safeQty });
+  }
+
+  if (!playerId || !guildId) {
     return { reply: "Missing player or guild information for charging." };
+  }
+
+  let after;
+  try {
+    after = await chargePurchase({
+      userId: playerId,
+      guildId,
+      username: username || playerId,
+      amount: totalCost,
+      method,
+      notes: `Shop purchase: ${shopItem.name}`
+    });
+  } catch (err) {
+    debug.fail("shopPurchase.chargePurchase", err, { itemName: cleanItemName, qty: safeQty, method });
+    return { reply: err.message || "Failed to charge player." };
   }
 
   const rows = buildShopObjectRows({
     itemName: shopItem.type,
-    quantity: qty,
+    quantity: safeQty,
     x: cleanX,
     z: cleanZ,
     y: cleanY,
@@ -169,7 +180,7 @@ async function buyItem({
     id: Date.now().toString(),
     item: shopItem.name,
     type: shopItem.type,
-    qty,
+    qty: safeQty,
     x: cleanX,
     y: cleanY,
     z: cleanZ,
@@ -179,7 +190,11 @@ async function buyItem({
     playerId: playerId || null,
     guildId: guildId || null,
     status: "queued",
-    rows
+    rows,
+    balanceAfter: {
+      wallet: after.wallet,
+      bank: after.bank
+    }
   };
 
   await appendPurchase({
@@ -201,11 +216,13 @@ async function buyItem({
     item: order.item,
     qty: order.qty,
     rows: rows.length,
-    totalCost
+    totalCost,
+    walletAfter: after.wallet,
+    bankAfter: after.bank
   });
 
   return {
-    reply: `Purchase successful: ${qty}x ${shopItem.name}`,
+    reply: `Purchase successful: ${safeQty}x ${shopItem.name}`,
     order,
     rows
   };
