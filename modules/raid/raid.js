@@ -1,19 +1,17 @@
 const { getFiles, start: startServerState } = require("../serverstate");
 
-const LOOP_MS = Number(process.env.RAID_INTERNAL_MS || 30000);
+const ADMIN_WEBHOOK_URL = process.env.ADMIN_WEBHOOK_URL || "";
 const DEBUG_ENABLED = String(process.env.RAID_DEBUG || "false").toLowerCase() === "true";
+const CHUNK_SIZE = 1800;
 
 const state = {
   started: false,
-  timer: null,
   running: false,
   startedAt: new Date().toISOString(),
-  username: "",
   fileState: new Map(),
   sentEventIds: new Set(),
-  raidActive: false,
-  lastRaidEventAt: null,
-  raidEvents: []
+  collected: [],
+  emittedOnce: false
 };
 
 function dbg(tag, data) {
@@ -27,99 +25,45 @@ function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
 
-function parseTime(line) {
-  const m = line.match(/^([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{3})?)\s*\|/);
-  return m ? m[1] : "unknown";
+function getLineKind(line) {
+  const s = String(line || "").toLowerCase();
+  if (!s) return null;
+  if (s.includes("killed by") || s.includes("committed suicide") || s.includes("died.")) return "death";
+  if (s.includes("hit by explosion") || s.includes("explosion")) return "explosion";
+  if (s.includes("hit by")) return "hit";
+  if (s.includes("built ") || s.includes("placed ") || s.includes("dismantled ") || s.includes("destroyed ")) return "base_action";
+  if (s.includes("is unconscious") || s.includes("regained consciousness")) return "consciousness";
+  if (s.includes("connecting") || s.includes("connected") || s.includes("disconnected")) return "connection";
+  if (s.includes("playerlist log")) return "playerlist";
+  return "other";
 }
 
-function parsePlayerName(line) {
-  const m = line.match(/Player\s+"([^"]+)"/i);
-  return m ? m[1] : "";
+function signatureOf(line) {
+  const s = normalizeLine(line)
+    .replace(/\b\d{2}:\d{2}:\d{2}(?:\.\d{3})?\b/g, "<time>")
+    .replace(/0x[0-9a-f]+/gi, "<hex>")
+    .replace(/\b\d+(?:\.\d+)?\b/g, "<num>")
+    .replace(/pos=<[^>]+>/gi, "pos=<coords>")
+    .replace(/id=[^)]+\)/gi, "id=<player>)")
+    .replace(/"[^"]+"/g, '"<name>"');
+
+  return `${getLineKind(line)}|${s}`;
 }
 
-function parsePlayerId(line) {
-  const m = line.match(/\(id=([^)]+)\)/i);
-  return m ? m[1] : "";
-}
-
-function parsePos(line) {
-  const m = line.match(/pos=<([^>]+)>/i);
-  return m ? m[1] : "";
-}
-
-function buildEventId(fileName, line, kind) {
-  return [fileName, kind, line].join("|");
-}
-
-function classifyLine(line) {
-  const lower = line.toLowerCase();
-
-  if (!line) return null;
-
-  if (lower.includes("hit by explosion")) {
-    return {
-      kind: "explosion_hit",
-      trigger: "hit by explosion",
-      raid: true
-    };
-  }
-
-  if (lower.includes("hit by")) {
-    return {
-      kind: "player_hit",
-      trigger: "hit by",
-      raid: true
-    };
-  }
-
-  if (lower.includes("placed ")) {
-    return {
-      kind: "placement",
-      trigger: "placed",
-      raid: true
-    };
-  }
-
-  if (lower.includes("built ") || lower.includes("dismantled ") || lower.includes("destroyed ")) {
-    return {
-      kind: "base_action",
-      trigger: "base action",
-      raid: true
-    };
-  }
-
-  if (lower.includes("landmine") || lower.includes("grenade") || lower.includes("explosion")) {
-    return {
-      kind: "explosive",
-      trigger: "explosive",
-      raid: true
-    };
-  }
-
-  return null;
-}
-
-function parseRaidLine(line) {
-  const base = classifyLine(line);
-  if (!base) return null;
-
+function parseLine(line, filePath) {
+  const normalized = normalizeLine(line);
+  if (!normalized) return null;
   return {
-    time: parseTime(line),
-    player: parsePlayerName(line),
-    playerId: parsePlayerId(line),
-    pos: parsePos(line),
-    kind: base.kind,
-    trigger: base.trigger,
-    raid: base.raid,
-    raw: line
+    kind: getLineKind(normalized),
+    signature: signatureOf(normalized),
+    file: filePath,
+    line: normalized,
+    raw: normalized
   };
 }
 
-function recordRaidEvent(evt) {
-  state.raidActive = true;
-  state.lastRaidEventAt = new Date().toISOString();
-  state.raidEvents.push(evt);
-  if (state.raidEvents.length > 200) state.raidEvents.shift();
+function buildEventId(fileName, evt) {
+  return [fileName, evt.signature, evt.raw].join("|");
 }
 
 function parseFile(file) {
@@ -127,35 +71,104 @@ function parseFile(file) {
     .split(/\r?\n/)
     .filter((l, i, a) => !(i === a.length - 1 && l === ""));
 
-  const previous = state.fileState.get(file.path) || { lineCount: 0, lastLine: "" };
-  const current = {
-    lineCount: lines.length,
-    lastLine: normalizeLine(lines[lines.length - 1] || "")
-  };
-
-  const startIndex = current.lineCount >= previous.lineCount && previous.lineCount > 0 ? previous.lineCount : 0;
   const events = [];
 
-  dbg("FILE_STATE", { file: file.path, previous, current, startIndex });
-
-  for (let i = startIndex; i < lines.length; i++) {
-    const line = normalizeLine(lines[i]);
-    const evt = parseRaidLine(line);
+  for (const line of lines) {
+    const evt = parseLine(line, file.path);
     if (!evt) continue;
 
-    const id = buildEventId(file.path.split("/").pop() || file.path, line, evt.kind);
+    const id = buildEventId(file.path.split("/").pop() || file.path, evt);
     if (state.sentEventIds.has(id)) continue;
 
     state.sentEventIds.add(id);
+
+    if (!state.collected.some(x => x.signature === evt.signature)) {
+      state.collected.push({
+        kind: evt.kind,
+        signature: evt.signature,
+        file: file.path,
+        line: evt.raw
+      });
+    }
+
     events.push(evt);
   }
 
-  state.fileState.set(file.path, current);
+  state.fileState.set(file.path, {
+    lineCount: lines.length,
+    lastLine: normalizeLine(lines[lines.length - 1] || "")
+  });
+
+  dbg("EVENTS_FOUND", { file: file.path, count: events.length });
   return events;
 }
 
-async function loopOnce() {
-  if (state.running) return;
+function formatCollectedText() {
+  const grouped = new Map();
+
+  for (const item of state.collected) {
+    if (!grouped.has(item.kind)) grouped.set(item.kind, []);
+    grouped.get(item.kind).push(item);
+  }
+
+  const lines = [];
+  lines.push(`Raid sweep complete.`);
+  lines.push(`Unique layouts: ${state.collected.length}`);
+  lines.push(`Files scanned: ${state.fileState.size}`);
+  lines.push("");
+
+  for (const [kind, items] of grouped.entries()) {
+    lines.push(`## ${kind.toUpperCase()} (${items.length})`);
+    for (const item of items) {
+      lines.push(`- [${item.file}] ${item.line}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n").trim();
+}
+
+function chunkText(text, size = CHUNK_SIZE) {
+  const out = [];
+  let buf = "";
+
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const candidate = buf ? `${buf}\n${line}` : line;
+    if (candidate.length > size && buf) {
+      out.push(buf);
+      buf = line;
+    } else {
+      buf = candidate;
+    }
+  }
+
+  if (buf) out.push(buf);
+  return out;
+}
+
+async function postWebhook(content) {
+  if (!ADMIN_WEBHOOK_URL) {
+    dbg("WEBHOOK_SKIP", { reason: "missing ADMIN_WEBHOOK_URL" });
+    return;
+  }
+
+  const chunks = chunkText(content, CHUNK_SIZE);
+  for (const chunk of chunks) {
+    const res = await fetch(ADMIN_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: chunk })
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
+    }
+  }
+}
+
+async function runOnce() {
+  if (state.emittedOnce) return;
   state.running = true;
 
   try {
@@ -165,15 +178,14 @@ async function loopOnce() {
     for (const file of files) {
       if (!/\.adm$/i.test(file.path || "")) continue;
       const events = parseFile(file);
-
-      for (const evt of events) {
-        total++;
-        recordRaidEvent(evt);
-        dbg("RAID_HIT", { file: file.path, evt });
-      }
+      total += events.length;
     }
 
-    dbg("loop:done", { total, raidActive: state.raidActive, lastRaidEventAt: state.lastRaidEventAt });
+    dbg("run:done", { total, unique: state.collected.length });
+
+    state.emittedOnce = true;
+    await postWebhook(formatCollectedText());
+    dbg("WEBHOOK_SENT", { unique: state.collected.length });
   } finally {
     state.running = false;
   }
@@ -183,24 +195,18 @@ function start() {
   if (state.started) return;
   state.started = true;
   startServerState();
-  loopOnce().catch(() => {});
-  state.timer = setInterval(() => {
-    loopOnce().catch(() => {});
-  }, LOOP_MS);
+  runOnce().catch(err => dbg("START_ERROR", { error: err?.message || String(err) }));
 }
 
 function stop() {
-  if (state.timer) clearInterval(state.timer);
-  state.timer = null;
   state.running = false;
   state.started = false;
 }
 
 function getRaidState() {
   return {
-    raidActive: state.raidActive,
-    lastRaidEventAt: state.lastRaidEventAt,
-    raidEvents: [...state.raidEvents]
+    collected: [...state.collected],
+    fileState: [...state.fileState.entries()]
   };
 }
 
