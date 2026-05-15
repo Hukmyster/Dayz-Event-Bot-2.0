@@ -1,17 +1,30 @@
-const { getFiles, start: startServerState } = require("../serverstate");
+const fs = require("fs");
+const path = require("path");
+const raidstate = require("./raidstate");
 
-const ADMIN_WEBHOOK_URL = process.env.ADMIN_WEBHOOK_URL || "";
 const CHUNK_SIZE = 1800;
-const INITIAL_DELAY_MS = 120000;
+const WAIT_MS = 120000;
+
+const TRIGGERS = [
+  { type: "damage", test: /hit by Player/i },
+  { type: "death", test: /killed by Player/i },
+  { type: "connection", test: /\bis connecting\b/i },
+  { type: "connection", test: /\bis connected\b/i },
+  { type: "disconnect", test: /\bhas been disconnected\b/i },
+  { type: "playerlist", test: /PlayerList log:/i },
+  { type: "placement", test: /\bplaced\b/i },
+  { type: "construction", test: /\bbuilt\b/i },
+  { type: "destruction", test: /\bdismantled\b/i },
+  { type: "destruction", test: /\bdestroyed\b/i },
+  { type: "raid_setup", test: /\bClaymore\b|\bImprovisedExplosive\b|\bLandMineTrap\b/i }
+];
 
 const state = {
   started: false,
   running: false,
   startedAt: new Date().toISOString(),
-  fileState: new Map(),
-  sentEventIds: new Set(),
-  collected: [],
-  emittedOnce: false
+  emittedOnce: false,
+  lastSummary: null
 };
 
 function log(tag, data) {
@@ -28,129 +41,68 @@ function normalizeLine(line) {
   return String(line || "").replace(/\r$/, "").trim();
 }
 
-function getLineKind(line) {
-  const s = String(line || "").toLowerCase();
-  if (!s) return null;
-  if (s.includes("killed by") || s.includes("committed suicide") || s.includes("died.")) return "death";
-  if (s.includes("hit by explosion") || s.includes("explosion")) return "explosion";
-  if (s.includes("hit by")) return "hit";
-  if (s.includes("built ") || s.includes("placed ") || s.includes("dismantled ") || s.includes("destroyed ")) return "base_action";
-  if (s.includes("is unconscious") || s.includes("regained consciousness")) return "consciousness";
-  if (s.includes("connecting") || s.includes("connected") || s.includes("disconnected")) return "connection";
-  if (s.includes("playerlist log")) return "playerlist";
-  return "other";
+function classifyLine(line) {
+  for (const trig of TRIGGERS) {
+    if (trig.test.test(line)) return trig.type;
+  }
+  return null;
 }
 
-function signatureOf(line) {
-  return normalizeLine(line)
-    .replace(/\b\d{2}:\d{2}:\d{2}(?:\.\d{3})?\b/g, "<time>")
-    .replace(/0x[0-9a-f]+/gi, "<hex>")
-    .replace(/\b\d+(?:\.\d+)?\b/g, "<num>")
-    .replace(/pos=<[^>]+>/gi, "pos=<coords>")
-    .replace(/id=[^)]+\)/gi, "id=<player>)")
-    .replace(/"[^"]+"/g, '"<name>"');
-}
-
-function parseLine(line, filePath) {
-  const normalized = normalizeLine(line);
-  if (!normalized) return null;
-  const kind = getLineKind(normalized);
-  return {
-    kind,
-    signature: `${kind}|${signatureOf(normalized)}`,
-    file: filePath,
-    line: normalized,
-    raw: normalized
-  };
-}
-
-function buildEventId(fileName, evt) {
-  return [fileName, evt.signature, evt.raw].join("|");
-}
-
-function parseFile(file) {
-  const lines = String(file.content || "")
+function parseFileContent(content, filePath) {
+  const lines = String(content || "")
     .split(/\r?\n/)
     .filter((l, i, a) => !(i === a.length - 1 && l === ""));
 
-  const previous = state.fileState.get(file.path) || { lineCount: 0, lastLine: "" };
-  const current = {
-    lineCount: lines.length,
-    lastLine: normalizeLine(lines[lines.length - 1] || "")
-  };
+  const matched = [];
+  const seen = new Set();
 
-  log("FILE_START", { file: file.path, lineCount: lines.length, previous, current });
+  for (const raw of lines) {
+    const line = normalizeLine(raw);
+    if (!line) continue;
 
-  if (!lines.length) {
-    log("FILE_EMPTY", { file: file.path });
-    state.fileState.set(file.path, current);
-    return [];
+    const type = classifyLine(line);
+    if (!type) continue;
+
+    const id = `${filePath}|${type}|${line}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    matched.push({
+      file: filePath,
+      type,
+      line,
+      raw: line
+    });
   }
 
-  const events = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = normalizeLine(lines[i]);
-    if (!line) {
-      log("LINE_EMPTY", { file: file.path, index: i });
-      continue;
-    }
-
-    const evt = parseLine(line, file.path);
-    if (!evt) {
-      log("LINE_PARSE_NULL", { file: file.path, index: i });
-      continue;
-    }
-
-    const id = buildEventId(file.path.split("/").pop() || file.path, evt);
-    if (state.sentEventIds.has(id)) continue;
-
-    state.sentEventIds.add(id);
-
-    if (!state.collected.some(x => x.signature === evt.signature)) {
-      state.collected.push({
-        kind: evt.kind,
-        signature: evt.signature,
-        file: file.path,
-        line: evt.raw
-      });
-    }
-
-    events.push(evt);
-  }
-
-  state.fileState.set(file.path, current);
-  log("FILE_DONE", { file: file.path, count: events.length });
-  return events;
+  return matched;
 }
 
-function formatCollectedText() {
-  const grouped = new Map();
+function scanAdmFiles(filePaths) {
+  const results = [];
 
-  for (const item of state.collected) {
-    if (!grouped.has(item.kind)) grouped.set(item.kind, []);
-    grouped.get(item.kind).push(item);
+  for (const filePath of filePaths) {
+    if (!/\.adm$/i.test(filePath)) continue;
+    log("FILE_SCAN_START", { filePath });
+
+    if (!fs.existsSync(filePath)) {
+      log("FILE_MISSING", { filePath });
+      continue;
+    }
+
+    const content = fs.readFileSync(filePath, "utf8");
+    const matches = parseFileContent(content, filePath);
+
+    log("FILE_SCAN_DONE", { filePath, matches: matches.length });
+    results.push(...matches);
   }
 
-  const lines = [];
-  lines.push("Raid sweep complete.");
-  lines.push(`Unique layouts: ${state.collected.length}`);
-  lines.push(`Files scanned: ${state.fileState.size}`);
-  lines.push("");
-
-  for (const [kind, items] of grouped.entries()) {
-    lines.push(`## ${kind.toUpperCase()} (${items.length})`);
-    for (const item of items) lines.push(`- [${item.file}] ${item.line}`);
-    lines.push("");
-  }
-
-  return lines.join("\n").trim();
+  return results;
 }
 
 function chunkText(text, size = CHUNK_SIZE) {
   const out = [];
   let buf = "";
-
   for (const line of String(text || "").split(/\r?\n/)) {
     const candidate = buf ? `${buf}\n${line}` : line;
     if (candidate.length > size && buf) {
@@ -160,22 +112,22 @@ function chunkText(text, size = CHUNK_SIZE) {
       buf = candidate;
     }
   }
-
   if (buf) out.push(buf);
   return out;
 }
 
-async function postWebhook(content) {
-  if (!ADMIN_WEBHOOK_URL) {
-    log("WEBHOOK_MISSING", { reason: "ADMIN_WEBHOOK_URL is empty" });
+async function postDiscord(content) {
+  const url = process.env.ADMIN_WEBHOOK_URL || "";
+  if (!url) {
+    log("WEBHOOK_MISSING", {});
     return false;
   }
 
-  const chunks = chunkText(content, CHUNK_SIZE);
+  const chunks = chunkText(content);
   log("WEBHOOK_CHUNKS", { chunks: chunks.length });
 
   for (const chunk of chunks) {
-    const res = await fetch(ADMIN_WEBHOOK_URL, {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: chunk })
@@ -189,6 +141,28 @@ async function postWebhook(content) {
   }
 
   return true;
+}
+
+function formatMatches(matches) {
+  const grouped = new Map();
+
+  for (const item of matches) {
+    if (!grouped.has(item.type)) grouped.set(item.type, []);
+    grouped.get(item.type).push(item);
+  }
+
+  const out = [];
+  out.push("Raid trigger scan complete.");
+  out.push(`Matches: ${matches.length}`);
+  out.push("");
+
+  for (const [type, items] of grouped.entries()) {
+    out.push(`## ${type.toUpperCase()} (${items.length})`);
+    for (const item of items) out.push(`- [${item.file}] ${item.line}`);
+    out.push("");
+  }
+
+  return out.join("\n").trim();
 }
 
 async function runOnce() {
@@ -205,57 +179,37 @@ async function runOnce() {
   state.running = true;
 
   try {
-    log("RUN_START", { startedAt: state.startedAt, webhook: Boolean(ADMIN_WEBHOOK_URL) });
-    log("DELAY_START", { ms: INITIAL_DELAY_MS });
-    await delay(INITIAL_DELAY_MS);
-    log("DELAY_END", { ms: INITIAL_DELAY_MS });
+    log("RUN_START", { startedAt: state.startedAt });
+    log("DELAY_START", { ms: WAIT_MS });
+    await delay(WAIT_MS);
+    log("DELAY_END", { ms: WAIT_MS });
 
-    const files = getFiles();
-    log("FILES_RECEIVED", { count: files.length, paths: files.map(f => f && f.path).filter(Boolean) });
+    const uploaded = raidstate.getUploadedFiles();
+    log("FILES_RECEIVED", { count: uploaded.length });
 
-    if (!files.length) {
-      log("NO_FILES", { reason: "getFiles returned empty array" });
+    if (!uploaded.length) {
+      log("NO_FILES", {});
       return;
     }
 
-    let total = 0;
-    let matchedFiles = 0;
+    const matches = scanAdmFiles(uploaded);
+    log("SCAN_DONE", { matches: matches.length });
 
-    for (const file of files) {
-      if (!file || !file.path) {
-        log("BAD_FILE", { file });
-        continue;
-      }
-
-      if (!/\.adm$/i.test(file.path)) {
-        log("SKIP_FILE", { file: file.path, reason: "not adm" });
-        continue;
-      }
-
-      matchedFiles++;
-      const events = parseFile(file);
-      total += events.length;
-    }
-
-    log("RUN_DONE", { total, unique: state.collected.length, matchedFiles });
-
-    if (!matchedFiles) {
-      log("NO_MATCHED_FILES", { reason: "no adm files matched" });
+    if (!matches.length) {
+      log("NO_MATCHES", {});
       return;
     }
 
-    if (!state.collected.length) {
-      log("NO_COLLECTED", { reason: "parsed files but no unique lines collected" });
-      return;
-    }
+    raidstate.pushCandidates(matches);
+    state.lastSummary = matches;
 
-    const sent = await postWebhook(formatCollectedText());
+    const sent = await postDiscord(formatMatches(matches));
     if (sent) {
       state.emittedOnce = true;
-      log("WEBHOOK_SENT", { unique: state.collected.length });
+      log("WEBHOOK_SENT", { matches: matches.length });
     }
   } catch (err) {
-    log("RUN_ERROR", { error: err?.message || String(err), stack: err?.stack?.split("\n").slice(0, 3) });
+    log("RUN_ERROR", { error: err?.message || String(err) });
   } finally {
     state.running = false;
     log("RUN_END", {});
@@ -265,21 +219,13 @@ async function runOnce() {
 function start() {
   if (state.started) return;
   state.started = true;
-  log("MODULE_START", { webhook: Boolean(ADMIN_WEBHOOK_URL) });
-  startServerState();
+  log("MODULE_START", {});
   runOnce().catch(err => log("START_ERROR", { error: err?.message || String(err) }));
 }
 
 function stop() {
-  state.running = false;
   state.started = false;
+  state.running = false;
 }
 
-function getRaidState() {
-  return {
-    collected: [...state.collected],
-    fileState: [...state.fileState.entries()]
-  };
-}
-
-module.exports = { start, stop, state, getRaidState };
+module.exports = { start, stop, state };
