@@ -71,9 +71,31 @@ function parseFile(file) {
     .split(/\r?\n/)
     .filter((l, i, a) => !(i === a.length - 1 && l === ""));
 
+  const previous = state.fileState.get(file.path) || { lineCount: 0, lastLine: "" };
+  const current = {
+    lineCount: lines.length,
+    lastLine: normalizeLine(lines[lines.length - 1] || "")
+  };
+
+  dbg("FILE_START", {
+    file: file.path,
+    pathUsed: file.pathUsed || "",
+    current,
+    previous
+  });
+
+  if (!lines.length) {
+    dbg("FILE_EMPTY", { file: file.path });
+    state.fileState.set(file.path, current);
+    return [];
+  }
+
   const events = [];
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = normalizeLine(lines[i]);
+    if (!line) continue;
+
     const evt = parseLine(line, file.path);
     if (!evt) continue;
 
@@ -94,12 +116,8 @@ function parseFile(file) {
     events.push(evt);
   }
 
-  state.fileState.set(file.path, {
-    lineCount: lines.length,
-    lastLine: normalizeLine(lines[lines.length - 1] || "")
-  });
-
-  dbg("EVENTS_FOUND", { file: file.path, count: events.length });
+  state.fileState.set(file.path, current);
+  dbg("FILE_DONE", { file: file.path, count: events.length });
   return events;
 }
 
@@ -153,6 +171,8 @@ async function postWebhook(content) {
   }
 
   const chunks = chunkText(content, CHUNK_SIZE);
+  dbg("WEBHOOK_CHUNKS", { chunks: chunks.length });
+
   for (const chunk of chunks) {
     const res = await fetch(ADMIN_WEBHOOK_URL, {
       method: "POST",
@@ -162,30 +182,71 @@ async function postWebhook(content) {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      dbg("WEBHOOK_FAIL", { status: res.status, body: text.slice(0, 250) });
       throw new Error(`Webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
     }
   }
 }
 
 async function runOnce() {
-  if (state.emittedOnce) return;
+  if (state.emittedOnce) {
+    dbg("SKIP", { reason: "already_emitted" });
+    return;
+  }
+
+  if (state.running) {
+    dbg("SKIP", { reason: "already_running" });
+    return;
+  }
+
   state.running = true;
 
   try {
     const files = getFiles();
+    dbg("FILES_RECEIVED", { count: files.length, paths: files.map(f => f.path) });
+
+    if (!files.length) {
+      dbg("NO_FILES", { reason: "getFiles returned empty array" });
+      return;
+    }
+
     let total = 0;
+    let matchedFiles = 0;
 
     for (const file of files) {
-      if (!/\.adm$/i.test(file.path || "")) continue;
+      if (!file || !file.path) {
+        dbg("BAD_FILE", { file });
+        continue;
+      }
+
+      if (!/\.adm$/i.test(file.path)) {
+        dbg("SKIP_FILE", { file: file.path, reason: "not adm" });
+        continue;
+      }
+
+      matchedFiles++;
       const events = parseFile(file);
       total += events.length;
     }
 
-    dbg("run:done", { total, unique: state.collected.length });
+    dbg("RUN_DONE", { total, unique: state.collected.length, matchedFiles });
+
+    if (!matchedFiles) {
+      dbg("NO_MATCHED_FILES", { reason: "no adm files matched" });
+      return;
+    }
+
+    if (!state.collected.length) {
+      dbg("NO_COLLECTED", { reason: "parsed files but no unique lines collected" });
+      return;
+    }
 
     state.emittedOnce = true;
     await postWebhook(formatCollectedText());
     dbg("WEBHOOK_SENT", { unique: state.collected.length });
+  } catch (err) {
+    dbg("RUN_ERROR", { error: err?.message || String(err) });
+    throw err;
   } finally {
     state.running = false;
   }
