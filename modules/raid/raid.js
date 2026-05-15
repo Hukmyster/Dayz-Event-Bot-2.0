@@ -1,4 +1,4 @@
-const { getFiles, start: startServerState } = require("./serverstate");
+const { getFiles, start: startServerState } = require("../serverstate");
 
 const LOOP_MS = Number(process.env.RAID_INTERNAL_MS || 30000);
 const DEBUG_ENABLED = String(process.env.RAID_DEBUG || "false").toLowerCase() === "true";
