@@ -5,6 +5,7 @@ const killfeed = require("./modules/killfeed");
 const eventfeed = require("./modules/eventfeed");
 const serverstate = require("./modules/serverstate");
 const playerradars = require("./modules/playerradars");
+const raid = require("./modules/raid/raid");
 const logger = require("./utils/logger");
 const debug = require("./utils/debug");
 const { handleInteraction } = require("./indexcommands");
@@ -24,7 +25,8 @@ const feedState = {
   killfeedStarted: false,
   eventfeedStarted: false,
   serverstateStarted: false,
-  playerradarsStarted: false
+  playerradarsStarted: false,
+  raidStarted: false
 };
 
 client.once(Events.ClientReady, async () => {
@@ -55,6 +57,12 @@ client.once(Events.ClientReady, async () => {
     feedState.playerradarsStarted = true;
   }
   console.log("[PLAYERRADARS] module started");
+
+  if (!feedState.raidStarted) {
+    raid.start();
+    feedState.raidStarted = true;
+  }
+  console.log("[RAID] module started");
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
