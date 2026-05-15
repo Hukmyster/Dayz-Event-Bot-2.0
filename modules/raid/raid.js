@@ -1,8 +1,8 @@
 const { getFiles, start: startServerState } = require("../serverstate");
 
 const ADMIN_WEBHOOK_URL = process.env.ADMIN_WEBHOOK_URL || "";
-const DEBUG_ENABLED = String(process.env.RAID_DEBUG || "false").toLowerCase() === "true";
 const CHUNK_SIZE = 1800;
+const INITIAL_DELAY_MS = 120000;
 
 const state = {
   started: false,
@@ -14,11 +14,14 @@ const state = {
   emittedOnce: false
 };
 
-function dbg(tag, data) {
-  if (!DEBUG_ENABLED) return;
+function log(tag, data) {
   const ts = new Date().toISOString();
-  const dataStr = data !== undefined ? JSON.stringify(data) : "";
-  console.log(`[raid][${ts}][${tag}]${dataStr ? " " + dataStr : ""}`);
+  const payload = data !== undefined ? ` ${JSON.stringify(data)}` : "";
+  console.log(`[RAID][${ts}][${tag}]${payload}`);
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function normalizeLine(line) {
@@ -39,23 +42,22 @@ function getLineKind(line) {
 }
 
 function signatureOf(line) {
-  const s = normalizeLine(line)
+  return normalizeLine(line)
     .replace(/\b\d{2}:\d{2}:\d{2}(?:\.\d{3})?\b/g, "<time>")
     .replace(/0x[0-9a-f]+/gi, "<hex>")
     .replace(/\b\d+(?:\.\d+)?\b/g, "<num>")
     .replace(/pos=<[^>]+>/gi, "pos=<coords>")
     .replace(/id=[^)]+\)/gi, "id=<player>)")
     .replace(/"[^"]+"/g, '"<name>"');
-
-  return `${getLineKind(line)}|${s}`;
 }
 
 function parseLine(line, filePath) {
   const normalized = normalizeLine(line);
   if (!normalized) return null;
+  const kind = getLineKind(normalized);
   return {
-    kind: getLineKind(normalized),
-    signature: signatureOf(normalized),
+    kind,
+    signature: `${kind}|${signatureOf(normalized)}`,
     file: filePath,
     line: normalized,
     raw: normalized
@@ -77,15 +79,10 @@ function parseFile(file) {
     lastLine: normalizeLine(lines[lines.length - 1] || "")
   };
 
-  dbg("FILE_START", {
-    file: file.path,
-    pathUsed: file.pathUsed || "",
-    current,
-    previous
-  });
+  log("FILE_START", { file: file.path, lineCount: lines.length, previous, current });
 
   if (!lines.length) {
-    dbg("FILE_EMPTY", { file: file.path });
+    log("FILE_EMPTY", { file: file.path });
     state.fileState.set(file.path, current);
     return [];
   }
@@ -94,10 +91,16 @@ function parseFile(file) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = normalizeLine(lines[i]);
-    if (!line) continue;
+    if (!line) {
+      log("LINE_EMPTY", { file: file.path, index: i });
+      continue;
+    }
 
     const evt = parseLine(line, file.path);
-    if (!evt) continue;
+    if (!evt) {
+      log("LINE_PARSE_NULL", { file: file.path, index: i });
+      continue;
+    }
 
     const id = buildEventId(file.path.split("/").pop() || file.path, evt);
     if (state.sentEventIds.has(id)) continue;
@@ -117,7 +120,7 @@ function parseFile(file) {
   }
 
   state.fileState.set(file.path, current);
-  dbg("FILE_DONE", { file: file.path, count: events.length });
+  log("FILE_DONE", { file: file.path, count: events.length });
   return events;
 }
 
@@ -130,16 +133,14 @@ function formatCollectedText() {
   }
 
   const lines = [];
-  lines.push(`Raid sweep complete.`);
+  lines.push("Raid sweep complete.");
   lines.push(`Unique layouts: ${state.collected.length}`);
   lines.push(`Files scanned: ${state.fileState.size}`);
   lines.push("");
 
   for (const [kind, items] of grouped.entries()) {
     lines.push(`## ${kind.toUpperCase()} (${items.length})`);
-    for (const item of items) {
-      lines.push(`- [${item.file}] ${item.line}`);
-    }
+    for (const item of items) lines.push(`- [${item.file}] ${item.line}`);
     lines.push("");
   }
 
@@ -166,12 +167,12 @@ function chunkText(text, size = CHUNK_SIZE) {
 
 async function postWebhook(content) {
   if (!ADMIN_WEBHOOK_URL) {
-    dbg("WEBHOOK_SKIP", { reason: "missing ADMIN_WEBHOOK_URL" });
-    return;
+    log("WEBHOOK_MISSING", { reason: "ADMIN_WEBHOOK_URL is empty" });
+    return false;
   }
 
   const chunks = chunkText(content, CHUNK_SIZE);
-  dbg("WEBHOOK_CHUNKS", { chunks: chunks.length });
+  log("WEBHOOK_CHUNKS", { chunks: chunks.length });
 
   for (const chunk of chunks) {
     const res = await fetch(ADMIN_WEBHOOK_URL, {
@@ -182,31 +183,38 @@ async function postWebhook(content) {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      dbg("WEBHOOK_FAIL", { status: res.status, body: text.slice(0, 250) });
-      throw new Error(`Webhook HTTP ${res.status}: ${text.slice(0, 250)}`);
+      log("WEBHOOK_FAIL", { status: res.status, body: text.slice(0, 250) });
+      return false;
     }
   }
+
+  return true;
 }
 
 async function runOnce() {
   if (state.emittedOnce) {
-    dbg("SKIP", { reason: "already_emitted" });
+    log("SKIP", { reason: "already_emitted" });
     return;
   }
 
   if (state.running) {
-    dbg("SKIP", { reason: "already_running" });
+    log("SKIP", { reason: "already_running" });
     return;
   }
 
   state.running = true;
 
   try {
+    log("RUN_START", { startedAt: state.startedAt, webhook: Boolean(ADMIN_WEBHOOK_URL) });
+    log("DELAY_START", { ms: INITIAL_DELAY_MS });
+    await delay(INITIAL_DELAY_MS);
+    log("DELAY_END", { ms: INITIAL_DELAY_MS });
+
     const files = getFiles();
-    dbg("FILES_RECEIVED", { count: files.length, paths: files.map(f => f.path) });
+    log("FILES_RECEIVED", { count: files.length, paths: files.map(f => f && f.path).filter(Boolean) });
 
     if (!files.length) {
-      dbg("NO_FILES", { reason: "getFiles returned empty array" });
+      log("NO_FILES", { reason: "getFiles returned empty array" });
       return;
     }
 
@@ -215,12 +223,12 @@ async function runOnce() {
 
     for (const file of files) {
       if (!file || !file.path) {
-        dbg("BAD_FILE", { file });
+        log("BAD_FILE", { file });
         continue;
       }
 
       if (!/\.adm$/i.test(file.path)) {
-        dbg("SKIP_FILE", { file: file.path, reason: "not adm" });
+        log("SKIP_FILE", { file: file.path, reason: "not adm" });
         continue;
       }
 
@@ -229,34 +237,37 @@ async function runOnce() {
       total += events.length;
     }
 
-    dbg("RUN_DONE", { total, unique: state.collected.length, matchedFiles });
+    log("RUN_DONE", { total, unique: state.collected.length, matchedFiles });
 
     if (!matchedFiles) {
-      dbg("NO_MATCHED_FILES", { reason: "no adm files matched" });
+      log("NO_MATCHED_FILES", { reason: "no adm files matched" });
       return;
     }
 
     if (!state.collected.length) {
-      dbg("NO_COLLECTED", { reason: "parsed files but no unique lines collected" });
+      log("NO_COLLECTED", { reason: "parsed files but no unique lines collected" });
       return;
     }
 
-    state.emittedOnce = true;
-    await postWebhook(formatCollectedText());
-    dbg("WEBHOOK_SENT", { unique: state.collected.length });
+    const sent = await postWebhook(formatCollectedText());
+    if (sent) {
+      state.emittedOnce = true;
+      log("WEBHOOK_SENT", { unique: state.collected.length });
+    }
   } catch (err) {
-    dbg("RUN_ERROR", { error: err?.message || String(err) });
-    throw err;
+    log("RUN_ERROR", { error: err?.message || String(err), stack: err?.stack?.split("\n").slice(0, 3) });
   } finally {
     state.running = false;
+    log("RUN_END", {});
   }
 }
 
 function start() {
   if (state.started) return;
   state.started = true;
+  log("MODULE_START", { webhook: Boolean(ADMIN_WEBHOOK_URL) });
   startServerState();
-  runOnce().catch(err => dbg("START_ERROR", { error: err?.message || String(err) }));
+  runOnce().catch(err => log("START_ERROR", { error: err?.message || String(err) }));
 }
 
 function stop() {
